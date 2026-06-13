@@ -15,6 +15,7 @@ export default tseslint.config(
       '**/*.config.ts',
       '**/drizzle/**',
       '**/coverage/**',
+      '**/.reviews/**',
     ],
   },
 

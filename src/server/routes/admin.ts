@@ -3,11 +3,11 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { AppDeps } from '../services/deps.js';
 import { decisionBodySchema, requestDtoSchema, requestListQuerySchema } from '../../shared/schemas/request.js';
-import { listEnvelope } from '../../shared/schemas/v1/common.js';
+import { listEnvelope, prefixedId } from '../../shared/schemas/v1/common.js';
 import { requireAdmin } from '../plugins/auth.js';
 import { notFound } from '../util/errors.js';
 
-const pidParams = z.object({ publicId: z.string() });
+const pidParams = z.object({ publicId: prefixedId('rq') });
 const requestListSchema = listEnvelope(requestDtoSchema);
 const DEFAULT_LIMIT = 50;
 

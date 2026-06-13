@@ -2,6 +2,7 @@ import path from 'node:path';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
+import helmet from '@fastify/helmet';
 import fastifyStatic from '@fastify/static';
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fastify-type-provider-zod';
 import { config, APP_ROOT } from './config.js';
@@ -53,11 +54,30 @@ async function main(): Promise<void> {
 
   if (config.authMode === 'bypass') await users.ensureDevAdmin();
 
-  const deps: AppDeps = { config, users, settings, requests, search, plexOidc };
+  const deps: AppDeps = { config, db, users, settings, requests, search, plexOidc };
 
   const app = Fastify({ logger: { level: config.isDev ? 'info' : 'warn' } }).withTypeProvider<ZodTypeProvider>();
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
+
+  // Browser hardening in production (CSP, frame-ancestors, referrer policy, etc.).
+  // Skipped in dev so Vite's HMR/inline scripts aren't blocked.
+  if (config.isProd) {
+    await app.register(helmet, {
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          baseUri: ["'self'"],
+          objectSrc: ["'none'"],
+          frameAncestors: ["'none'"],
+          imgSrc: ["'self'", 'https:', 'data:'],
+          scriptSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+        },
+      },
+      referrerPolicy: { policy: 'no-referrer' },
+    });
+  }
 
   await app.register(cors, { origin: config.corsOrigin, credentials: true });
   await app.register(cookie, { secret: config.sessionSecret });

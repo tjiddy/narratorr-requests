@@ -17,8 +17,17 @@ import { z } from 'zod';
 // `src/shared/schemas/v1/common.ts` — this file is the lift-and-shift seed.
 // ============================================================================
 
-/** ISO-8601 timestamp string (e.g. "2026-06-13T12:00:00.000Z"). */
-export const isoDateString = z.string().min(1);
+/**
+ * ISO-8601 timestamp string (e.g. "2026-06-13T12:00:00.000Z"). Accepts a bare date
+ * or a full datetime with optional fractional seconds and timezone — but not
+ * arbitrary strings, so contract drift on date fields is caught.
+ */
+export const isoDateString = z
+  .string()
+  .regex(
+    /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?$/,
+    'must be an ISO-8601 date or datetime',
+  );
 
 /**
  * Opaque public-ID schema for a given prefix. S1 (#1443, PR #1456) introduces

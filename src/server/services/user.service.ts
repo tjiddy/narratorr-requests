@@ -75,11 +75,14 @@ export class UserService {
       return updated ?? existing;
     }
 
-    const isFirstUser = (await this.count()) === 0;
     const isOwner =
       opts.ownerUsername != null &&
       opts.ownerUsername.toLowerCase() === profile.plexUsername.toLowerCase();
-    const role: Role = isFirstUser || isOwner ? 'admin' : 'user';
+    // First-user-admin bootstrap applies ONLY when no explicit owner is configured
+    // (dev/standalone). With an owner set, admin is granted solely on owner match,
+    // which closes the open-allowlist + first-login privilege-escalation path.
+    const isFirstUser = opts.ownerUsername == null && (await this.count()) === 0;
+    const role: Role = isOwner || isFirstUser ? 'admin' : 'user';
 
     const [created] = await this.db
       .insert(users)

@@ -7,11 +7,11 @@ import {
   requestDtoSchema,
   requestListQuerySchema,
 } from '../../shared/schemas/request.js';
-import { listEnvelope } from '../../shared/schemas/v1/common.js';
+import { listEnvelope, prefixedId } from '../../shared/schemas/v1/common.js';
 import { requireUser } from '../plugins/auth.js';
 import { forbidden, notFound } from '../util/errors.js';
 
-const pidParams = z.object({ publicId: z.string() });
+const pidParams = z.object({ publicId: prefixedId('rq') });
 const requestListSchema = listEnvelope(requestDtoSchema);
 const DEFAULT_LIMIT = 50;
 

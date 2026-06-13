@@ -89,9 +89,24 @@ export class StatusPoller {
    * tick wrapper can decide whether to back off. Safe to call directly in tests.
    */
   async pollOnce(): Promise<{ checked: number; transitioned: number; upstreamErrors: number }> {
-    const rows = (await this.requests.findAcquiring()).slice(0, this.batchSize);
     let transitioned = 0;
     let upstreamErrors = 0;
+
+    // Self-heal requests stranded `approved` (process died between approval and
+    // handoff). The handoff is idempotent (Idempotency-Key = request publicId).
+    const stranded = await this.requests.findApprovedAwaitingHandoff(this.batchSize);
+    for (const row of stranded) {
+      try {
+        await this.requests.handoff(row);
+        transitioned += 1;
+        this.logger.info({ request: row.publicId }, 'recovered stranded approved request via handoff');
+      } catch (err) {
+        upstreamErrors += 1;
+        this.logger.warn({ request: row.publicId, err }, 'handoff recovery failed');
+      }
+    }
+
+    const rows = await this.requests.findAcquiring(this.batchSize);
 
     for (const row of rows) {
       if (!row.narratorrAcquisitionId) continue;

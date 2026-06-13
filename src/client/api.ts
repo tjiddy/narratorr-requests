@@ -15,7 +15,12 @@ export class ApiError extends Error {
 
 async function parse<T>(res: Response): Promise<T> {
   const text = await res.text();
-  const json: unknown = text ? JSON.parse(text) : undefined;
+  let json: unknown;
+  try {
+    json = text ? JSON.parse(text) : undefined;
+  } catch {
+    throw new ApiError(res.status, 'NON_JSON', `Unexpected non-JSON response (${res.status})`);
+  }
   if (!res.ok) {
     const envelope = json as { error?: { code?: string; message?: string } } | undefined;
     throw new ApiError(

@@ -35,7 +35,9 @@ export const createRequestBodySchema = z
     title: z.string().trim().min(1),
     author: z.string().trim().nullish(),
     narrator: z.string().trim().nullish(),
-    coverUrl: z.string().trim().nullish(),
+    // https-only: a request-supplied coverUrl is rendered in the admin's browser, so
+    // reject javascript:/data:/internal-http: to avoid SSRF-ish loads and abuse.
+    coverUrl: z.string().trim().regex(/^https:\/\//, 'coverUrl must be an https URL').nullish(),
     note: z.string().trim().max(500).nullish(),
   })
   .strict();
@@ -52,7 +54,6 @@ export type DecisionBody = z.infer<typeof decisionBodySchema>;
 
 export const requestListQuerySchema = z.object({
   status: requestStatusSchema.optional(),
-  mine: z.coerce.boolean().optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });

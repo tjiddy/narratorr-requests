@@ -214,28 +214,24 @@ export class RequestService {
   // --- admin decision --------------------------------------------------------
 
   async decide(adminId: number, pid: string, decision: DecisionBody): Promise<RequestRow> {
-    const row = await this.getByPublicId(pid);
-    if (!row) throw notFound('request not found');
-    if (row.status !== 'pending') {
-      throw conflict('NOT_PENDING', `request is ${row.status}, not pending`);
-    }
+    const existing = await this.getByPublicId(pid);
+    if (!existing) throw notFound('request not found');
 
     const now = new Date();
-    if (decision.action === 'deny') {
-      const [updated] = await this.db
-        .update(requests)
-        .set({ status: 'denied', decidedBy: adminId, decidedAt: now, note: decision.note ?? row.note })
-        .where(eq(requests.id, row.id))
-        .returning();
-      return updated ?? row;
-    }
-
-    const [approved] = await this.db
+    const nextStatus = decision.action === 'deny' ? 'denied' : 'approved';
+    // Atomic claim: transition ONLY while still pending. Two concurrent admins (or a
+    // double-submit) can't both win — the loser's UPDATE matches zero rows. This
+    // closes the check-then-update race and prevents approving a denied request.
+    const [claimed] = await this.db
       .update(requests)
-      .set({ status: 'approved', decidedBy: adminId, decidedAt: now, note: decision.note ?? row.note })
-      .where(eq(requests.id, row.id))
+      .set({ status: nextStatus, decidedBy: adminId, decidedAt: now, note: decision.note ?? existing.note })
+      .where(and(eq(requests.id, existing.id), eq(requests.status, 'pending')))
       .returning();
-    return this.handoff(approved ?? row);
+    if (!claimed) {
+      const fresh = await this.getByPublicId(pid);
+      throw conflict('NOT_PENDING', `request is ${fresh?.status ?? 'gone'}, not pending`);
+    }
+    return decision.action === 'approve' ? this.handoff(claimed) : claimed;
   }
 
   // --- Narratorr handoff -----------------------------------------------------
@@ -277,10 +273,30 @@ export class RequestService {
 
   // --- reconciliation (poller) ----------------------------------------------
 
-  /** Requests currently mid-flight that the poller should refresh. */
-  async findAcquiring(): Promise<RequestRow[]> {
+  /**
+   * Requests currently mid-flight that the poller should refresh. Ordered oldest-first
+   * and capped in SQL so a tick never does an unbounded read and the oldest in-flight
+   * requests are always serviced (no starvation from an in-memory slice of an
+   * unordered set). Strict per-row fair rotation (a `nextPollAt` cursor) is a follow-up.
+   */
+  async findAcquiring(limit = 100): Promise<RequestRow[]> {
     return this.db.query.requests.findMany({
       where: and(eq(requests.status, 'acquiring'), sql`${requests.narratorrAcquisitionId} IS NOT NULL`),
+      orderBy: requests.requestedAt,
+      limit,
+    });
+  }
+
+  /**
+   * Approved requests with no acquisition yet — i.e. the process died between
+   * approval and handoff. The poller re-runs the (idempotent) handoff to self-heal,
+   * so an approved request is never permanently stranded.
+   */
+  async findApprovedAwaitingHandoff(limit = 100): Promise<RequestRow[]> {
+    return this.db.query.requests.findMany({
+      where: and(eq(requests.status, 'approved'), sql`${requests.narratorrAcquisitionId} IS NULL`),
+      orderBy: requests.requestedAt,
+      limit,
     });
   }
 

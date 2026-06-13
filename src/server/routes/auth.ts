@@ -30,10 +30,15 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
 
   // OAuth callback — exchange code, upsert the user, mint a session cookie.
   a.get('/api/auth/callback', async (request, reply) => {
-    if (!deps.plexOidc) throw badRequest('NO_OIDC', 'Plex OIDC is not configured');
-    const fullUrl = `${request.protocol}://${request.host}${request.url}`;
-    const profile = await deps.plexOidc.handleCallback(fullUrl);
-    const user = await deps.users.upsertByPlex(profile, { ownerUsername: deps.plexOidc.ownerUsername });
+    const oidc = deps.plexOidc;
+    const oidcCfg = deps.config.plexOidc;
+    if (!oidc || !oidcCfg) throw badRequest('NO_OIDC', 'Plex OIDC is not configured');
+    // Reconstruct the callback URL from the CONFIGURED redirect URI plus only the
+    // incoming query (code/state) — never from the attacker-controllable Host header.
+    const callbackUrl = new URL(oidcCfg.redirectUri);
+    callbackUrl.search = new URL(request.url, callbackUrl.origin).search;
+    const profile = await oidc.handleCallback(callbackUrl.toString());
+    const user = await deps.users.upsertByPlex(profile, { ownerUsername: oidc.ownerUsername });
     setSessionCookie(reply, deps.config, user);
     return reply.redirect(postLoginRedirect);
   });
