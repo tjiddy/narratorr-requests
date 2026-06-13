@@ -14,7 +14,7 @@ import { SearchService } from './services/search.service.js';
 import { StatusPoller } from './services/status-poller.js';
 import { NarratorrClient } from './services/narratorr-client.js';
 import { PlexOidcService } from './services/plex-oidc.service.js';
-import { createMockNarratorrServer, MOCK_BASE_URL } from './mocks/narratorr-v1.js';
+import { MOCK_BASE_URL } from './mocks/constants.js';
 import { errorHandlerPlugin } from './plugins/error-handler.js';
 import { authPlugin } from './plugins/auth.js';
 import { registerRoutes } from './routes/index.js';
@@ -28,7 +28,9 @@ async function main(): Promise<void> {
   const db = createDb(config.databasePath);
 
   // Standalone mode: intercept the client's HTTP calls with the MSW contract mock.
+  // Lazily imported so msw/graphql never lands in a production (narratorr-mode) bundle.
   if (config.mode === 'standalone') {
+    const { createMockNarratorrServer } = await import('./mocks/narratorr-v1.js');
     createMockNarratorrServer().listen({ onUnhandledRequest: 'bypass' });
   }
 

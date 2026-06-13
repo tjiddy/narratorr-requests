@@ -8,10 +8,12 @@ import type {
 } from '../../shared/schemas/narratorr-v1.js';
 import { errorBody } from '../../shared/schemas/v1/common.js';
 import { publicId } from '../util/ids.js';
+import { MOCK_BASE_URL } from './constants.js';
 
 // Base origin the standalone client points at; MSW intercepts requests to it so
-// the whole app runs with no Narratorr instance.
-export const MOCK_BASE_URL = 'http://narratorr.mock';
+// the whole app runs with no Narratorr instance. (Defined in ./constants to keep
+// it importable without pulling msw.)
+export { MOCK_BASE_URL };
 
 // ---------------------------------------------------------------------------
 // Fixtures — a small mock Audible catalog. ASINs in PRE_IMPORTED simulate a book
