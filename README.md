@@ -71,6 +71,18 @@ misconfigured deployment fails fast rather than exposing an open admin. The buil
 `node:24-slim` image that runs as the non-root `node` user; the DB persists in the
 `narrator-request-data` volume (`/data`).
 
+### Published images
+
+CI (`.github/workflows/docker.yml`) builds a multi-arch (amd64/arm64) image and pushes to
+**Docker Hub `narratorr/narratorr-request`** and **GHCR `ghcr.io/tjiddy/narratorr-request`**:
+
+- **Release** — push a semver tag (`git tag v0.1.0 && git push origin v0.1.0`) → `:latest`, `:0.1.0`,
+  `:0.1` + a GitHub Release.
+- **Bleeding edge** — run the workflow manually (Actions → *Build & Push Docker Image* → Run) → `:edge`.
+
+Quality gates (lint/typecheck/test/build) run first, and the pushed image is smoke-tested before
+the job succeeds. Requires repo secrets **`DOCKERHUB_USERNAME`** and **`DOCKERHUB_TOKEN`**.
+
 ## Verify
 
 ```bash

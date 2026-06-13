@@ -6,8 +6,10 @@
 # session secret + your Narratorr URL/key, and set NODE_ENV=production + AUTH_BYPASS=0.
 services:
   narrator-request:
+    # Builds from local source by default. To run the published image instead,
+    # comment out `build:` and `docker compose pull` (tags published by .github/workflows/docker.yml).
     build: .
-    image: narrator-request:latest
+    image: narratorr/narratorr-request:latest
     container_name: narrator-request
     ports:
       - "${PORT:-3000}:3000"
