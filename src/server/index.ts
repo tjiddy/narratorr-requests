@@ -11,6 +11,7 @@ import { UserService } from './services/user.service.js';
 import { SettingsService } from './services/settings.service.js';
 import { RequestService } from './services/request.service.js';
 import { SearchService } from './services/search.service.js';
+import { StatusPoller } from './services/status-poller.js';
 import { NarratorrClient } from './services/narratorr-client.js';
 import { PlexOidcService } from './services/plex-oidc.service.js';
 import { createMockNarratorrServer, MOCK_BASE_URL } from './mocks/narratorr-v1.js';
@@ -83,6 +84,23 @@ async function main(): Promise<void> {
   app.log.info(
     `narrator-request on :${config.port} (mode=${config.mode}, auth=${config.authMode})`,
   );
+
+  // Reconcile in-flight acquisitions. Standalone polls fast (the mock advances
+  // over ~9s); a live Narratorr is polled gently.
+  const poller = new StatusPoller({
+    requests,
+    client: narratorr,
+    logger: app.log,
+    intervalSeconds: config.mode === 'standalone' ? 3 : 20,
+  });
+  poller.start();
+
+  const shutdown = () => {
+    poller.stop();
+    app.close().finally(() => process.exit(0));
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 main().catch((err) => {
