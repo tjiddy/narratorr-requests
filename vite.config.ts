@@ -21,10 +21,15 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    port: 5173,
+    // Dev ports are configurable so the app can run alongside sibling projects
+    // (Narratorr/earwitness) without colliding on 3000/5173.
+    port: Number(process.env.CLIENT_PORT) || 5173,
     proxy: {
       // Regex (not bare '/api') so it doesn't swallow the client's own /api.ts module.
-      '^/api/': { target: 'http://localhost:3000', changeOrigin: true },
+      '^/api/': {
+        target: `http://localhost:${Number(process.env.SERVER_PORT) || 3000}`,
+        changeOrigin: true,
+      },
     },
   },
 });
