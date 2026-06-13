@@ -1,0 +1,46 @@
+# narrator-request — single-container deploy.
+#
+# Out of the box `docker compose up` runs in STANDALONE + AUTH_BYPASS mode (built-in
+# /api/v1 mock, seeded dev admin) so you can smoke-test the image with zero config.
+# For a real deployment, copy .env.docker.example to .env, fill in Plex OIDC + a
+# session secret + your Narratorr URL/key, and set NODE_ENV=production + AUTH_BYPASS=0.
+services:
+  narrator-request:
+    build: .
+    image: narrator-request:latest
+    container_name: narrator-request
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      - narrator-request-data:/data
+    environment:
+      TZ: ${TZ:-UTC}
+      PORT: 3000
+      BIND_HOST: 0.0.0.0
+      DATABASE_PATH: /data/narrator-request.db
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      DEFAULT_REQUEST_QUOTA: ${DEFAULT_REQUEST_QUOTA:-10}
+
+      # --- Standalone smoke defaults (override in .env for production) ---
+      # AUTH_BYPASS makes every request the dev admin, so it's only safe on an
+      # isolated host — ALLOW_INSECURE_AUTH_BYPASS acknowledges the 0.0.0.0 bind.
+      NODE_ENV: ${NODE_ENV:-development}
+      AUTH_BYPASS: ${AUTH_BYPASS:-1}
+      ALLOW_INSECURE_AUTH_BYPASS: ${ALLOW_INSECURE_AUTH_BYPASS:-1}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-only-not-a-real-secret}
+
+      # --- Real deployment (leave blank for standalone) ---
+      # Narratorr coupling: set BOTH to switch to narratorr mode.
+      NARRATORR_URL: ${NARRATORR_URL:-}
+      NARRATORR_API_KEY: ${NARRATORR_API_KEY:-}
+      # Plex OIDC (required when AUTH_BYPASS=0). Set PLEX_ALLOWLIST or PLEX_OWNER_USERNAME.
+      PLEX_OIDC_ISSUER: ${PLEX_OIDC_ISSUER:-}
+      PLEX_OIDC_CLIENT_ID: ${PLEX_OIDC_CLIENT_ID:-}
+      PLEX_OIDC_CLIENT_SECRET: ${PLEX_OIDC_CLIENT_SECRET:-}
+      PLEX_OIDC_REDIRECT_URI: ${PLEX_OIDC_REDIRECT_URI:-}
+      PLEX_ALLOWLIST: ${PLEX_ALLOWLIST:-}
+      PLEX_OWNER_USERNAME: ${PLEX_OWNER_USERNAME:-}
+    restart: unless-stopped
+
+volumes:
+  narrator-request-data:

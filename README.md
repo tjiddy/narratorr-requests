@@ -41,6 +41,36 @@ Open http://localhost:5173 — search a (mocked) Audible catalog, request a book
 Auth mirrors the same idea: `AUTH_BYPASS=1` seeds a dev admin (no Plex needed); unset it and
 configure `PLEX_OIDC_*` to use the real Plex OIDC bridge.
 
+## Docker
+
+A single container runs everything (Fastify API + the built SPA), with the libSQL file on a
+named volume and migrations applied on boot. The image serves the SPA whenever a client build
+is present, so the container is the whole app — no separate web server.
+
+**Smoke test (standalone, zero config):**
+
+```bash
+docker compose up --build      # http://localhost:3000
+```
+
+Out of the box this runs in **standalone + AUTH_BYPASS** mode (built-in `/api/v1` mock, seeded
+dev admin) so you can confirm the image works with no Plex/Narratorr. `/api/health` reports
+readiness (it pings the DB), and the container has a matching `HEALTHCHECK`.
+
+**Real deployment:**
+
+```bash
+cp .env.docker.example .env     # fill SESSION_SECRET, PLEX_OIDC_*, NARRATORR_* …
+#                                 and set NODE_ENV=production, AUTH_BYPASS=0
+docker compose up -d --build
+```
+
+In production the app **refuses to start** without a `SESSION_SECRET`, refuses `AUTH_BYPASS`
+entirely, and (in Plex mode) requires `PLEX_ALLOWLIST` or `PLEX_OWNER_USERNAME` — so a
+misconfigured deployment fails fast rather than exposing an open admin. The build is a 3-stage
+`node:24-slim` image that runs as the non-root `node` user; the DB persists in the
+`narrator-request-data` volume (`/data`).
+
 ## Verify
 
 ```bash

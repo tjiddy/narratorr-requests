@@ -1,0 +1,29 @@
+# Dependencies & build outputs (rebuilt inside the image)
+node_modules/
+dist/
+coverage/
+
+# Local dev state
+.env
+.env.*
+*.db
+*.db-shm
+*.db-wal
+.reviews/
+docs/
+
+# VCS & editor
+.git/
+.gitignore
+.gitattributes
+.idea/
+.vscode/
+.claude/
+
+# Docs (keep README in the image, drop the rest)
+*.md
+!README.md
+
+*.log
+.DS_Store
+Thumbs.db

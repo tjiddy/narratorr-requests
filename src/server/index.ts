@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
@@ -60,9 +61,15 @@ async function main(): Promise<void> {
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
-  // Browser hardening in production (CSP, frame-ancestors, referrer policy, etc.).
-  // Skipped in dev so Vite's HMR/inline scripts aren't blocked.
-  if (config.isProd) {
+  // Serve the built SPA whenever a client build is present — the prod image, a bare
+  // `pnpm start`, or the standalone container. Under `pnpm dev` there's no build here
+  // and Vite serves the client instead.
+  const clientDir = path.join(APP_ROOT, 'dist', 'client');
+  const serveClient = existsSync(path.join(clientDir, 'index.html'));
+
+  // Browser hardening when we serve the SPA (CSP, frame-ancestors, referrer policy).
+  // Skipped under Vite dev so HMR/inline scripts aren't blocked.
+  if (serveClient) {
     await app.register(helmet, {
       contentSecurityPolicy: {
         directives: {
@@ -86,9 +93,7 @@ async function main(): Promise<void> {
 
   registerRoutes(app, deps);
 
-  // In production the server also serves the built SPA. In dev, Vite does.
-  if (config.isProd) {
-    const clientDir = path.join(APP_ROOT, 'dist', 'client');
+  if (serveClient) {
     await app.register(fastifyStatic, { root: clientDir, wildcard: false });
     app.setNotFoundHandler((request, reply) => {
       if (request.method === 'GET' && !request.url.startsWith('/api/')) {
