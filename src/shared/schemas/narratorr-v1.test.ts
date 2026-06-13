@@ -68,6 +68,10 @@ describe('v1Book', () => {
     expect(v1BookSchema.safeParse({ ...book, status: 'bogus' }).success).toBe(false);
     expect(v1BookSchema.safeParse({ ...book, id: 7 }).success).toBe(false);
   });
+  it('rejects a non-ISO createdAt', () => {
+    expect(v1BookSchema.safeParse({ ...book, createdAt: 'yesterday' }).success).toBe(false);
+    expect(v1BookSchema.safeParse({ ...book, createdAt: '2026-06-13' }).success).toBe(true);
+  });
 });
 
 describe('v1 acquisition', () => {

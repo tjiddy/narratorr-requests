@@ -166,6 +166,21 @@ describe('admin decisions + handoff', () => {
     });
   });
 
+  it('serializes concurrent decisions — exactly one wins, the other gets NOT_PENDING', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    const admin = await insertUser(db, { role: 'admin' });
+    const svc = new RequestService(db, client, policy());
+    const a = await svc.create(user.id, body('B1'));
+    const results = await Promise.allSettled([
+      svc.decide(admin.id, a.row.publicId, { action: 'approve', note: null }),
+      svc.decide(admin.id, a.row.publicId, { action: 'deny', note: null }),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({ code: 'NOT_PENDING' });
+  });
+
   it('marks a request failed (refundable) when handoff throws, and re-throws', async () => {
     const admin = await insertUser(db, { role: 'admin' });
     client.throwOnCreate = new NarratorrError(502, 'UPSTREAM', 'down');

@@ -100,6 +100,19 @@ describe('StatusPoller.pollOnce', () => {
     expect(row?.status).toBe('failed');
   });
 
+  it('recovers a stranded approved request (no acquisition) via idempotent handoff', async () => {
+    const user = await insertUser(db);
+    await db
+      .insert(requests)
+      .values({ publicId: 'rq_stranded', userId: user.id, asin: 'A9', title: 't', status: 'approved' });
+    client.status = 'downloading';
+    const summary = await poller.pollOnce();
+    expect(summary.transitioned).toBeGreaterThanOrEqual(1);
+    const [row] = await db.select().from(requests).where(eq(requests.asin, 'A9'));
+    expect(row?.status).toBe('acquiring');
+    expect(row?.narratorrAcquisitionId).toBe('aq_1');
+  });
+
   it('counts a transient upstream error without changing status', async () => {
     await seedAcquiring('A1');
     client.error = new NarratorrError(503, 'UPSTREAM', 'flaky');

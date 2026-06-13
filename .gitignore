@@ -8,3 +8,6 @@ coverage/
 *.db-shm
 *.db-wal
 .DS_Store
+
+# harness transient
+.claude/scheduled_tasks.lock
