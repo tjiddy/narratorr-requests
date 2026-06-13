@@ -66,7 +66,7 @@ export class NarratorrClient {
   async createAcquisition(asin: string, idempotencyKey?: string): Promise<V1Acquisition> {
     return this.request('POST', '/api/v1/acquisitions', v1AcquisitionSchema, {
       body: { asin },
-      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
     });
   }
 

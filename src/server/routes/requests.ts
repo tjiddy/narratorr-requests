@@ -1,0 +1,64 @@
+import { z } from 'zod';
+import type { FastifyInstance } from 'fastify';
+import type { ZodTypeProvider } from 'fastify-type-provider-zod';
+import type { AppDeps } from '../services/deps.js';
+import {
+  createRequestBodySchema,
+  requestDtoSchema,
+  requestListQuerySchema,
+} from '../../shared/schemas/request.js';
+import { listEnvelope } from '../../shared/schemas/v1/common.js';
+import { requireUser } from '../plugins/auth.js';
+import { forbidden, notFound } from '../util/errors.js';
+
+const pidParams = z.object({ publicId: z.string() });
+const requestListSchema = listEnvelope(requestDtoSchema);
+const DEFAULT_LIMIT = 50;
+
+export function registerRequestRoutes(app: FastifyInstance, deps: AppDeps): void {
+  const a = app.withTypeProvider<ZodTypeProvider>();
+
+  // Create a request (the requester is always the authenticated user).
+  a.post(
+    '/api/requests',
+    { schema: { body: createRequestBodySchema, response: { 200: requestDtoSchema, 201: requestDtoSchema } } },
+    async (request, reply) => {
+      const user = requireUser(request);
+      const { row, created } = await deps.requests.create(user.id, request.body);
+      const dto = deps.requests.toDto(row, { publicId: user.publicId, plexUsername: user.plexUsername });
+      return reply.status(created ? 201 : 200).send(dto);
+    },
+  );
+
+  // List the caller's own requests.
+  a.get(
+    '/api/requests',
+    { schema: { querystring: requestListQuerySchema, response: { 200: requestListSchema } } },
+    async (request) => {
+      const user = requireUser(request);
+      return deps.requests.list({
+        userId: user.id,
+        ...(request.query.status !== undefined ? { status: request.query.status } : {}),
+        limit: request.query.limit ?? DEFAULT_LIMIT,
+        offset: request.query.offset ?? 0,
+      });
+    },
+  );
+
+  // Fetch a single request — owner or admin only.
+  a.get(
+    '/api/requests/:publicId',
+    { schema: { params: pidParams, response: { 200: requestDtoSchema } } },
+    async (request) => {
+      const user = requireUser(request);
+      const row = await deps.requests.getByPublicId(request.params.publicId);
+      if (!row) throw notFound('request not found');
+      if (row.userId !== user.id && user.role !== 'admin') throw forbidden();
+      const requester = await deps.users.getById(row.userId);
+      return deps.requests.toDto(row, {
+        publicId: requester?.publicId ?? user.publicId,
+        plexUsername: requester?.plexUsername ?? user.plexUsername,
+      });
+    },
+  );
+}

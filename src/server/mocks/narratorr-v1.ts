@@ -1,5 +1,5 @@
 import { http, HttpResponse, type RequestHandler } from 'msw';
-import { setupServer, type SetupServerApi } from 'msw/node';
+import { setupServer } from 'msw/node';
 import type {
   V1AudibleResult,
   V1Acquisition,
@@ -14,16 +14,11 @@ import { publicId } from '../util/ids.js';
 export const MOCK_BASE_URL = 'http://narratorr.mock';
 
 // ---------------------------------------------------------------------------
-// Fixtures — a small mock Audible catalog. `inLibrary: true` entries simulate a
-// book Narratorr already imported, so re-requesting one exercises the
-// "already available" retry path (PLAN: re-request of imported → already
-// available).
+// Fixtures — a small mock Audible catalog. ASINs in PRE_IMPORTED simulate a book
+// Narratorr already imported, so re-requesting one exercises the "already
+// available" retry path (PLAN: re-request of imported → already available).
 // ---------------------------------------------------------------------------
-interface Fixture extends V1AudibleResult {
-  inLibrary?: boolean;
-}
-
-const CATALOG: Fixture[] = [
+const CATALOG: V1AudibleResult[] = [
   {
     asin: 'B07KCQDQR9',
     title: 'Project Hail Mary',
@@ -69,7 +64,6 @@ const CATALOG: Fixture[] = [
     seriesName: 'Mistborn',
     seriesPosition: 1,
     language: 'english',
-    inLibrary: true,
   },
   {
     asin: 'B0036I54I6',
@@ -106,7 +100,6 @@ const CATALOG: Fixture[] = [
     seriesName: 'Dune',
     seriesPosition: 1,
     language: 'english',
-    inLibrary: true,
   },
   {
     asin: 'B008V94T9M',
@@ -123,6 +116,10 @@ const CATALOG: Fixture[] = [
 ];
 
 const byAsin = new Map(CATALOG.map((f) => [f.asin, f]));
+
+// ASINs that simulate books Narratorr has already imported (acquisition is
+// immediately `imported`).
+const PRE_IMPORTED = new Set<string>(['B017V4IM1G', 'B075FYBP8H']);
 
 // ---------------------------------------------------------------------------
 // In-memory acquisition state with a time-based lifecycle. A fresh acquisition
@@ -176,7 +173,7 @@ function toAcquisitionDto(state: AcqState, nowMs: number): V1Acquisition {
   };
 }
 
-function fixtureToBook(f: Fixture, bookId: string, status: V1Book['status']): V1Book {
+function fixtureToBook(f: V1AudibleResult, bookId: string, status: V1Book['status']): V1Book {
   return {
     id: bookId,
     title: f.title,
@@ -191,7 +188,7 @@ function fixtureToBook(f: Fixture, bookId: string, status: V1Book['status']): V1
   };
 }
 
-function requireApiKey(request: Request): HttpResponse | null {
+function requireApiKey(request: Request): Response | null {
   if (!request.headers.get('x-api-key')) {
     return HttpResponse.json(errorBody('UNAUTHORIZED', 'Missing X-Api-Key'), { status: 401 });
   }
@@ -210,7 +207,7 @@ export function narratorrV1Handlers(baseUrl: string = MOCK_BASE_URL): RequestHan
       const data: V1AudibleResult[] = CATALOG.filter((f) => {
         const hay = `${f.title} ${f.authors.map((a) => a.name).join(' ')} ${f.seriesName ?? ''}`.toLowerCase();
         return hay.includes(q);
-      }).map(({ inLibrary: _inLibrary, ...rest }) => rest);
+      });
       return HttpResponse.json({ data });
     }),
 
@@ -238,13 +235,12 @@ export function narratorrV1Handlers(baseUrl: string = MOCK_BASE_URL): RequestHan
 
       let state = acqByAsin.get(effectiveAsin);
       if (!state) {
-        const fixture = byAsin.get(effectiveAsin)!;
         state = {
           id: publicId('aq'),
           asin: effectiveAsin,
           bookId: publicId('bk'),
           createdAtMs: Date.now(),
-          preImported: Boolean(fixture.inLibrary),
+          preImported: PRE_IMPORTED.has(effectiveAsin),
         };
         acqByAsin.set(effectiveAsin, state);
         acqById.set(state.id, state);
@@ -279,6 +275,6 @@ export function narratorrV1Handlers(baseUrl: string = MOCK_BASE_URL): RequestHan
 }
 
 /** A configured msw/node server for standalone boot. */
-export function createMockNarratorrServer(baseUrl: string = MOCK_BASE_URL): SetupServerApi {
+export function createMockNarratorrServer(baseUrl: string = MOCK_BASE_URL): ReturnType<typeof setupServer> {
   return setupServer(...narratorrV1Handlers(baseUrl));
 }
