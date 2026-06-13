@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -65,7 +65,7 @@ jobs:
 
       - name: Docker metadata (tag matrix)
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             ${{ env.IMAGE_NAME }}
@@ -79,6 +79,8 @@ jobs:
 
       - name: Set up QEMU (for ARM64)
         uses: docker/setup-qemu-action@v4
+        with:
+          cache-image: false   # skip the binfmt image cache — avoids the cache-reserve race warning
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -147,6 +149,6 @@ jobs:
 
       - name: Create GitHub Release
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
