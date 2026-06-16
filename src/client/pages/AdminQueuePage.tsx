@@ -3,6 +3,7 @@ import type { RequestDto, RequestStatus } from '@shared/schemas/request';
 import { REQUEST_STATUSES } from '@shared/schemas/request';
 import { useAdminQueue, useDecide } from '../hooks';
 import { StatusBadge } from '../components/StatusBadge';
+import { REQUEST_STATUS_LABELS } from '../components/status';
 import { EmptyState } from '../components/EmptyState';
 import { InboxIcon } from '../components/icons';
 import { Button } from '../components/Button';
@@ -65,7 +66,7 @@ export function AdminQueuePage() {
           <option value="all">All</option>
           {REQUEST_STATUSES.map((s) => (
             <option key={s} value={s}>
-              {s}
+              {REQUEST_STATUS_LABELS[s]}
             </option>
           ))}
         </select>
@@ -75,7 +76,7 @@ export function AdminQueuePage() {
         <EmptyState
           icon={InboxIcon}
           title="Queue empty"
-          subtitle={`Nothing here${filter !== 'all' ? ` (${filter})` : ''}.`}
+          subtitle={`Nothing here${filter !== 'all' ? ` (${REQUEST_STATUS_LABELS[filter]})` : ''}.`}
         />
       )}
       {data && data.data.length > 0 && (

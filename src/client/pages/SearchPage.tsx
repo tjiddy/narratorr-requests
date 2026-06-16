@@ -1,20 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import type { RequestStatus } from '@shared/schemas/request';
 import { useSearch, useMyRequests } from '../hooks';
 import { BookCard } from '../components/BookCard';
 import { EmptyState } from '../components/EmptyState';
 import { SearchIcon } from '../components/icons';
+import { Button } from '../components/Button';
 import { ApiError } from '../api';
 
 export function SearchPage() {
   const [input, setInput] = useState('');
   const [q, setQ] = useState('');
-
-  // Debounce the query so we don't fire (throttled) searches on every keystroke.
-  useEffect(() => {
-    const t = setTimeout(() => setQ(input), 350);
-    return () => clearTimeout(t);
-  }, [input]);
 
   const search = useSearch(q);
   const mine = useMyRequests();
@@ -24,6 +19,13 @@ export function SearchPage() {
     for (const r of mine.data?.data ?? []) map.set(r.asin, r.status);
     return map;
   }, [mine.data]);
+
+  // Search on submit only — each query round-trips to narratorr → Audnexus, so we
+  // never fire on keystroke (that hammered the metadata provider and tripped rate limits).
+  const onSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    setQ(input.trim());
+  };
 
   return (
     <div>
@@ -36,17 +38,22 @@ export function SearchPage() {
         </p>
       </div>
 
-      <input
-        autoFocus
-        type="search"
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        placeholder="Search by title, author, or series…"
-        className="w-full rounded-xl border border-border bg-card px-4 py-3 text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-      />
+      <form onSubmit={onSubmit} className="flex gap-2">
+        <input
+          autoFocus
+          type="search"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Search by title, author, or series…"
+          className="w-full rounded-xl border border-border bg-card px-4 py-3 text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+        />
+        <Button type="submit" variant="primary" icon={SearchIcon} loading={search.isFetching} disabled={input.trim() === ''}>
+          Search
+        </Button>
+      </form>
 
       <div className="mt-6">
-        {q.trim() === '' && <p className="text-sm text-muted-foreground/70">Start typing to search.</p>}
+        {q.trim() === '' && <p className="text-sm text-muted-foreground/70">Search for a book to request.</p>}
         {search.isFetching && <p className="text-sm text-muted-foreground/70">Searching…</p>}
         {search.error && (
           <p className="text-sm text-destructive">
