@@ -99,6 +99,39 @@ export class UserService {
     return created;
   }
 
+  /**
+   * Upsert the operator's admin from an Authelia OIDC profile, keyed on the Authelia
+   * subject. Authelia login is the operator's own SSO — it is ALWAYS `admin` (the
+   * who-gets-in gate is Authelia itself, plus the optional subject pin in the OIDC
+   * service). Returning users refresh their display name/email; role is never downgraded.
+   */
+  async upsertAutheliaAdmin(profile: { subject: string; username: string; email?: string | null }): Promise<UserRow> {
+    const existing = await this.db.query.users.findFirst({
+      where: eq(users.autheliaSubject, profile.subject),
+    });
+    if (existing) {
+      const [updated] = await this.db
+        .update(users)
+        .set({ plexUsername: profile.username, email: profile.email ?? existing.email })
+        .where(eq(users.id, existing.id))
+        .returning();
+      return updated ?? existing;
+    }
+    const [created] = await this.db
+      .insert(users)
+      .values({
+        publicId: publicId('us'),
+        autheliaSubject: profile.subject,
+        plexUsername: profile.username,
+        email: profile.email ?? null,
+        thumb: null,
+        role: 'admin',
+      })
+      .returning();
+    if (!created) throw new Error('failed to create authelia admin');
+    return created;
+  }
+
   /** Idempotently ensure the AUTH_BYPASS dev admin exists; returns it. */
   async ensureDevAdmin(): Promise<UserRow> {
     const existing = await this.db.query.users.findFirst({

@@ -16,7 +16,6 @@ CREATE TABLE `requests` (
 	`narrator` text,
 	`cover_url` text,
 	`status` text DEFAULT 'pending' NOT NULL,
-	`narratorr_acquisition_id` text,
 	`narratorr_book_id` text,
 	`note` text,
 	`user_caused_failure` integer DEFAULT false NOT NULL,
@@ -36,7 +35,8 @@ CREATE UNIQUE INDEX `idx_requests_user_asin_active` ON `requests` (`user_id`,`as
 CREATE TABLE `users` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`public_id` text NOT NULL,
-	`plex_id` text NOT NULL,
+	`plex_id` text,
+	`authelia_subject` text,
 	`plex_username` text NOT NULL,
 	`email` text,
 	`thumb` text,
@@ -47,4 +47,5 @@ CREATE TABLE `users` (
 --> statement-breakpoint
 CREATE UNIQUE INDEX `users_public_id_unique` ON `users` (`public_id`);--> statement-breakpoint
 CREATE UNIQUE INDEX `users_plex_id_unique` ON `users` (`plex_id`);--> statement-breakpoint
+CREATE UNIQUE INDEX `users_authelia_subject_unique` ON `users` (`authelia_subject`);--> statement-breakpoint
 CREATE INDEX `idx_users_plex_username` ON `users` (`plex_username`);

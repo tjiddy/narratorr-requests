@@ -12,7 +12,11 @@ export const users = sqliteTable(
   {
     id: integer('id').primaryKey({ autoIncrement: true }),
     publicId: text('public_id').notNull().unique(), // us_...
-    plexId: text('plex_id').notNull().unique(),
+    // External identity — exactly one is set per user. Plex covers family/requesters;
+    // Authelia covers the operator's admin SSO. Both nullable + unique (SQLite allows
+    // multiple NULLs). `plexUsername` holds the display name for either provider.
+    plexId: text('plex_id').unique(),
+    autheliaSubject: text('authelia_subject').unique(),
     plexUsername: text('plex_username').notNull(),
     email: text('email'),
     thumb: text('thumb'),

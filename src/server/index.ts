@@ -15,7 +15,13 @@ import { RequestService } from './services/request.service.js';
 import { SearchService } from './services/search.service.js';
 import { StatusPoller } from './services/status-poller.js';
 import { NarratorrClient } from './services/narratorr-client.js';
-import { PlexOidcService } from './services/plex-oidc.service.js';
+import {
+  OidcService,
+  mapPlexClaims,
+  plexAllowlistGate,
+  mapAutheliaClaims,
+  autheliaAdminGate,
+} from './services/oidc.service.js';
 import { MOCK_BASE_URL } from './mocks/constants.js';
 import { errorHandlerPlugin } from './plugins/error-handler.js';
 import { authPlugin } from './plugins/auth.js';
@@ -51,11 +57,24 @@ async function main(): Promise<void> {
     autoApproveRoles: settingsRow.autoApproveRoles as Role[],
   });
   const search = new SearchService(narratorr);
-  const plexOidc = config.plexOidc ? new PlexOidcService(config.plexOidc) : null;
+  const plexOidc = config.plexOidc
+    ? new OidcService(
+        { ...config.plexOidc, scope: 'openid profile email', label: 'Plex' },
+        mapPlexClaims,
+        plexAllowlistGate(config.plexOidc.allowlist),
+      )
+    : null;
+  const autheliaOidc = config.autheliaOidc
+    ? new OidcService(
+        { ...config.autheliaOidc, scope: 'openid profile email', label: 'Authelia' },
+        mapAutheliaClaims,
+        autheliaAdminGate(config.autheliaOidc.adminSubject),
+      )
+    : null;
 
   if (config.authMode === 'bypass') await users.ensureDevAdmin();
 
-  const deps: AppDeps = { config, db, users, settings, requests, search, plexOidc };
+  const deps: AppDeps = { config, db, users, settings, requests, search, plexOidc, autheliaOidc };
 
   const app = Fastify({ logger: { level: config.isDev ? 'info' : 'warn' } }).withTypeProvider<ZodTypeProvider>();
   app.setValidatorCompiler(validatorCompiler);

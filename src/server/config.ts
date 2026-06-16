@@ -71,6 +71,13 @@ const envSchema = z.object({
   PLEX_OIDC_REDIRECT_URI: z.string().optional(),
   PLEX_ALLOWLIST: csv,
   PLEX_OWNER_USERNAME: z.string().optional(),
+  // Authelia OIDC — optional second provider for the operator's own admin login.
+  AUTHELIA_OIDC_ISSUER: z.string().optional(),
+  AUTHELIA_OIDC_CLIENT_ID: z.string().optional(),
+  AUTHELIA_OIDC_CLIENT_SECRET: z.string().optional(),
+  AUTHELIA_OIDC_REDIRECT_URI: z.string().optional(),
+  // Optional pin: only this exact Authelia `sub` may sign in (belt-and-suspenders).
+  AUTHELIA_ADMIN_SUBJECT: z.string().optional(),
 
   // Requests. Validated here (fail-fast, like PORT): a non-negative integer, with
   // blank/0 meaning unlimited (null). Rejects junk like "10abc" and negatives.
@@ -168,6 +175,40 @@ if (authMode === 'plex') {
   };
 }
 
+// Authelia OIDC: OPTIONAL additional provider (operator's own admin SSO), available
+// only in real-auth (plex) mode. Assembled when the issuer is set; a partial config
+// fails fast like the Plex one.
+let autheliaOidc: {
+  issuer: string;
+  clientId: string;
+  clientSecret: string | undefined;
+  redirectUri: string;
+  adminSubject: string | null;
+} | null = null;
+
+if (authMode === 'plex' && env.AUTHELIA_OIDC_ISSUER) {
+  const missing = (
+    [
+      ['AUTHELIA_OIDC_CLIENT_ID', env.AUTHELIA_OIDC_CLIENT_ID],
+      ['AUTHELIA_OIDC_REDIRECT_URI', env.AUTHELIA_OIDC_REDIRECT_URI],
+    ] as const
+  )
+    .filter(([, v]) => !v)
+    .map(([k]) => k);
+  if (missing.length) {
+    throw new Error(
+      `Authelia OIDC is partially configured (AUTHELIA_OIDC_ISSUER set) but missing: ${missing.join(', ')}.`,
+    );
+  }
+  autheliaOidc = {
+    issuer: env.AUTHELIA_OIDC_ISSUER,
+    clientId: env.AUTHELIA_OIDC_CLIENT_ID as string,
+    clientSecret: env.AUTHELIA_OIDC_CLIENT_SECRET,
+    redirectUri: env.AUTHELIA_OIDC_REDIRECT_URI as string,
+    adminSubject: env.AUTHELIA_ADMIN_SUBJECT ?? null,
+  };
+}
+
 // Parsed + validated in the env schema (blank/0 → unlimited).
 const defaultRequestQuota = env.DEFAULT_REQUEST_QUOTA;
 
@@ -186,6 +227,7 @@ export const config = {
       : null,
   authMode,
   plexOidc,
+  autheliaOidc,
   defaultRequestQuota,
   /** Rolling quota window in days (PLAN decision #5). */
   quotaWindowDays: 30,

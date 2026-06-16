@@ -1,1 +1,0 @@
-ALTER TABLE `requests` DROP COLUMN `narratorr_acquisition_id`;

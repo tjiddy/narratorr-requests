@@ -12,6 +12,13 @@ export function LoginPage() {
         >
           Sign in with Plex
         </a>
+        {/* Operator admin SSO — only wired up if Authelia OIDC is configured. */}
+        <a
+          href="/api/auth/authelia/login"
+          className="mt-4 inline-block text-xs text-muted-foreground/70 underline-offset-4 hover:text-muted-foreground hover:underline"
+        >
+          Admin sign-in
+        </a>
       </div>
     </div>
   );

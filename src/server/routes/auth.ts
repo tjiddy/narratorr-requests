@@ -38,7 +38,26 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
     const callbackUrl = new URL(oidcCfg.redirectUri);
     callbackUrl.search = new URL(request.url, callbackUrl.origin).search;
     const profile = await oidc.handleCallback(callbackUrl.toString());
-    const user = await deps.users.upsertByPlex(profile, { ownerUsername: oidc.ownerUsername });
+    const user = await deps.users.upsertByPlex(profile, { ownerUsername: oidcCfg.ownerUsername });
+    setSessionCookie(reply, deps.config, user);
+    return reply.redirect(postLoginRedirect);
+  });
+
+  // Operator admin SSO via Authelia (optional second provider). Mirrors the Plex
+  // flow; any account that clears Authelia's gate (+ the optional subject pin) is admin.
+  a.get('/api/auth/authelia/login', async (_request, reply) => {
+    if (!deps.autheliaOidc) throw badRequest('NO_OIDC', 'Authelia login is not configured');
+    return reply.redirect(await deps.autheliaOidc.buildAuthUrl());
+  });
+
+  a.get('/api/auth/authelia/callback', async (request, reply) => {
+    const oidc = deps.autheliaOidc;
+    const oidcCfg = deps.config.autheliaOidc;
+    if (!oidc || !oidcCfg) throw badRequest('NO_OIDC', 'Authelia login is not configured');
+    const callbackUrl = new URL(oidcCfg.redirectUri);
+    callbackUrl.search = new URL(request.url, callbackUrl.origin).search;
+    const profile = await oidc.handleCallback(callbackUrl.toString());
+    const user = await deps.users.upsertAutheliaAdmin(profile);
     setSessionCookie(reply, deps.config, user);
     return reply.redirect(postLoginRedirect);
   });
