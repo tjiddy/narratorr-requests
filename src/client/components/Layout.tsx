@@ -36,7 +36,7 @@ export function Layout({ me }: { me: MeDto }) {
           </span>
           <nav className="flex items-center gap-1">
             <NavLink to="/" end className={linkClass}>
-              Discover
+              Request
             </NavLink>
             <NavLink to="/requests" className={linkClass}>
               My Requests

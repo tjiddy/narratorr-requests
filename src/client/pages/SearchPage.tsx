@@ -31,7 +31,7 @@ export function SearchPage() {
     <div>
       <div className="mb-6">
         <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">
-          Discover audiobooks
+          Request audiobooks
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Search the catalog and request what you want to listen to.

@@ -36,7 +36,7 @@ export function MyRequestsPage() {
         <EmptyState
           icon={InboxIcon}
           title="No requests yet"
-          subtitle="You haven’t requested anything yet — head to Discover to find your next listen."
+          subtitle="You haven’t requested anything yet — find your next listen and request it."
         />
       )}
       {data && data.data.length > 0 && (
