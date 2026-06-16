@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { V1AudibleResult } from '@shared/schemas/narratorr-v1';
 import type { RequestStatus } from '@shared/schemas/request';
-import type { Role } from '@shared/schemas/user';
+import type { UpdateUserBody } from '@shared/schemas/user';
 import {
   getMe,
   searchCatalog,
@@ -12,7 +12,8 @@ import {
   requestBookFrom,
   decideRequest,
   listUsers,
-  setUserRole,
+  updateUser,
+  listUserRequests,
   ApiError,
 } from './api';
 
@@ -57,15 +58,18 @@ export function useRequestBook() {
 export const useUsers = () =>
   useQuery({ queryKey: ['admin', 'users'], queryFn: listUsers });
 
-export function useSetUserRole() {
+export const useUserRequests = (publicId: string) =>
+  useQuery({ queryKey: ['admin', 'users', publicId, 'requests'], queryFn: () => listUserRequests(publicId) });
+
+export function useUpdateUser() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { publicId: string; role: Role }) => setUserRole(v.publicId, v.role),
+    mutationFn: (v: { publicId: string; patch: UpdateUserBody }) => updateUser(v.publicId, v.patch),
     onSuccess: (user) => {
-      toast.success(`${user.plexUsername} is now ${user.role === 'admin' ? 'an admin' : 'a user'}`);
+      toast.success(`Saved changes to ${user.plexUsername}`);
       void qc.invalidateQueries({ queryKey: ['admin', 'users'] });
     },
-    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Failed to update role'),
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Failed to update user'),
   });
 }
 

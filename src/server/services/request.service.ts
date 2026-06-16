@@ -103,7 +103,7 @@ export class RequestService {
    * are unlimited; everyone else gets their per-user override or the app default.
    */
   resolveLimit(user: { role: Role; requestQuota: number | null }): number | null {
-    if (this.isAutoApprove(user.role)) return null;
+    if (user.role === 'admin') return null; // admins unlimited; everyone else is capped
     return user.requestQuota ?? this.policy.defaultQuota;
   }
 
@@ -159,10 +159,11 @@ export class RequestService {
     });
     if (existing) return { row: existing, created: false };
 
-    const autoApprove = this.policy.autoApproveRoles.includes(user.role);
-
-    if (!autoApprove) {
-      const usage = await this.quotaUsage(userId, this.resolveLimit(user));
+    // Quota applies to everyone with a limit (only admins are unlimited) — auto-approved
+    // users included. Auto-approve only decides pending-vs-approved, not the cap.
+    const limit = this.resolveLimit(user);
+    if (limit !== null) {
+      const usage = await this.quotaUsage(userId, limit);
       if (usage.remaining !== null && usage.remaining <= 0) {
         throw tooManyRequests(
           'QUOTA_EXCEEDED',
@@ -170,6 +171,9 @@ export class RequestService {
         );
       }
     }
+
+    // Auto-approve when the role auto-approves (admin) OR the user is individually flagged.
+    const autoApprove = this.isAutoApprove(user.role) || user.autoApprove;
 
     const now = new Date();
     let row: RequestRow;

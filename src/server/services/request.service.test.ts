@@ -88,6 +88,21 @@ describe('RequestService.create', () => {
     const { row } = await svc.create(admin.id, body('B1'));
     expect(row.status).toBe('available');
   });
+
+  it('auto-approves a per-user flagged (non-admin) user and hands off', async () => {
+    const user = await insertUser(db, { role: 'user', autoApprove: true });
+    const svc = new RequestService(db, client, policy());
+    const { row } = await svc.create(user.id, body('B1'));
+    expect(row.status).toBe('acquiring'); // skipped pending → handed off (FakeClient → searching)
+    expect(client.added).toEqual(['B1']);
+  });
+
+  it('still enforces quota for an auto-approve user (auto-approve ≠ unlimited)', async () => {
+    const user = await insertUser(db, { role: 'user', autoApprove: true });
+    const svc = new RequestService(db, client, policy({ defaultQuota: 1 }));
+    await svc.create(user.id, body('B1'));
+    await expect(svc.create(user.id, body('B2'))).rejects.toMatchObject({ code: 'QUOTA_EXCEEDED' });
+  });
 });
 
 describe('quota enforcement (rolling window)', () => {

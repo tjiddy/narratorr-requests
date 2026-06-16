@@ -21,8 +21,11 @@ export const users = sqliteTable(
     email: text('email'),
     thumb: text('thumb'),
     role: text('role', { enum: USER_ROLES }).notNull().default('user'),
-    // Per-user override of the app default. null = unlimited.
+    // Per-user override of the app default. null = use the app default.
     requestQuota: integer('request_quota'),
+    // Per-user auto-approve: this user's requests skip the pending queue. Orthogonal
+    // to quota — an auto-approved user's requests still count against their limit.
+    autoApprove: integer('auto_approve', { mode: 'boolean' }).notNull().default(false),
     createdAt: integer('created_at', { mode: 'timestamp' })
       .notNull()
       .default(sql`(unixepoch())`),

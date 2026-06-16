@@ -1,4 +1,4 @@
-import type { MeDto, UserDto, Role } from '@shared/schemas/user';
+import type { MeDto, UserDto, UpdateUserBody } from '@shared/schemas/user';
 import type { RequestDto, RequestStatus } from '@shared/schemas/request';
 import type { V1AudibleResult } from '@shared/schemas/narratorr-v1';
 import type { ListEnvelope } from '@shared/schemas/v1/common';
@@ -70,11 +70,14 @@ export const decideRequest = (publicId: string, action: 'approve' | 'deny', note
 export const listUsers = () =>
   fetch('/api/admin/users', opts()).then(parse<ListEnvelope<UserDto>>);
 
-export const setUserRole = (publicId: string, role: Role) =>
+export const updateUser = (publicId: string, patch: UpdateUserBody) =>
   fetch(`/api/admin/users/${publicId}`, opts({
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ role }),
+    body: JSON.stringify(patch),
   })).then(parse<UserDto>);
+
+export const listUserRequests = (publicId: string) =>
+  fetch(`/api/admin/users/${publicId}/requests`, opts()).then(parse<ListEnvelope<RequestDto>>);
 
 export const logout = () => fetch('/api/auth/logout', opts({ method: 'POST' })).then(parse<{ ok: true }>);

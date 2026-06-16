@@ -1,7 +1,7 @@
 import { asc, eq, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
 import { users, type UserRow } from '../../db/schema.js';
-import type { Role, UserDto } from '../../shared/schemas/user.js';
+import type { Role, UserDto, UpdateUserBody } from '../../shared/schemas/user.js';
 import type { AuthUser } from '../types.js';
 import { publicId } from '../util/ids.js';
 import { notFound } from '../util/errors.js';
@@ -36,6 +36,7 @@ export class UserService {
       thumb: row.thumb,
       role: row.role,
       requestQuota: row.requestQuota,
+      autoApprove: row.autoApprove,
       createdAt: row.createdAt.toISOString(),
     };
   }
@@ -53,14 +54,20 @@ export class UserService {
     return this.db.query.users.findMany({ orderBy: asc(users.createdAt) });
   }
 
-  /** Set a user's role (admin Users page). The "can't change your own role"
-   *  guard lives in the route, where the acting admin's identity is known. */
-  async setRole(pid: string, role: Role): Promise<UserRow> {
-    const [updated] = await this.db
-      .update(users)
-      .set({ role })
-      .where(eq(users.publicId, pid))
-      .returning();
+  /** Partial-update a user (admin Users page): role, per-user quota override, and/or
+   *  the auto-approve flag. The "can't change your own role" guard lives in the route,
+   *  where the acting admin's identity is known. */
+  async updateUser(pid: string, patch: UpdateUserBody): Promise<UserRow> {
+    const set: Partial<Pick<UserRow, 'role' | 'requestQuota' | 'autoApprove'>> = {};
+    if (patch.role !== undefined) set.role = patch.role;
+    if (patch.requestQuota !== undefined) set.requestQuota = patch.requestQuota;
+    if (patch.autoApprove !== undefined) set.autoApprove = patch.autoApprove;
+    if (Object.keys(set).length === 0) {
+      const existing = await this.getByPublicId(pid);
+      if (!existing) throw notFound('user not found');
+      return existing;
+    }
+    const [updated] = await this.db.update(users).set(set).where(eq(users.publicId, pid)).returning();
     if (!updated) throw notFound('user not found');
     return updated;
   }

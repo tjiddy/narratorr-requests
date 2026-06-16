@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { AppDeps } from '../services/deps.js';
 import { decisionBodySchema, requestDtoSchema, requestListQuerySchema } from '../../shared/schemas/request.js';
-import { userDtoSchema, updateUserRoleBodySchema } from '../../shared/schemas/user.js';
+import { userDtoSchema, updateUserBodySchema } from '../../shared/schemas/user.js';
 import { listEnvelope, prefixedId } from '../../shared/schemas/v1/common.js';
 import { requireAdmin } from '../plugins/auth.js';
 import { badRequest, notFound } from '../util/errors.js';
@@ -58,18 +58,36 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AppDeps): void {
     },
   );
 
-  // Promote/demote a user. Self-guard: an admin can never change their OWN role,
-  // so they can't accidentally lock the last admin out of the admin surface.
+  // Update a user — role, quota override, and/or auto-approve. Self-guard: an admin
+  // can never change their OWN role, so the last admin can't be locked out (changing
+  // your own quota/auto-approve is harmless and allowed).
   a.patch(
     '/api/admin/users/:publicId',
-    { schema: { params: userPidParams, body: updateUserRoleBodySchema, response: { 200: userDtoSchema } } },
+    { schema: { params: userPidParams, body: updateUserBodySchema, response: { 200: userDtoSchema } } },
     async (request) => {
       const admin = requireAdmin(request);
-      if (request.params.publicId === admin.publicId) {
+      if (request.params.publicId === admin.publicId && request.body.role !== undefined) {
         throw badRequest('SELF_ROLE', "you can't change your own role");
       }
-      const updated = await deps.users.setRole(request.params.publicId, request.body.role);
+      const updated = await deps.users.updateUser(request.params.publicId, request.body);
       return deps.users.toDto(updated);
+    },
+  );
+
+  // A single user's request history (admin Users detail view).
+  a.get(
+    '/api/admin/users/:publicId/requests',
+    { schema: { params: userPidParams, querystring: requestListQuerySchema, response: { 200: requestListSchema } } },
+    async (request) => {
+      requireAdmin(request);
+      const user = await deps.users.getByPublicId(request.params.publicId);
+      if (!user) throw notFound('user not found');
+      return deps.requests.list({
+        userId: user.id,
+        ...(request.query.status !== undefined ? { status: request.query.status } : {}),
+        limit: request.query.limit ?? DEFAULT_LIMIT,
+        offset: request.query.offset ?? 0,
+      });
     },
   );
 }

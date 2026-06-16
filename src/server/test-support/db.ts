@@ -21,7 +21,7 @@ export async function createTestDb(): Promise<Db> {
 
 export async function insertUser(
   db: Db,
-  opts: { role?: Role; requestQuota?: number | null; username?: string } = {},
+  opts: { role?: Role; requestQuota?: number | null; username?: string; autoApprove?: boolean } = {},
 ): Promise<{ id: number; publicId: string; role: Role }> {
   const [row] = await db
     .insert(users)
@@ -31,6 +31,7 @@ export async function insertUser(
       plexUsername: opts.username ?? 'tester',
       role: opts.role ?? 'user',
       requestQuota: opts.requestQuota ?? null,
+      autoApprove: opts.autoApprove ?? false,
     })
     .returning();
   if (!row) throw new Error('failed to insert test user');
