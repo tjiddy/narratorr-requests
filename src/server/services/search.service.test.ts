@@ -8,19 +8,13 @@ function fakeClient() {
   const client: INarratorrClient = {
     async searchMetadata(q: string): Promise<V1AudibleResult[]> {
       calls += 1;
-      return [{ asin: 'A', title: q, authors: [], narrators: [], coverUrl: null }];
+      return [{ asin: 'A', title: q, authors: [], narrators: [], cover: null }];
     },
-    async createAcquisition() {
-      throw new Error('n/a');
-    },
-    async getAcquisition() {
+    async addBook() {
       throw new Error('n/a');
     },
     async getBook() {
       throw new Error('n/a');
-    },
-    async listBooks() {
-      return { data: [], total: 0 };
     },
   };
   return { client, calls: () => calls };

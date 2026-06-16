@@ -33,11 +33,16 @@ export const isoDateString = z
  * Opaque public-ID schema for a given prefix. S1 (#1443, PR #1456) introduces
  * `bk_`/`au_`/`nr_`/`sr_`/`dl_` opaque IDs; this app adds `aq_`/`us_`/`rq_`.
  * The contract NEVER uses numeric rowids.
+ *
+ * The token charset is **base64url** (`A-Za-z0-9-_`): Narratorr mints ids via
+ * `randomBytes(16).toString('base64url')` (`utils/public-id.ts`), so real ids
+ * routinely contain `-`/`_`. The regex must accept them or ~half of upstream
+ * acquisition/book ids would fail contract parsing as `CONTRACT_MISMATCH`.
  */
 export const prefixedId = (prefix: string) =>
   z
     .string()
-    .regex(new RegExp(`^${prefix}_[A-Za-z0-9]+$`), `must be a "${prefix}_" public id`);
+    .regex(new RegExp(`^${prefix}_[A-Za-z0-9_-]+$`), `must be a "${prefix}_" public id`);
 
 // --- Pagination ---------------------------------------------------------------
 

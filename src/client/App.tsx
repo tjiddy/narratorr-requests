@@ -12,7 +12,9 @@ export function App() {
 
   if (me.isLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-500">Loading…</div>
+      <div className="flex min-h-screen items-center justify-center bg-background text-muted-foreground">
+        Loading…
+      </div>
     );
   }
 
@@ -20,7 +22,7 @@ export function App() {
   if (me.error || !me.data) {
     if (me.error instanceof ApiError && me.error.status !== 401) {
       return (
-        <div className="flex min-h-screen items-center justify-center bg-slate-950 text-rose-400">
+        <div className="flex min-h-screen items-center justify-center bg-background text-destructive">
           {me.error.message}
         </div>
       );

@@ -3,14 +3,18 @@ import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { MeDto } from '@shared/schemas/user';
 import { logout } from '../api';
+import { useTheme } from '../hooks';
+import { Button } from './Button';
+import { SunIcon, MoonIcon } from './icons';
 
 const linkBase = 'rounded-md px-3 py-1.5 text-sm font-medium transition-colors';
 const linkClass = ({ isActive }: { isActive: boolean }) =>
-  `${linkBase} ${isActive ? 'bg-violet-600/20 text-violet-200' : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'}`;
+  `${linkBase} ${isActive ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`;
 
 export function Layout({ me }: { me: MeDto }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const { theme, toggleTheme } = useTheme();
 
   async function onLogout() {
     try {
@@ -24,11 +28,11 @@ export function Layout({ me }: { me: MeDto }) {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="sticky top-0 z-10 border-b border-slate-800 bg-slate-950/80 backdrop-blur">
+    <div className="min-h-screen gradient-bg noise-overlay">
+      <header className="sticky top-0 z-10 border-b border-border/50 bg-background/70 backdrop-blur-xl">
         <div className="mx-auto flex max-w-5xl items-center gap-2 px-4 py-3">
-          <span className="mr-2 text-lg font-semibold tracking-tight">
-            <span className="text-violet-400">narrator</span>request
+          <span className="mr-2 font-display text-lg font-semibold tracking-tight">
+            <span className="text-primary">narrator</span>request
           </span>
           <nav className="flex items-center gap-1">
             <NavLink to="/" end className={linkClass}>
@@ -44,13 +48,20 @@ export function Layout({ me }: { me: MeDto }) {
             )}
           </nav>
           <div className="ml-auto flex items-center gap-3 text-sm">
-            <span className="text-slate-400">
+            <span className="text-muted-foreground">
               {me.plexUsername}
-              {me.role === 'admin' && <span className="ml-1 text-violet-400">★</span>}
+              {me.role === 'admin' && <span className="ml-1 text-primary">★</span>}
             </span>
-            <button onClick={onLogout} className="text-slate-500 hover:text-slate-200">
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={theme === 'dark' ? SunIcon : MoonIcon}
+              onClick={toggleTheme}
+              aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            />
+            <Button variant="ghost" size="sm" onClick={onLogout}>
               Sign out
-            </button>
+            </Button>
           </div>
         </div>
       </header>

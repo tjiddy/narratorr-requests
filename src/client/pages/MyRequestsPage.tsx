@@ -1,19 +1,23 @@
 import type { RequestDto } from '@shared/schemas/request';
 import { useMyRequests } from '../hooks';
 import { StatusBadge } from '../components/StatusBadge';
+import { EmptyState } from '../components/EmptyState';
+import { InboxIcon } from '../components/icons';
 
 function RequestRow({ r }: { r: RequestDto }) {
   return (
-    <li className="flex items-center gap-4 rounded-lg border border-slate-800 bg-slate-900/40 p-3">
+    <li className="glass-card flex items-center gap-4 rounded-xl p-3">
       {r.coverUrl ? (
         <img src={r.coverUrl} alt="" className="h-16 w-11 shrink-0 rounded object-cover" />
       ) : (
-        <div className="h-16 w-11 shrink-0 rounded bg-slate-800" />
+        <div className="h-16 w-11 shrink-0 rounded bg-muted" />
       )}
       <div className="min-w-0 flex-1">
         <p className="truncate font-medium">{r.title}</p>
-        {r.author && <p className="truncate text-sm text-slate-400">{r.author}</p>}
-        <p className="text-xs text-slate-500">Requested {new Date(r.requestedAt).toLocaleDateString()}</p>
+        {r.author && <p className="truncate text-sm text-muted-foreground">{r.author}</p>}
+        <p className="text-xs text-muted-foreground/70">
+          Requested {new Date(r.requestedAt).toLocaleDateString()}
+        </p>
       </div>
       <StatusBadge status={r.status} />
     </li>
@@ -25,11 +29,15 @@ export function MyRequestsPage() {
 
   return (
     <div>
-      <h1 className="mb-6 text-2xl font-semibold tracking-tight">My requests</h1>
-      {isLoading && <p className="text-sm text-slate-500">Loading…</p>}
-      {error && <p className="text-sm text-rose-400">Could not load your requests.</p>}
+      <h1 className="mb-6 font-display text-2xl font-semibold tracking-tight sm:text-3xl">My requests</h1>
+      {isLoading && <p className="text-sm text-muted-foreground/70">Loading…</p>}
+      {error && <p className="text-sm text-destructive">Could not load your requests.</p>}
       {data && data.data.length === 0 && (
-        <p className="text-sm text-slate-500">You haven’t requested anything yet — head to Discover.</p>
+        <EmptyState
+          icon={InboxIcon}
+          title="No requests yet"
+          subtitle="You haven’t requested anything yet — head to Discover to find your next listen."
+        />
       )}
       {data && data.data.length > 0 && (
         <ul className="flex flex-col gap-3">

@@ -1,14 +1,11 @@
 @import 'tailwindcss';
 
+/* Shared narratorr design system (token layer + utilities). */
+@import './theme.css';
+
+/* App shell glue — keep design-system tokens in theme.css, not here. */
 html,
 body,
 #root {
   min-height: 100%;
-}
-
-body {
-  margin: 0;
-  background-color: #020617; /* slate-950 — avoids a white flash before React mounts */
-  font-family:
-    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }

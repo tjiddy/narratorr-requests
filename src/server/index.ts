@@ -78,8 +78,13 @@ async function main(): Promise<void> {
           objectSrc: ["'none'"],
           frameAncestors: ["'none'"],
           imgSrc: ["'self'", 'https:', 'data:'],
+          // scriptSrc stays strict 'self' — the no-flash boot script is served as an
+          // external /theme-init.js (not inline) so no hash/nonce is needed.
           scriptSrc: ["'self'"],
-          styleSrc: ["'self'", "'unsafe-inline'"],
+          // Google Fonts: stylesheet from fonts.googleapis.com, font files from
+          // fonts.gstatic.com (mirrors Narratorr's helmet-options.ts).
+          styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+          fontSrc: ["'self'", 'https://fonts.gstatic.com'],
         },
       },
       referrerPolicy: { policy: 'no-referrer' },

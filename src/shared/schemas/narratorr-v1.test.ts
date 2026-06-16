@@ -1,11 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  v1BookSchema,
-  v1BookListSchema,
-  v1AcquisitionSchema,
-  v1CreateAcquisitionBodySchema,
-  v1AudibleResultSchema,
-} from './narratorr-v1.js';
+import { v1BookSchema, v1AddBookBodySchema, v1AudibleResultSchema } from './narratorr-v1.js';
 import {
   paginationQuerySchema,
   errorEnvelopeSchema,
@@ -26,13 +20,15 @@ const book = {
 };
 
 describe('v1 envelopes', () => {
+  const bookList = listEnvelope(v1BookSchema);
+
   it('accepts a well-formed list envelope and rejects a bare array', () => {
-    expect(v1BookListSchema.safeParse({ data: [book], total: 1 }).success).toBe(true);
-    expect(v1BookListSchema.safeParse([book]).success).toBe(false);
+    expect(bookList.safeParse({ data: [book], total: 1 }).success).toBe(true);
+    expect(bookList.safeParse([book]).success).toBe(false);
   });
 
   it('rejects a negative total', () => {
-    expect(v1BookListSchema.safeParse({ data: [], total: -1 }).success).toBe(false);
+    expect(bookList.safeParse({ data: [], total: -1 }).success).toBe(false);
   });
 
   it('coerces pagination from strings and enforces bounds', () => {
@@ -57,40 +53,53 @@ describe('prefixedId', () => {
     expect(bk.safeParse('42').success).toBe(false);
     expect(bk.safeParse('bk_').success).toBe(false);
   });
+
+  it('accepts base64url tokens — Narratorr mints ids with - and _', () => {
+    // randomBytes(16).toString('base64url') routinely yields '-'/'_'; the consumer
+    // must parse these or ~half of real book ids 502 as CONTRACT_MISMATCH.
+    expect(bk.safeParse('bk_AbC-123_xYz').success).toBe(true);
+  });
 });
 
-describe('v1Book', () => {
-  it('accepts a real book with nullable cover/asin', () => {
+describe('v1Book (the bare resource we poll)', () => {
+  it('accepts a real book with nullable/absent cover/asin/series', () => {
     expect(v1BookSchema.safeParse(book).success).toBe(true);
     expect(v1BookSchema.safeParse({ ...book, coverUrl: null, asin: null }).success).toBe(true);
+    // series is an optional nested object; absent is fine, present must shape-match.
+    expect(v1BookSchema.safeParse({ ...book, series: { name: 'Mistborn', position: 1 } }).success).toBe(true);
+    expect(v1BookSchema.safeParse({ ...book, series: null }).success).toBe(true);
   });
   it('rejects an unknown status and a numeric id', () => {
     expect(v1BookSchema.safeParse({ ...book, status: 'bogus' }).success).toBe(false);
     expect(v1BookSchema.safeParse({ ...book, id: 7 }).success).toBe(false);
   });
-  it('rejects a non-ISO createdAt', () => {
+  it('tolerates library people carrying an id (non-strict refs)', () => {
+    const withIds = { ...book, authors: [{ id: 'au_1', name: 'Andy Weir' }] };
+    expect(v1BookSchema.safeParse(withIds).success).toBe(true);
+  });
+  it('rejects a non-ISO createdAt but allows it to be absent', () => {
     expect(v1BookSchema.safeParse({ ...book, createdAt: 'yesterday' }).success).toBe(false);
-    expect(v1BookSchema.safeParse({ ...book, createdAt: '2026-06-13' }).success).toBe(true);
+    const { createdAt: _omit, ...noDate } = book;
+    expect(v1BookSchema.safeParse(noDate).success).toBe(true);
   });
 });
 
-describe('v1 acquisition', () => {
-  it('accepts the synthetic queued status and a null bookId', () => {
-    const acq = { id: 'aq_xyz', bookId: null, asin: 'B08GB58KD5', status: 'queued', updatedAt: '2026-06-13T12:00:00.000Z' };
-    expect(v1AcquisitionSchema.safeParse(acq).success).toBe(true);
-  });
-  it('create body is strict (rejects extra keys)', () => {
-    expect(v1CreateAcquisitionBodySchema.safeParse({ asin: 'B08GB58KD5' }).success).toBe(true);
-    expect(v1CreateAcquisitionBodySchema.safeParse({ asin: 'x', extra: 1 }).success).toBe(false);
-    expect(v1CreateAcquisitionBodySchema.safeParse({ asin: '' }).success).toBe(false);
+describe('v1AddBookBody (POST /books command)', () => {
+  it('requires a non-empty asin and is strict (rejects extra keys)', () => {
+    expect(v1AddBookBodySchema.safeParse({ asin: 'B08GB58KD5' }).success).toBe(true);
+    expect(v1AddBookBodySchema.safeParse({ asin: '' }).success).toBe(false);
+    expect(v1AddBookBodySchema.safeParse({ asin: 'x', extra: 1 }).success).toBe(false);
   });
 });
 
 describe('v1 audible result', () => {
-  it('accepts a minimal result and a fully-populated one', () => {
-    expect(v1AudibleResultSchema.safeParse({ asin: 'B0', title: 't', authors: [], narrators: [], coverUrl: null }).success).toBe(true);
-    const full = { asin: 'B0', title: 't', authors: [{ name: 'a', asin: 'X' }], narrators: [{ name: 'n' }], coverUrl: 'u', duration: 3600, publishedDate: '2020', seriesName: 's', seriesPosition: 1, language: 'english' };
+  it('accepts a minimal result and a fully-populated one (cover + nested series)', () => {
+    expect(v1AudibleResultSchema.safeParse({ asin: 'B0', title: 't', authors: [], narrators: [], cover: null }).success).toBe(true);
+    const full = { asin: 'B0', title: 't', authors: [{ name: 'a', asin: 'X' }], narrators: [{ name: 'n' }], cover: 'u', series: { name: 's', position: 2.5 }, publishedDate: '2020', language: 'english' };
     expect(v1AudibleResultSchema.safeParse(full).success).toBe(true);
+  });
+  it('requires the live `cover` field (rejects the old coverUrl shape)', () => {
+    expect(v1AudibleResultSchema.safeParse({ asin: 'B0', title: 't', authors: [], narrators: [], coverUrl: 'x' }).success).toBe(false);
   });
 });
 

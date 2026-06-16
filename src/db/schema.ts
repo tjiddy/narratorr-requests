@@ -43,8 +43,8 @@ export const requests = sqliteTable(
     narrator: text('narrator'),
     coverUrl: text('cover_url'),
     status: text('status', { enum: REQUEST_STATUSES }).notNull().default('pending'),
-    // Handoff linkage into Narratorr (nullable until approved + handed off).
-    narratorrAcquisitionId: text('narratorr_acquisition_id'), // aq_...
+    // Handoff linkage into Narratorr: the library book we added + poll
+    // (nullable until approved + handed off).
     narratorrBookId: text('narratorr_book_id'), // bk_...
     note: text('note'),
     // Quota accounting: a `failed` request is normally refunded, EXCEPT when the

@@ -1,9 +1,9 @@
 import { z } from 'zod';
 
 // =============================================================================
-// Request lifecycle (this app's domain). Maps onto Narratorr status:
-//   pending --approve--> approved --handoff(POST /acquisitions)--> acquiring
-//   --poll(GET /acquisitions/:id imported)--> available
+// Request lifecycle (this app's domain). Maps onto Narratorr's book status:
+//   pending --approve--> approved --handoff(POST /books)--> acquiring
+//   --poll(GET /books/:id imported)--> available
 //   denied / failed are terminal.
 // =============================================================================
 export const REQUEST_STATUSES = [
@@ -60,7 +60,7 @@ export const requestListQuerySchema = z.object({
 export type RequestListQuery = z.infer<typeof requestListQuerySchema>;
 
 // Shape returned to the client. `requester` is included for the admin queue;
-// `acquisitionStatus` is the live projection the poller refreshes.
+// `status` is the live request status the poller refreshes from the book.
 export const requestDtoSchema = z.object({
   publicId: z.string(),
   asin: z.string(),
@@ -73,7 +73,6 @@ export const requestDtoSchema = z.object({
   requestedAt: z.string(),
   decidedAt: z.string().nullable(),
   narratorrBookId: z.string().nullable(),
-  narratorrAcquisitionId: z.string().nullable(),
   requester: z.object({ publicId: z.string(), plexUsername: z.string() }),
 });
 export type RequestDto = z.infer<typeof requestDtoSchema>;

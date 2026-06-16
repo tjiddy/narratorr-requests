@@ -7,7 +7,7 @@ import { createTestDb, insertUser } from '../test-support/db.js';
 import { requests } from '../../db/schema.js';
 import type { Db } from '../../db/client.js';
 import type { FastifyBaseLogger } from 'fastify';
-import type { V1Acquisition, AcquisitionStatus } from '../../shared/schemas/narratorr-v1.js';
+import type { V1Book, BookStatus } from '../../shared/schemas/narratorr-v1.js';
 
 const noopLogger = {
   info() {},
@@ -23,23 +23,17 @@ const noopLogger = {
 } as unknown as FastifyBaseLogger;
 
 class PollClient implements INarratorrClient {
-  status: AcquisitionStatus = 'downloading';
+  status: BookStatus = 'downloading';
   error: NarratorrError | null = null;
   async searchMetadata() {
     return [];
   }
-  async createAcquisition(asin: string): Promise<V1Acquisition> {
-    return { id: 'aq_1', bookId: 'bk_1', asin, status: this.status, progress: 0, updatedAt: new Date(0).toISOString() };
+  async addBook(_asin: string): Promise<V1Book> {
+    return { id: 'bk_1', title: 't', authors: [], narrators: [], status: this.status };
   }
-  async getAcquisition(id: string): Promise<V1Acquisition> {
+  async getBook(id: string): Promise<V1Book> {
     if (this.error) throw this.error;
-    return { id, bookId: 'bk_1', asin: 'A', status: this.status, progress: 50, updatedAt: new Date(0).toISOString() };
-  }
-  async getBook(): Promise<never> {
-    throw new Error('n/a');
-  }
-  async listBooks() {
-    return { data: [], total: 0 };
+    return { id, title: 't', authors: [], narrators: [], status: this.status };
   }
 }
 
@@ -48,7 +42,7 @@ let client: PollClient;
 let svc: RequestService;
 let poller: StatusPoller;
 
-async function seedAcquiring(asin: string, acqId = 'aq_1') {
+async function seedAcquiring(asin: string, bookId = 'bk_1') {
   const user = await insertUser(db);
   const [row] = await db
     .insert(requests)
@@ -58,8 +52,7 @@ async function seedAcquiring(asin: string, acqId = 'aq_1') {
       asin,
       title: 't',
       status: 'acquiring',
-      narratorrAcquisitionId: acqId,
-      narratorrBookId: 'bk_1',
+      narratorrBookId: bookId,
     })
     .returning();
   return row!;
@@ -68,12 +61,16 @@ async function seedAcquiring(asin: string, acqId = 'aq_1') {
 beforeEach(async () => {
   db = await createTestDb();
   client = new PollClient();
-  svc = new RequestService(db, client, { defaultQuota: 10, windowDays: 30, autoApproveRoles: ['admin'] });
+  svc = new RequestService(db, client, {
+    defaultQuota: 10,
+    windowDays: 30,
+    autoApproveRoles: ['admin'],
+  });
   poller = new StatusPoller({ requests: svc, client, logger: noopLogger, jitterMs: 0 });
 });
 
 describe('StatusPoller.pollOnce', () => {
-  it('drives an acquiring request to available once the acquisition is imported', async () => {
+  it('drives an acquiring request to available once the book is imported', async () => {
     await seedAcquiring('A1');
     client.status = 'imported';
     const summary = await poller.pollOnce();
@@ -91,7 +88,7 @@ describe('StatusPoller.pollOnce', () => {
     expect(row?.status).toBe('acquiring');
   });
 
-  it('marks a request failed when its acquisition 404s upstream', async () => {
+  it('marks a request failed when its book 404s upstream', async () => {
     await seedAcquiring('A1');
     client.error = new NarratorrError(404, 'NOT_FOUND', 'gone');
     const summary = await poller.pollOnce();
@@ -100,7 +97,7 @@ describe('StatusPoller.pollOnce', () => {
     expect(row?.status).toBe('failed');
   });
 
-  it('recovers a stranded approved request (no acquisition) via idempotent handoff', async () => {
+  it('recovers a stranded approved request (no book yet) via idempotent handoff', async () => {
     const user = await insertUser(db);
     await db
       .insert(requests)
@@ -110,7 +107,7 @@ describe('StatusPoller.pollOnce', () => {
     expect(summary.transitioned).toBeGreaterThanOrEqual(1);
     const [row] = await db.select().from(requests).where(eq(requests.asin, 'A9'));
     expect(row?.status).toBe('acquiring');
-    expect(row?.narratorrAcquisitionId).toBe('aq_1');
+    expect(row?.narratorrBookId).toBe('bk_1');
   });
 
   it('counts a transient upstream error without changing status', async () => {

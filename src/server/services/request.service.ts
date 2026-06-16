@@ -9,7 +9,7 @@ import type {
 } from '../../shared/schemas/request.js';
 import { OPEN_REQUEST_STATUSES, ACTIVE_REQUEST_STATUSES } from '../../shared/schemas/request.js';
 import type { Role } from '../../shared/schemas/user.js';
-import type { V1Acquisition } from '../../shared/schemas/narratorr-v1.js';
+import type { V1Book } from '../../shared/schemas/narratorr-v1.js';
 import type { INarratorrClient } from './narratorr-client.js';
 import { NarratorrError } from './narratorr-client.js';
 import { publicId } from '../util/ids.js';
@@ -88,7 +88,6 @@ export class RequestService {
       requestedAt: row.requestedAt.toISOString(),
       decidedAt: row.decidedAt ? row.decidedAt.toISOString() : null,
       narratorrBookId: row.narratorrBookId,
-      narratorrAcquisitionId: row.narratorrAcquisitionId,
       requester,
     };
   }
@@ -237,36 +236,36 @@ export class RequestService {
   // --- Narratorr handoff -----------------------------------------------------
 
   /**
-   * Hand an approved request to Narratorr's idempotent acquire command. Uses the
-   * request's own publicId as the Idempotency-Key so retries never double-acquire
-   * (Codex risk #1). An already-imported book short-circuits straight to
-   * `available` (the "already available" retry path). A handoff failure marks the
-   * request `failed` (refundable — not user-caused) and re-throws so the caller
-   * surfaces a 502.
+   * Hand an approved request to Narratorr's `POST /books` command. The client makes
+   * the add idempotent by ASIN (a 409 "already exists" is resolved to the existing
+   * book), so it's safe to retry and never double-adds — no idempotency key. An
+   * already-imported book short-circuits straight to `available`. On failure we
+   * re-throw either way, but only TERMINAL failures (unresolvable ASIN) mark the
+   * request `failed`; TRANSIENT ones (429/5xx/network) leave it `approved` so the
+   * poller's stranded-handoff retry self-heals instead of burning the request.
    */
   async handoff(row: RequestRow): Promise<RequestRow> {
     if (row.status !== 'approved') return row;
     try {
-      const acq = await this.client.createAcquisition(row.asin, row.publicId);
-      const next = this.mapAcquisitionToStatus(acq.status);
+      const book = await this.client.addBook(row.asin);
+      const next = this.mapBookStatus(book.status);
       const [updated] = await this.db
         .update(requests)
         .set({
-          narratorrAcquisitionId: acq.id,
-          narratorrBookId: acq.bookId,
-          status: next === 'available' ? 'available' : 'acquiring',
+          narratorrBookId: book.id,
+          status: next,
+          ...(next === 'failed' ? { userCausedFailure: false, failureReason: `book ${book.status}` } : {}),
         })
         .where(eq(requests.id, row.id))
         .returning();
       return updated ?? row;
     } catch (err) {
+      if (!isTerminalHandoffError(err)) throw err; // transient — stays `approved`, poller retries
       const reason = err instanceof NarratorrError ? `${err.upstreamCode}: ${err.message}` : 'handoff failed';
-      const [failed] = await this.db
+      await this.db
         .update(requests)
         .set({ status: 'failed', userCausedFailure: false, failureReason: reason })
-        .where(eq(requests.id, row.id))
-        .returning();
-      void failed;
+        .where(eq(requests.id, row.id));
       throw err;
     }
   }
@@ -281,45 +280,49 @@ export class RequestService {
    */
   async findAcquiring(limit = 100): Promise<RequestRow[]> {
     return this.db.query.requests.findMany({
-      where: and(eq(requests.status, 'acquiring'), sql`${requests.narratorrAcquisitionId} IS NOT NULL`),
+      where: and(eq(requests.status, 'acquiring'), sql`${requests.narratorrBookId} IS NOT NULL`),
       orderBy: requests.requestedAt,
       limit,
     });
   }
 
   /**
-   * Approved requests with no acquisition yet — i.e. the process died between
-   * approval and handoff. The poller re-runs the (idempotent) handoff to self-heal,
-   * so an approved request is never permanently stranded.
+   * Approved requests with no book yet — i.e. the process died between approval and
+   * handoff. The poller re-runs the (idempotent) handoff to self-heal, so an
+   * approved request is never permanently stranded.
    */
   async findApprovedAwaitingHandoff(limit = 100): Promise<RequestRow[]> {
     return this.db.query.requests.findMany({
-      where: and(eq(requests.status, 'approved'), sql`${requests.narratorrAcquisitionId} IS NULL`),
+      where: and(eq(requests.status, 'approved'), sql`${requests.narratorrBookId} IS NULL`),
       orderBy: requests.requestedAt,
       limit,
     });
   }
 
   /**
-   * Apply a fetched acquisition projection to a request. Returns the new status
-   * if it changed, else null (so the poller can log/notify only on transitions).
+   * Apply a freshly-polled book to a request. Returns the new status if it changed,
+   * else null (so the poller logs/notifies only on transitions). We mirror narratorr's
+   * lifecycle and never invent a terminal state on a timer: a request stays `acquiring`
+   * for as long as the book is pre-`imported` (a not-found book legitimately sits
+   * `wanted` until narratorr's next scheduled search) and only goes terminal when
+   * narratorr itself reports `imported` / `failed` / `missing`. Timing is narratorr's.
    */
-  async applyAcquisition(row: RequestRow, acq: V1Acquisition): Promise<RequestStatus | null> {
-    const next = this.mapAcquisitionToStatus(acq.status);
-    const bookId = acq.bookId ?? row.narratorrBookId;
+  async applyBook(row: RequestRow, book: V1Book): Promise<RequestStatus | null> {
+    const next = this.mapBookStatus(book.status);
+    const bookId = book.id ?? row.narratorrBookId;
     if (next === 'acquiring' && bookId === row.narratorrBookId) return null; // no change worth persisting
     await this.db
       .update(requests)
       .set({
         status: next,
         narratorrBookId: bookId,
-        ...(next === 'failed' ? { userCausedFailure: false, failureReason: `acquisition ${acq.status}` } : {}),
+        ...(next === 'failed' ? { userCausedFailure: false, failureReason: `book ${book.status}` } : {}),
       })
       .where(eq(requests.id, row.id));
     return next === row.status ? null : next;
   }
 
-  /** Mark a request failed when its acquisition can no longer be found (404 on poll). */
+  /** Mark a request failed when its book can no longer be found (404 on poll). */
   async markFailed(row: RequestRow, reason: string): Promise<void> {
     await this.db
       .update(requests)
@@ -327,17 +330,28 @@ export class RequestService {
       .where(eq(requests.id, row.id));
   }
 
-  private mapAcquisitionToStatus(acqStatus: V1Acquisition['status']): RequestStatus {
-    switch (acqStatus) {
+  private mapBookStatus(status: V1Book['status']): RequestStatus {
+    switch (status) {
       case 'imported':
         return 'available';
       case 'failed':
       case 'missing':
         return 'failed';
       default:
-        return 'acquiring';
+        return 'acquiring'; // wanted | searching | downloading | importing
     }
   }
+}
+
+/**
+ * Whether a handoff error is terminal (retrying can't fix it → fail the request) vs.
+ * transient (429 rate-limit / 5xx / network → leave `approved` for the poller to
+ * retry). A non-Narratorr error (e.g. a DB fault) is terminal so it can't loop forever.
+ */
+function isTerminalHandoffError(err: unknown): boolean {
+  if (!(err instanceof NarratorrError)) return true;
+  // 400 malformed, 409 with no usable existingId, 422 unresolvable ASIN.
+  return err.upstreamStatus === 400 || err.upstreamStatus === 409 || err.upstreamStatus === 422;
 }
 
 /** libSQL surfaces a unique-constraint breach with this SQLite message fragment. */

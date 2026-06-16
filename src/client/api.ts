@@ -51,7 +51,7 @@ export function requestBookFrom(result: V1AudibleResult) {
     title: result.title,
     author: result.authors[0]?.name ?? null,
     narrator: result.narrators[0]?.name ?? null,
-    coverUrl: result.coverUrl,
+    coverUrl: result.cover,
   };
   return fetch('/api/requests', opts({
     method: 'POST',
