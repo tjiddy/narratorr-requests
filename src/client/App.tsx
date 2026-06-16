@@ -5,6 +5,7 @@ import { Layout } from './components/Layout';
 import { SearchPage } from './pages/SearchPage';
 import { MyRequestsPage } from './pages/MyRequestsPage';
 import { AdminQueuePage } from './pages/AdminQueuePage';
+import { UsersPage } from './pages/UsersPage';
 import { LoginPage } from './pages/LoginPage';
 
 export function App() {
@@ -39,6 +40,7 @@ export function App() {
           <Route index element={<SearchPage />} />
           <Route path="requests" element={<MyRequestsPage />} />
           <Route path="admin" element={isAdmin ? <AdminQueuePage /> : <Navigate to="/" replace />} />
+          <Route path="users" element={isAdmin ? <UsersPage /> : <Navigate to="/" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

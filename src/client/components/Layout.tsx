@@ -42,9 +42,14 @@ export function Layout({ me }: { me: MeDto }) {
               My Requests
             </NavLink>
             {me.role === 'admin' && (
-              <NavLink to="/admin" className={linkClass}>
-                Queue
-              </NavLink>
+              <>
+                <NavLink to="/admin" className={linkClass}>
+                  Queue
+                </NavLink>
+                <NavLink to="/users" className={linkClass}>
+                  Users
+                </NavLink>
+              </>
             )}
           </nav>
           <div className="ml-auto flex items-center gap-3 text-sm">

@@ -1,9 +1,10 @@
-import { eq, sql } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
 import { users, type UserRow } from '../../db/schema.js';
 import type { Role, UserDto } from '../../shared/schemas/user.js';
 import type { AuthUser } from '../types.js';
 import { publicId } from '../util/ids.js';
+import { notFound } from '../util/errors.js';
 
 const DEV_ADMIN_PLEX_ID = 'dev-admin';
 
@@ -45,6 +46,23 @@ export class UserService {
 
   async getByPublicId(pid: string): Promise<UserRow | undefined> {
     return this.db.query.users.findFirst({ where: eq(users.publicId, pid) });
+  }
+
+  /** All users, oldest first — for the admin Users page. */
+  async listAll(): Promise<UserRow[]> {
+    return this.db.query.users.findMany({ orderBy: asc(users.createdAt) });
+  }
+
+  /** Set a user's role (admin Users page). The "can't change your own role"
+   *  guard lives in the route, where the acting admin's identity is known. */
+  async setRole(pid: string, role: Role): Promise<UserRow> {
+    const [updated] = await this.db
+      .update(users)
+      .set({ role })
+      .where(eq(users.publicId, pid))
+      .returning();
+    if (!updated) throw notFound('user not found');
+    return updated;
   }
 
   private async count(): Promise<number> {

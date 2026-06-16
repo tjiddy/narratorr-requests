@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { V1AudibleResult } from '@shared/schemas/narratorr-v1';
 import type { RequestStatus } from '@shared/schemas/request';
+import type { Role } from '@shared/schemas/user';
 import {
   getMe,
   searchCatalog,
@@ -10,6 +11,8 @@ import {
   listAdminQueue,
   requestBookFrom,
   decideRequest,
+  listUsers,
+  setUserRole,
   ApiError,
 } from './api';
 
@@ -48,6 +51,21 @@ export function useRequestBook() {
       void qc.invalidateQueries({ queryKey: qk.me });
     },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Request failed'),
+  });
+}
+
+export const useUsers = () =>
+  useQuery({ queryKey: ['admin', 'users'], queryFn: listUsers });
+
+export function useSetUserRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { publicId: string; role: Role }) => setUserRole(v.publicId, v.role),
+    onSuccess: (user) => {
+      toast.success(`${user.plexUsername} is now ${user.role === 'admin' ? 'an admin' : 'a user'}`);
+      void qc.invalidateQueries({ queryKey: ['admin', 'users'] });
+    },
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Failed to update role'),
   });
 }
 

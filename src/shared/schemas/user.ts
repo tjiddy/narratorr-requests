@@ -18,6 +18,10 @@ export const userDtoSchema = z.object({
 });
 export type UserDto = z.infer<typeof userDtoSchema>;
 
+// Admin user management: change a user's role. Strict so stray fields are rejected.
+export const updateUserRoleBodySchema = z.object({ role: roleSchema }).strict();
+export type UpdateUserRoleBody = z.infer<typeof updateUserRoleBodySchema>;
+
 // `GET /api/me` — the current user plus their rolling-window quota usage.
 export const meDtoSchema = userDtoSchema.extend({
   quota: z.object({
