@@ -4,6 +4,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fastify-type-provider-zod';
 import { config, APP_ROOT } from './config.js';
@@ -15,18 +16,13 @@ import { RequestService } from './services/request.service.js';
 import { SearchService } from './services/search.service.js';
 import { StatusPoller } from './services/status-poller.js';
 import { NarratorrClient } from './services/narratorr-client.js';
-import {
-  OidcService,
-  mapPlexClaims,
-  plexAllowlistGate,
-  mapAutheliaClaims,
-  autheliaAdminGate,
-} from './services/oidc.service.js';
+import { OidcService, makeOidcMapper, type OidcProfile } from './services/oidc.service.js';
 import { buildNotifier } from './services/notifications/index.js';
 import { ConnectorSettingsService } from './services/connector-settings.service.js';
 import { NarratorrClientHolder } from './services/narratorr-client-holder.js';
 import { SecretCodec, deriveSettingsKey } from './util/secret-codec.js';
 import { errorHandlerPlugin } from './plugins/error-handler.js';
+import { authRateLimitOptions } from './plugins/rate-limit.js';
 import { authPlugin } from './plugins/auth.js';
 import { registerRoutes } from './routes/index.js';
 import { errorBody } from '../shared/schemas/v1/common.js';
@@ -38,13 +34,18 @@ async function main(): Promise<void> {
   await runMigrations(config.databasePath);
   const db = createDb(config.databasePath);
 
-  const users = new UserService(db);
+  const users = new UserService(db, { bootstrapAdmin: config.bootstrapAdmin });
   const settings = new SettingsService(db);
   const settingsRow = await settings.ensure(config.defaultRequestQuota);
 
   // App (and its logger) first, so the connector service can WARN through it when a
   // stored secret can't be decrypted.
-  const app = Fastify({ logger: { level: config.isDev ? 'info' : 'warn' } }).withTypeProvider<ZodTypeProvider>();
+  const app = Fastify({
+    logger: { level: config.isDev ? 'info' : 'warn' },
+    // Behind a reverse proxy, trust X-Forwarded-* so request.ip is the real client (used
+    // for auth rate-limit keying). Off by default; configured via TRUST_PROXY.
+    trustProxy: config.trustProxy,
+  }).withTypeProvider<ZodTypeProvider>();
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
@@ -70,20 +71,16 @@ async function main(): Promise<void> {
     autoApproveRoles: settingsRow.autoApproveRoles as Role[],
   });
   const search = new SearchService(narratorr);
-  const plexOidc = config.plexOidc
-    ? new OidcService(
-        { ...config.plexOidc, scope: 'openid profile email', label: 'Plex' },
-        mapPlexClaims,
-        plexAllowlistGate(config.plexOidc.allowlist),
-      )
-    : null;
-  const autheliaOidc = config.autheliaOidc
-    ? new OidcService(
-        { ...config.autheliaOidc, scope: 'openid profile email', label: 'Authelia' },
-        mapAutheliaClaims,
-        autheliaAdminGate(config.autheliaOidc.adminSubject),
-      )
-    : null;
+  // One OidcService per configured provider, keyed by id. Authorization is the approval
+  // queue (no per-provider gate), so the mapped profile flows straight to upsertFromOidc.
+  const oidc = new Map<string, { service: OidcService<OidcProfile>; config: (typeof config.oidcProviders)[number] }>();
+  for (const p of config.oidcProviders) {
+    const service = new OidcService<OidcProfile>(
+      { issuer: p.issuer, clientId: p.clientId, clientSecret: p.clientSecret, redirectUri: p.redirectUri, scope: p.scope, label: p.label },
+      makeOidcMapper(p.label, { subjectClaim: p.subjectClaim, usernameClaim: p.usernameClaim, emailClaim: p.emailClaim }),
+    );
+    oidc.set(p.id, { service, config: p });
+  }
 
   if (config.authMode === 'bypass') await users.ensureDevAdmin();
 
@@ -98,8 +95,7 @@ async function main(): Promise<void> {
     connectorSettings,
     narratorr,
     notifier,
-    plexOidc,
-    autheliaOidc,
+    oidc,
   };
 
   // Serve the built SPA whenever a client build is present — the prod image, a bare
@@ -134,6 +130,7 @@ async function main(): Promise<void> {
 
   await app.register(cors, { origin: config.corsOrigin, credentials: true });
   await app.register(cookie, { secret: config.sessionSecret });
+  await app.register(rateLimit, authRateLimitOptions);
   await app.register(errorHandlerPlugin);
   await app.register(authPlugin, deps);
 

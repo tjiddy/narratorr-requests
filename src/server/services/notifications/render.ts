@@ -18,7 +18,7 @@ export function render(
       const by = request.author ? ` by ${request.author}` : '';
       return {
         title: 'New audiobook request',
-        body: `${requester.plexUsername} requested “${request.title}”${by}.`,
+        body: `${requester.username} requested “${request.title}”${by}.`,
         url,
       };
     }

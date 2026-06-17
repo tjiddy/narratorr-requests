@@ -1,4 +1,4 @@
-import type { MeDto, UserDto, UpdateUserBody } from '@shared/schemas/user';
+import type { MeDto, UserDto, UpdateUserBody, AuthProvidersDto } from '@shared/schemas/user';
 import type { RequestDto, RequestStatus } from '@shared/schemas/request';
 import type { V1AudibleResult } from '@shared/schemas/narratorr-v1';
 import type { ListEnvelope } from '@shared/schemas/v1/common';
@@ -88,6 +88,23 @@ export const listUserRequests = (publicId: string) =>
   fetch(`/api/admin/users/${publicId}/requests`, opts()).then(parse<ListEnvelope<RequestDto>>);
 
 export const logout = () => fetch('/api/auth/logout', opts({ method: 'POST' })).then(parse<{ ok: true }>);
+
+// --- Auth: login screen + local auth -----------------------------------------
+export const getAuthProviders = () =>
+  fetch('/api/auth/providers', opts()).then(parse<AuthProvidersDto>);
+
+const postCredentials = (path: string, username: string, password: string) =>
+  fetch(path, opts({
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })).then(parse<{ ok: true }>);
+
+export const localLogin = (username: string, password: string) =>
+  postCredentials('/api/auth/local/login', username, password);
+
+export const localSignup = (username: string, password: string) =>
+  postCredentials('/api/auth/local/signup', username, password);
 
 export const getConnectorSettings = () =>
   fetch('/api/admin/settings/connectors', opts()).then(parse<ConnectorSettingsDto>);

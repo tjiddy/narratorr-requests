@@ -73,6 +73,6 @@ export const requestDtoSchema = z.object({
   requestedAt: z.string(),
   decidedAt: z.string().nullable(),
   narratorrBookId: z.string().nullable(),
-  requester: z.object({ publicId: z.string(), plexUsername: z.string() }),
+  requester: z.object({ publicId: z.string(), username: z.string() }),
 });
 export type RequestDto = z.infer<typeof requestDtoSchema>;

@@ -2,13 +2,25 @@ import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { AppDeps } from '../services/deps.js';
-import { meDtoSchema } from '../../shared/schemas/user.js';
+import { meDtoSchema, authProvidersDtoSchema, localCredentialsSchema } from '../../shared/schemas/user.js';
 import { requireUser, setSessionCookie, clearSessionCookie } from '../plugins/auth.js';
-import { badRequest } from '../util/errors.js';
+import { hashPassword, verifyPassword } from '../util/password.js';
+import { badRequest, conflict, notFound, unauthorized } from '../util/errors.js';
+
+const okSchema = z.object({ ok: z.literal(true) });
 
 export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
   const a = app.withTypeProvider<ZodTypeProvider>();
   const postLoginRedirect = deps.config.isProd ? '/' : deps.config.corsOrigin;
+
+  // Opt-in rate limit on the auth endpoints (the limiter is global:false, so polling
+  // routes are never throttled). Keyed on IP + username (see index.ts) and resolved
+  // against the real client IP via TRUST_PROXY behind a proxy. Disabled under AUTH_BYPASS
+  // (every request is the dev admin there — a limiter would only let a dev self-lockout).
+  // CSRF on these state-changing POSTs rests on the session cookie's SameSite=Lax, which
+  // blocks cross-site POSTs from carrying it; the single-origin CORS policy backs it up.
+  const rl = (max: number) =>
+    deps.config.authMode === 'bypass' ? {} : { config: { rateLimit: { max, timeWindow: '1 minute' } } };
 
   // Current user + rolling quota usage.
   a.get('/api/me', { schema: { response: { 200: meDtoSchema } } }, async (request) => {
@@ -19,51 +31,85 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
     return { ...deps.users.toDto(row), quota };
   });
 
-  // Begin login. In bypass mode there's nothing to do — the dev admin is always
-  // authenticated — so bounce home. Otherwise redirect to the Plex bridge.
-  a.get('/api/auth/login', async (_request, reply) => {
-    if (deps.config.authMode === 'bypass') return reply.redirect(postLoginRedirect);
-    if (!deps.plexOidc) throw badRequest('NO_OIDC', 'Plex OIDC is not configured');
-    const url = await deps.plexOidc.buildAuthUrl();
-    return reply.redirect(url);
+  // Server-driven login screen. The client renders the password form when `local` is
+  // true and one button per configured OIDC provider. PUBLIC (pre-auth).
+  a.get('/api/auth/providers', { schema: { response: { 200: authProvidersDtoSchema } } }, async () => ({
+    local: deps.config.localAuth,
+    providers: [...deps.oidc.values()].map(({ config }) => ({ id: config.id, label: config.label })),
+  }));
+
+  // --- Local username/password (only when enabled) ---------------------------
+  if (deps.config.localAuth) {
+    // Sign up → create a local identity. New users land `pending` (approval queue);
+    // the very first user in any method becomes admin + active (see UserService).
+    a.post(
+      '/api/auth/local/signup',
+      { ...rl(5), schema: { body: localCredentialsSchema, response: { 200: okSchema } } },
+      async (request, reply) => {
+        const { username, password } = request.body;
+        const exists = await deps.users.findLocalByUsername(username);
+        // Signup necessarily reveals whether a username is free (every signup form does);
+        // accepted low-risk enumeration. Login below stays generic + constant-time.
+        if (exists) throw conflict('USERNAME_TAKEN', 'That username is already taken.');
+        const passwordHash = await hashPassword(password);
+        const user = await deps.users.createLocalUser({ username, passwordHash });
+        setSessionCookie(reply, deps.config, user);
+        return { ok: true as const };
+      },
+    );
+
+    // Log in → verify the password. Generic error + a dummy verify when the user is
+    // missing (or is an OIDC identity with no hash) so timing/response don't leak which
+    // usernames exist.
+    a.post(
+      '/api/auth/local/login',
+      { ...rl(10), schema: { body: localCredentialsSchema, response: { 200: okSchema } } },
+      async (request, reply) => {
+        const { username, password } = request.body;
+        const user = await deps.users.findLocalByUsername(username);
+        const ok = await verifyPassword(password, user?.passwordHash ?? null);
+        if (!user || !ok) throw unauthorized('Invalid username or password');
+        setSessionCookie(reply, deps.config, user);
+        return { ok: true as const };
+      },
+    );
+  }
+
+  // --- Generic OIDC (one route pair for every configured provider) -----------
+  // Begin login: redirect to the provider's authorization endpoint. Rate-limited (it
+  // mints an in-memory PKCE entry per call) so an unauthenticated loop can't inflate it.
+  a.get('/api/auth/oidc/:provider/login', { ...rl(30) }, async (request, reply) => {
+    const { provider } = request.params as { provider: string };
+    const entry = deps.oidc.get(provider);
+    if (!entry) throw notFound('unknown auth provider');
+    return reply.redirect(await entry.service.buildAuthUrl());
   });
 
-  // OAuth callback — exchange code, upsert the user, mint a session cookie.
-  a.get('/api/auth/callback', async (request, reply) => {
-    const oidc = deps.plexOidc;
-    const oidcCfg = deps.config.plexOidc;
-    if (!oidc || !oidcCfg) throw badRequest('NO_OIDC', 'Plex OIDC is not configured');
-    // Reconstruct the callback URL from the CONFIGURED redirect URI plus only the
-    // incoming query (code/state) — never from the attacker-controllable Host header.
-    const callbackUrl = new URL(oidcCfg.redirectUri);
-    callbackUrl.search = new URL(request.url, callbackUrl.origin).search;
-    const profile = await oidc.handleCallback(callbackUrl.toString());
-    const user = await deps.users.upsertByPlex(profile, { ownerUsername: oidcCfg.ownerUsername });
-    setSessionCookie(reply, deps.config, user);
-    return reply.redirect(postLoginRedirect);
-  });
-
-  // Operator admin SSO via Authelia (optional second provider). Mirrors the Plex
-  // flow; any account that clears Authelia's gate (+ the optional subject pin) is admin.
-  a.get('/api/auth/authelia/login', async (_request, reply) => {
-    if (!deps.autheliaOidc) throw badRequest('NO_OIDC', 'Authelia login is not configured');
-    return reply.redirect(await deps.autheliaOidc.buildAuthUrl());
-  });
-
-  a.get('/api/auth/authelia/callback', async (request, reply) => {
-    const oidc = deps.autheliaOidc;
-    const oidcCfg = deps.config.autheliaOidc;
-    if (!oidc || !oidcCfg) throw badRequest('NO_OIDC', 'Authelia login is not configured');
-    const callbackUrl = new URL(oidcCfg.redirectUri);
-    callbackUrl.search = new URL(request.url, callbackUrl.origin).search;
-    const profile = await oidc.handleCallback(callbackUrl.toString());
-    const user = await deps.users.upsertAutheliaAdmin(profile);
-    setSessionCookie(reply, deps.config, user);
-    return reply.redirect(postLoginRedirect);
+  // OAuth callback — exchange code, upsert the user (→ approval queue), mint a session.
+  a.get('/api/auth/oidc/:provider/callback', async (request, reply) => {
+    const { provider } = request.params as { provider: string };
+    const entry = deps.oidc.get(provider);
+    if (!entry) throw notFound('unknown auth provider');
+    try {
+      // Reconstruct the callback URL from the CONFIGURED redirect URI plus only the
+      // incoming query (code/state) — never from the attacker-controllable Host header.
+      const callbackUrl = new URL(entry.config.redirectUri);
+      callbackUrl.search = new URL(request.url, callbackUrl.origin).search;
+      const profile = await entry.service.handleCallback(callbackUrl.toString());
+      const user = await deps.users.upsertFromOidc(provider, profile);
+      setSessionCookie(reply, deps.config, user);
+      return reply.redirect(postLoginRedirect);
+    } catch (err) {
+      // This is a top-level browser navigation — a raw JSON error page is a dead end.
+      // Log the detail and bounce back to the login screen with a generic error flag.
+      request.log.warn({ err, provider }, 'OIDC callback failed');
+      const sep = postLoginRedirect.includes('?') ? '&' : '?';
+      return reply.redirect(`${postLoginRedirect}${sep}login_error=oidc`);
+    }
   });
 
   // Logout — clear the session cookie.
-  a.post('/api/auth/logout', { schema: { response: { 200: z.object({ ok: z.literal(true) }) } } }, async (_request, reply) => {
+  a.post('/api/auth/logout', { schema: { response: { 200: okSchema } } }, async (_request, reply) => {
     clearSessionCookie(reply, deps.config);
     return reply.send({ ok: true as const });
   });

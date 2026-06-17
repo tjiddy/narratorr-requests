@@ -18,6 +18,9 @@ import {
   getConnectorSettings,
   updateConnectorSettings,
   testConnector,
+  getAuthProviders,
+  localLogin,
+  localSignup,
   type ConnectorChannel,
   ApiError,
 } from './api';
@@ -71,7 +74,7 @@ export function useUpdateUser() {
   return useMutation({
     mutationFn: (v: { publicId: string; patch: UpdateUserBody }) => updateUser(v.publicId, v.patch),
     onSuccess: (user) => {
-      toast.success(`Saved changes to ${user.plexUsername}`);
+      toast.success(`Saved changes to ${user.username}`);
       void qc.invalidateQueries({ queryKey: ['admin', 'users'] });
     },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Failed to update user'),
@@ -118,6 +121,23 @@ export function useTestConnector() {
     mutationFn: (channel: ConnectorChannel) => testConnector(channel),
     onSuccess: (res) => (res.success ? toast.success(res.message) : toast.error(res.message)),
     onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Test failed'),
+  });
+}
+
+// --- Auth: login screen + local auth -----------------------------------------
+// Drives the server-rendered login screen. Static for the session (provider config
+// only changes via env + restart), so no refetch-on-focus.
+export const useAuthProviders = () =>
+  useQuery({ queryKey: ['auth', 'providers'], queryFn: getAuthProviders, staleTime: Infinity, retry: false });
+
+/** Local signup/login. On success the server set a session cookie — refetch `me` so
+ *  App routes to the app (or the pending screen). Errors surface on the form, not a toast. */
+export function useLocalAuth(mode: 'login' | 'signup') {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { username: string; password: string }) =>
+      (mode === 'login' ? localLogin : localSignup)(v.username, v.password),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.me }),
   });
 }
 

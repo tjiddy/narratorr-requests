@@ -59,7 +59,7 @@ export class RequestService {
     const where = conds.length ? and(...conds) : undefined;
 
     const rows = await this.db
-      .select({ request: requests, requester: { publicId: users.publicId, plexUsername: users.plexUsername } })
+      .select({ request: requests, requester: { publicId: users.publicId, username: users.username } })
       .from(requests)
       .innerJoin(users, eq(requests.userId, users.id))
       .where(where)
@@ -75,7 +75,7 @@ export class RequestService {
     return { data: rows.map((r) => this.toDto(r.request, r.requester)), total };
   }
 
-  toDto(row: RequestRow, requester: { publicId: string; plexUsername: string }): RequestDto {
+  toDto(row: RequestRow, requester: { publicId: string; username: string }): RequestDto {
     return {
       publicId: row.publicId,
       asin: row.asin,

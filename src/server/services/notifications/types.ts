@@ -21,7 +21,7 @@ export interface NotificationPayload {
     asin: string;
     coverUrl: string | null;
   };
-  requester: { plexUsername: string };
+  requester: { username: string };
 }
 
 /** Human-facing message, rendered once and handed to every channel. */

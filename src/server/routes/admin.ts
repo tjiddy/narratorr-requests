@@ -42,7 +42,7 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AppDeps): void {
       if (!requester) throw notFound('requester not found');
       return deps.requests.toDto(row, {
         publicId: requester.publicId,
-        plexUsername: requester.plexUsername,
+        username: requester.username,
       });
     },
   );
@@ -66,8 +66,13 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AppDeps): void {
     { schema: { params: userPidParams, body: updateUserBodySchema, response: { 200: userDtoSchema } } },
     async (request) => {
       const admin = requireAdmin(request);
-      if (request.params.publicId === admin.publicId && request.body.role !== undefined) {
-        throw badRequest('SELF_ROLE', "you can't change your own role");
+      // Self-guard: an admin can't change their OWN role or approval status, so the last
+      // admin can't lock themselves out (changing your own quota/auto-approve is harmless).
+      if (
+        request.params.publicId === admin.publicId &&
+        (request.body.role !== undefined || request.body.status !== undefined)
+      ) {
+        throw badRequest('SELF_GUARD', "you can't change your own role or status");
       }
       const updated = await deps.users.updateUser(request.params.publicId, request.body);
       return deps.users.toDto(updated);

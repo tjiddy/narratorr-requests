@@ -8,7 +8,7 @@ import {
   requestListQuerySchema,
 } from '../../shared/schemas/request.js';
 import { listEnvelope, prefixedId } from '../../shared/schemas/v1/common.js';
-import { requireUser } from '../plugins/auth.js';
+import { requireActiveUser } from '../plugins/auth.js';
 import { forbidden, notFound } from '../util/errors.js';
 
 const pidParams = z.object({ publicId: prefixedId('rq') });
@@ -23,7 +23,7 @@ export function registerRequestRoutes(app: FastifyInstance, deps: AppDeps): void
     '/api/requests',
     { schema: { body: createRequestBodySchema, response: { 200: requestDtoSchema, 201: requestDtoSchema } } },
     async (request, reply) => {
-      const user = requireUser(request);
+      const user = requireActiveUser(request);
       const { row, created } = await deps.requests.create(user.id, request.body);
 
       // Notify the admin only for a genuinely new request awaiting review —
@@ -38,11 +38,11 @@ export function registerRequestRoutes(app: FastifyInstance, deps: AppDeps): void
             asin: row.asin,
             coverUrl: row.coverUrl,
           },
-          requester: { plexUsername: user.plexUsername },
+          requester: { username: user.username },
         });
       }
 
-      const dto = deps.requests.toDto(row, { publicId: user.publicId, plexUsername: user.plexUsername });
+      const dto = deps.requests.toDto(row, { publicId: user.publicId, username: user.username });
       return reply.status(created ? 201 : 200).send(dto);
     },
   );
@@ -52,7 +52,7 @@ export function registerRequestRoutes(app: FastifyInstance, deps: AppDeps): void
     '/api/requests',
     { schema: { querystring: requestListQuerySchema, response: { 200: requestListSchema } } },
     async (request) => {
-      const user = requireUser(request);
+      const user = requireActiveUser(request);
       return deps.requests.list({
         userId: user.id,
         ...(request.query.status !== undefined ? { status: request.query.status } : {}),
@@ -67,14 +67,14 @@ export function registerRequestRoutes(app: FastifyInstance, deps: AppDeps): void
     '/api/requests/:publicId',
     { schema: { params: pidParams, response: { 200: requestDtoSchema } } },
     async (request) => {
-      const user = requireUser(request);
+      const user = requireActiveUser(request);
       const row = await deps.requests.getByPublicId(request.params.publicId);
       if (!row) throw notFound('request not found');
       if (row.userId !== user.id && user.role !== 'admin') throw forbidden();
       const requester = await deps.users.getById(row.userId);
       return deps.requests.toDto(row, {
         publicId: requester?.publicId ?? user.publicId,
-        plexUsername: requester?.plexUsername ?? user.plexUsername,
+        username: requester?.username ?? user.username,
       });
     },
   );

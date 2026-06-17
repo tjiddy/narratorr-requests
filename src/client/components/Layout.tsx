@@ -79,7 +79,7 @@ export function Layout({ me }: { me: MeDto }) {
             </nav>
             <div className="ml-1 flex items-center gap-2 sm:gap-3 text-sm">
               <span className="hidden text-muted-foreground sm:inline">
-                {me.plexUsername}
+                {me.username}
                 {me.role === 'admin' && <span className="ml-1 text-primary">★</span>}
               </span>
               <Button

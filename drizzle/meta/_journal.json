@@ -22,6 +22,13 @@
       "when": 1781682798646,
       "tag": "0002_broken_changeling",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1781770000000,
+      "tag": "0003_auth_identity",
+      "breakpoints": true
     }
   ]
 }

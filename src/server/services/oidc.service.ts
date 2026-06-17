@@ -1,6 +1,5 @@
 import * as oidc from 'openid-client';
-import type { PlexProfile } from './user.service.js';
-import { badGateway, badRequest, forbidden } from '../util/errors.js';
+import { badGateway, badRequest } from '../util/errors.js';
 
 export interface OidcServiceConfig {
   issuer: string;
@@ -9,7 +8,7 @@ export interface OidcServiceConfig {
   redirectUri: string;
   /** OAuth scope string, e.g. 'openid profile email'. */
   scope: string;
-  /** Label used in error messages (e.g. 'Plex', 'Authelia'). */
+  /** Label used in error messages + the login button (e.g. 'Plex', 'Authelia'). */
   label: string;
 }
 
@@ -129,89 +128,67 @@ function describe(err: unknown): string {
 }
 
 // =============================================================================
-// Plex adapter (via the plex-oidc-bridge)
+// Generic claim mapper — shared by every OIDC provider
 // =============================================================================
 
-/**
- * Claim adapter: the plex-oidc-bridge's exact claim shape is NOT assumed. Pull a
- * stable subject, a display username, and best-effort email/thumb from the ID-token
- * claims or userinfo, falling through several common keys.
- */
-export function mapPlexClaims(
-  claims: Record<string, unknown>,
-  userinfo: Record<string, unknown> | null,
-): PlexProfile {
-  const ui = userinfo ?? {};
-  const plexId =
-    str(claims['plex_id']) ?? str(claims['plexId']) ?? str(claims['sub']) ?? str(ui['sub']);
-  const plexUsername =
-    str(claims['preferred_username']) ??
-    str(claims['username']) ??
-    str(claims['plex_username']) ??
-    str(claims['name']) ??
-    str(ui['preferred_username']) ??
-    str(ui['name']) ??
-    plexId;
-  if (!plexId || !plexUsername) {
-    throw badGateway('OIDC_CLAIMS', 'Plex OIDC response had no usable subject/username claim');
-  }
-  return {
-    plexId,
-    plexUsername,
-    email: str(claims['email']) ?? str(ui['email']) ?? null,
-    thumb: str(claims['picture']) ?? str(claims['thumb']) ?? str(ui['picture']) ?? null,
-  };
-}
-
-/** Plex allowlist gate: reject accounts not on the configured allowlist (empty = allow any). */
-export function plexAllowlistGate(allowlist: string[]): (profile: PlexProfile) => void {
-  const allowed = new Set(allowlist.map((s) => s.toLowerCase()));
-  return (profile) => {
-    if (allowed.size === 0) return;
-    if (!allowed.has(profile.plexUsername.toLowerCase()) && !allowed.has(profile.plexId.toLowerCase())) {
-      throw forbidden('Your Plex account is not on the allowlist for this server.');
-    }
-  };
-}
-
-// =============================================================================
-// Authelia adapter (operator admin SSO)
-// =============================================================================
-
-export interface AutheliaProfile {
+/** Provider-agnostic identity drawn from ID-token claims (+ best-effort userinfo). */
+export interface OidcProfile {
+  /** Stable provider subject — becomes the user's authSubject for this provider. */
   subject: string;
+  /** Display username (mapped claim, falling back through common keys). */
   username: string;
   email: string | null;
+  thumb: string | null;
 }
 
-/** Authelia emits standard OIDC claims; we take sub + a display username + email. */
-export function mapAutheliaClaims(
-  claims: Record<string, unknown>,
-  userinfo: Record<string, unknown> | null,
-): AutheliaProfile {
-  const ui = userinfo ?? {};
-  const subject = str(claims['sub']) ?? str(ui['sub']);
-  const username =
-    str(claims['preferred_username']) ??
-    str(ui['preferred_username']) ??
-    str(claims['name']) ??
-    str(ui['name']) ??
-    subject;
-  if (!subject || !username) {
-    throw badGateway('OIDC_CLAIMS', 'Authelia OIDC response had no usable subject/username claim');
-  }
-  return { subject, username, email: str(claims['email']) ?? str(ui['email']) ?? null };
+/** Ceiling for provider-controlled identity claims (subject/username). */
+const MAX_CLAIM_LEN = 255;
+
+/** Optional per-provider claim overrides (defaults cover standard OIDC + the Plex bridge). */
+export interface OidcClaimMapping {
+  subjectClaim?: string | undefined;
+  usernameClaim?: string | undefined;
+  emailClaim?: string | undefined;
 }
 
 /**
- * Optional subject pin: when set, only that exact Authelia `sub` may sign in.
- * Belt-and-suspenders on top of Authelia's own access control — null = allow any
- * Authelia account that reaches the flow (fine when Authelia already gates who can).
+ * Build a claim→profile mapper for a provider. The subject defaults to the standard
+ * `sub`; the username falls through preferred_username → username → name (claims, then
+ * userinfo) → subject. Any of these can be pinned to a specific claim via the mapping
+ * (e.g. a provider that puts the stable id somewhere non-standard). Every value goes
+ * through `str()` so a non-string/array/object claim is treated as absent, not coerced.
  */
-export function autheliaAdminGate(adminSubject: string | null): (profile: AutheliaProfile) => void {
-  return (profile) => {
-    if (adminSubject && profile.subject !== adminSubject) {
-      throw forbidden('This Authelia account is not the configured admin.');
+export function makeOidcMapper(
+  label: string,
+  mapping: OidcClaimMapping = {},
+): (claims: Record<string, unknown>, userinfo: Record<string, unknown> | null) => OidcProfile {
+  return (claims, userinfo) => {
+    const ui = userinfo ?? {};
+    const pick = (claim: string | undefined, fallbacks: string[]): string | undefined => {
+      if (claim) return str(claims[claim]) ?? str(ui[claim]);
+      for (const k of fallbacks) {
+        const v = str(claims[k]) ?? str(ui[k]);
+        if (v) return v;
+      }
+      return undefined;
+    };
+
+    const subject = pick(mapping.subjectClaim, ['sub']);
+    const username =
+      pick(mapping.usernameClaim, ['preferred_username', 'username', 'name']) ?? subject;
+    if (!subject || !username) {
+      throw badGateway('OIDC_CLAIMS', `${label} OIDC response had no usable subject/username claim`);
     }
+    // Bound provider-controlled values (subject is a unique-index key). A hostile or buggy
+    // provider must not be able to write multi-kilobyte identity fields.
+    if (subject.length > MAX_CLAIM_LEN || username.length > MAX_CLAIM_LEN) {
+      throw badGateway('OIDC_CLAIMS', `${label} OIDC subject/username claim exceeds ${MAX_CLAIM_LEN} chars`);
+    }
+    return {
+      subject,
+      username,
+      email: pick(mapping.emailClaim, ['email']) ?? null,
+      thumb: str(claims['picture']) ?? str(claims['thumb']) ?? str(ui['picture']) ?? null,
+    };
   };
 }

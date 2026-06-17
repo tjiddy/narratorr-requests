@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { useMe } from './hooks';
-import { ApiError } from './api';
+import { ApiError, logout } from './api';
 import { Layout } from './components/Layout';
 import { SearchPage } from './pages/SearchPage';
 import { MyRequestsPage } from './pages/MyRequestsPage';
@@ -35,6 +36,11 @@ export function App() {
 
   const isAdmin = me.data.role === 'admin';
 
+  // Authenticated but not (yet) approved — admins are always active and skip this.
+  if (!isAdmin && me.data.status !== 'active') {
+    return <AccountStatusScreen status={me.data.status} />;
+  }
+
   return (
     <BrowserRouter>
       <Routes>
@@ -49,5 +55,42 @@ export function App() {
         </Route>
       </Routes>
     </BrowserRouter>
+  );
+}
+
+/** Shown to an authenticated user who hasn't been approved (pending) or was denied
+ *  (rejected). The session is valid but they can't use the app yet. */
+function AccountStatusScreen({ status }: { status: 'pending' | 'rejected' }) {
+  const qc = useQueryClient();
+  const pending = status === 'pending';
+
+  async function signOut() {
+    try {
+      await logout();
+    } finally {
+      qc.clear();
+      window.location.reload();
+    }
+  }
+
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gradient-bg noise-overlay px-4">
+      <div className="glass-card w-full max-w-sm rounded-2xl p-8 text-center">
+        <h1 className="font-display text-xl font-semibold tracking-tight">
+          {pending ? 'Awaiting approval' : 'Access not approved'}
+        </h1>
+        <p className="mt-3 text-sm text-muted-foreground">
+          {pending
+            ? "Your account is waiting for an administrator to approve it. You'll be able to request audiobooks once you're approved."
+            : 'An administrator has not approved your account for this server.'}
+        </p>
+        <button
+          onClick={signOut}
+          className="mt-6 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+        >
+          Sign out
+        </button>
+      </div>
+    </div>
   );
 }

@@ -15,8 +15,8 @@ import type { AuthUser } from '../types.js';
 const codec = new SecretCodec(deriveSettingsKey({ sessionSecret: 'route-test' }));
 const silentLog = { info() {}, warn() {}, error() {}, debug() {} };
 
-const ADMIN: AuthUser = { id: 1, publicId: 'us_admin', plexUsername: 'admin', role: 'admin' };
-const USER: AuthUser = { id: 2, publicId: 'us_user', plexUsername: 'user', role: 'user' };
+const ADMIN: AuthUser = { id: 1, publicId: 'us_admin', username: 'admin', role: 'admin', status: 'active' };
+const USER: AuthUser = { id: 2, publicId: 'us_user', username: 'user', role: 'user', status: 'active' };
 
 let app: FastifyInstance;
 let connectorSettings: ConnectorSettingsService;

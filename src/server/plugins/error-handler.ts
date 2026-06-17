@@ -43,6 +43,14 @@ async function errorHandlerInner(app: FastifyInstance): Promise<void> {
       return reply.status(400).send(errorBody('BAD_REQUEST', error.message));
     }
 
+    // Rate-limit rejections arrive as a plain error carrying statusCode 429 (the limiter
+    // normally formats its own response via errorResponseBuilder; this is belt-and-braces
+    // so a throttle can never masquerade as a 500 and skew 5xx dashboards).
+    if ((error as { statusCode?: number }).statusCode === 429) {
+      request.log.warn({ err: error }, 'rate limited');
+      return reply.status(429).send(errorBody('RATE_LIMITED', 'Too many attempts. Please wait and try again.'));
+    }
+
     request.log.error({ err: error }, error.message || 'Unhandled error');
     return reply.status(500).send(errorBody('INTERNAL', 'Internal server error'));
   });

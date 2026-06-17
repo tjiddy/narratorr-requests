@@ -1,27 +1,38 @@
 import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
-import { USER_ROLES } from '../shared/schemas/user.js';
+import { USER_ROLES, USER_STATUSES } from '../shared/schemas/user.js';
 import { REQUEST_STATUSES, ACTIVE_REQUEST_STATUSES } from '../shared/schemas/request.js';
 import type { StoredConnectors } from '../shared/schemas/connectors.js';
 
 // ============ USERS ============
-// Identity is owned here, keyed on Plex (plexId). The dev-admin (AUTH_BYPASS)
-// is a real row with a sentinel plexId so request creation always runs against a
-// genuine user boundary (Codex risk #1), never a retrofitted fake.
+// Identity is owned here, keyed on a generic (authProvider, authSubject) pair —
+// pluggable across local auth and any OIDC provider. User uniqueness is the pair;
+// there is NO account linking, so a user has exactly one identity (1:1). The
+// dev-admin (AUTH_BYPASS) is a real row (provider 'local', subject 'dev-admin') so
+// request creation always runs against a genuine user boundary, never a retrofit.
 export const users = sqliteTable(
   'users',
   {
     id: integer('id').primaryKey({ autoIncrement: true }),
     publicId: text('public_id').notNull().unique(), // us_...
-    // External identity — exactly one is set per user. Plex covers family/requesters;
-    // Authelia covers the operator's admin SSO. Both nullable + unique (SQLite allows
-    // multiple NULLs). `plexUsername` holds the display name for either provider.
-    plexId: text('plex_id').unique(),
-    autheliaSubject: text('authelia_subject').unique(),
-    plexUsername: text('plex_username').notNull(),
+    // Generic external identity. `authProvider` is the method ('local', 'plex',
+    // 'authelia', or a configured OIDC provider id); `authSubject` is that
+    // provider's stable subject (for local: the lowercased username). The pair is
+    // unique — see the index below.
+    authProvider: text('auth_provider').notNull(),
+    authSubject: text('auth_subject').notNull(),
+    // Display name (provider-agnostic). For local auth this is the original-case
+    // username; for OIDC it's the mapped username claim.
+    username: text('username').notNull(),
+    // scrypt hash for local-auth users; null for OIDC identities (which never
+    // authenticate via the password path).
+    passwordHash: text('password_hash'),
     email: text('email'),
     thumb: text('thumb'),
     role: text('role', { enum: USER_ROLES }).notNull().default('user'),
+    // Approval state (orthogonal to role). New users land 'pending'; an admin
+    // approves (→ 'active') or rejects (→ 'rejected') in the Users page.
+    status: text('status', { enum: USER_STATUSES }).notNull().default('pending'),
     // Per-user override of the app default. null = use the app default.
     requestQuota: integer('request_quota'),
     // Per-user auto-approve: this user's requests skip the pending queue. Orthogonal
@@ -31,7 +42,10 @@ export const users = sqliteTable(
       .notNull()
       .default(sql`(unixepoch())`),
   },
-  (table) => [index('idx_users_plex_username').on(table.plexUsername)],
+  (table) => [
+    uniqueIndex('idx_users_provider_subject').on(table.authProvider, table.authSubject),
+    index('idx_users_username').on(table.username),
+  ],
 );
 
 // ============ REQUESTS ============

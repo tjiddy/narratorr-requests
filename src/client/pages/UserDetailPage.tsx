@@ -43,22 +43,55 @@ function UserDetail({ user }: { user: UserDto }) {
   };
 
   const savingRole = update.isPending && update.variables?.patch.role !== undefined;
+  const savingStatus = update.isPending && update.variables?.patch.status !== undefined;
   const savingQuota = update.isPending && update.variables?.patch.requestQuota !== undefined;
+  const statusVariant = user.status === 'active' ? 'success' : user.status === 'pending' ? 'warning' : 'danger';
 
   return (
     <div className="flex flex-col gap-6">
       <div>
         <Link to="/users" className="text-sm text-muted-foreground hover:text-foreground">← Users</Link>
         <h1 className="mt-2 font-display text-2xl font-semibold tracking-tight">
-          {user.plexUsername}
+          {user.username}
           {isSelf && <span className="ml-2 text-sm font-normal text-muted-foreground/70">(you)</span>}
         </h1>
         {user.email && <p className="text-sm text-muted-foreground">{user.email}</p>}
       </div>
 
       <div className="glass-card flex flex-col gap-4 rounded-xl p-4">
-        {/* Role */}
+        {/* Status (approval queue) */}
         <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="font-medium">Status</p>
+            <p className="text-xs text-muted-foreground/70">Approve to let them request; reject to deny access.</p>
+          </div>
+          <div className="flex shrink-0 items-center gap-3">
+            <Badge variant={statusVariant}>{user.status[0]?.toUpperCase() + user.status.slice(1)}</Badge>
+            {!isSelf && user.status !== 'active' && (
+              <Button
+                variant="success"
+                size="sm"
+                loading={savingStatus}
+                onClick={() => update.mutate({ publicId: user.publicId, patch: { status: 'active' } })}
+              >
+                Approve
+              </Button>
+            )}
+            {!isSelf && user.status === 'active' && (
+              <Button
+                variant="secondary"
+                size="sm"
+                loading={savingStatus}
+                onClick={() => update.mutate({ publicId: user.publicId, patch: { status: 'rejected' } })}
+              >
+                Reject
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* Role */}
+        <div className="flex items-center justify-between gap-4 border-t border-border/50 pt-4">
           <div>
             <p className="font-medium">Role</p>
             <p className="text-xs text-muted-foreground/70">Admins approve requests and manage users.</p>
@@ -127,7 +160,7 @@ function UserDetail({ user }: { user: UserDto }) {
           <EmptyState
             icon={InboxIcon}
             title="No requests"
-            subtitle={`${user.plexUsername} hasn’t requested anything yet.`}
+            subtitle={`${user.username} hasn’t requested anything yet.`}
           />
         )}
         {requests.data && requests.data.data.length > 0 && (

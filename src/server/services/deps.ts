@@ -4,8 +4,8 @@ import type { UserService } from './user.service.js';
 import type { SettingsService } from './settings.service.js';
 import type { RequestService } from './request.service.js';
 import type { SearchService } from './search.service.js';
-import type { OidcService, AutheliaProfile } from './oidc.service.js';
-import type { PlexProfile } from './user.service.js';
+import type { OidcService, OidcProfile } from './oidc.service.js';
+import type { OidcProviderConfig } from '../config.js';
 import type { Notifier } from './notifications/index.js';
 import type { ConnectorSettingsService } from './connector-settings.service.js';
 import type { NarratorrClientHolder } from './narratorr-client-holder.js';
@@ -24,8 +24,7 @@ export interface AppDeps {
   narratorr: NarratorrClientHolder;
   /** Fire-and-forget notification dispatcher; reassigned live when channels are saved. */
   notifier: Notifier;
-  /** null in AUTH_BYPASS mode (or if Plex OIDC isn't configured). */
-  plexOidc: OidcService<PlexProfile> | null;
-  /** Optional operator admin SSO; null unless Authelia OIDC is configured. */
-  autheliaOidc: OidcService<AutheliaProfile> | null;
+  /** Configured OIDC providers (login service + display config), keyed by provider id.
+   *  Empty in AUTH_BYPASS mode or when no OIDC_PROVIDERS are set. */
+  oidc: Map<string, { service: OidcService<OidcProfile>; config: OidcProviderConfig }>;
 }

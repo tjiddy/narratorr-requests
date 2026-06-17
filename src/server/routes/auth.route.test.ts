@@ -1,0 +1,224 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import Fastify, { type FastifyInstance } from 'fastify';
+import cookie from '@fastify/cookie';
+import rateLimit from '@fastify/rate-limit';
+import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fastify-type-provider-zod';
+import { createTestDb } from '../test-support/db.js';
+import { UserService } from '../services/user.service.js';
+import { SettingsService } from '../services/settings.service.js';
+import { RequestService } from '../services/request.service.js';
+import { errorHandlerPlugin } from '../plugins/error-handler.js';
+import { authRateLimitOptions } from '../plugins/rate-limit.js';
+import { authPlugin } from '../plugins/auth.js';
+import { registerAuthRoutes } from './auth.js';
+import { registerRequestRoutes } from './requests.js';
+import type { AppConfig } from '../config.js';
+import type { AppDeps } from '../services/deps.js';
+import type { INarratorrClient } from '../services/narratorr-client.js';
+
+const SESSION_SECRET = 'auth-route-test-secret';
+
+// narratorr isn't reached in these tests (pending users are blocked before handoff).
+const stubNarratorr = {
+  searchMetadata: () => Promise.reject(new Error('not used')),
+  addBook: () => Promise.reject(new Error('not used')),
+  getBook: () => Promise.reject(new Error('not used')),
+} as unknown as INarratorrClient;
+
+// A stub OIDC provider entry for exercising the generic OIDC routes without a real IdP.
+function fakeOidc(profile = { subject: 'oidc-sub-1', username: 'oidcuser', email: null, thumb: null }) {
+  const service = {
+    buildAuthUrl: () => Promise.resolve('https://idp.example.com/authorize?x=1'),
+    handleCallback: () => Promise.resolve(profile),
+  };
+  const config = { id: 'test', label: 'Test', redirectUri: 'http://localhost/api/auth/oidc/test/callback' };
+  return new Map([['test', { service, config }]]) as unknown as AppDeps['oidc'];
+}
+
+async function buildApp(
+  opts: { config?: Partial<AppConfig>; oidc?: AppDeps['oidc'] } = {},
+): Promise<FastifyInstance> {
+  const db = await createTestDb();
+  await new SettingsService(db).ensure(10);
+  const users = new UserService(db, {});
+  const requests = new RequestService(db, stubNarratorr, {
+    defaultQuota: 10,
+    windowDays: 30,
+    autoApproveRoles: ['admin'],
+  });
+  const config = {
+    authMode: 'standard',
+    sessionSecret: SESSION_SECRET,
+    isProd: false,
+    corsOrigin: 'http://localhost',
+    localAuth: true,
+    ...opts.config,
+  } as unknown as AppConfig;
+  const deps = {
+    config,
+    db,
+    users,
+    requests,
+    notifier: { notify: () => Promise.resolve() },
+    oidc: opts.oidc ?? new Map(),
+  } as unknown as AppDeps;
+
+  const f = Fastify().withTypeProvider<ZodTypeProvider>();
+  f.setValidatorCompiler(validatorCompiler);
+  f.setSerializerCompiler(serializerCompiler);
+  await f.register(cookie, { secret: SESSION_SECRET });
+  await f.register(rateLimit, authRateLimitOptions);
+  await f.register(errorHandlerPlugin);
+  await f.register(authPlugin, deps);
+  registerAuthRoutes(f, deps);
+  registerRequestRoutes(f, deps);
+  await f.ready();
+  return f;
+}
+
+function sessionCookie(res: { cookies: Array<{ name: string; value: string }> }): Record<string, string> {
+  const c = res.cookies.find((x) => x.name === 'nreq_session');
+  if (!c) throw new Error('no session cookie set');
+  return { nreq_session: c.value };
+}
+
+let app: FastifyInstance;
+beforeEach(async () => {
+  app = await buildApp();
+});
+afterEach(async () => {
+  await app.close();
+});
+
+const signup = (a: FastifyInstance, username: string, password = 'password123') =>
+  a.inject({ method: 'POST', url: '/api/auth/local/signup', payload: { username, password } });
+const login = (a: FastifyInstance, username: string, password: string) =>
+  a.inject({ method: 'POST', url: '/api/auth/local/login', payload: { username, password } });
+
+describe('GET /api/auth/providers', () => {
+  it('reports local on + no OIDC providers', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/auth/providers' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ local: true, providers: [] });
+  });
+
+  it('reports local off when LOCAL_AUTH is disabled (and the local routes 404)', async () => {
+    const a = await buildApp({ config: { localAuth: false } });
+    expect((await a.inject({ method: 'GET', url: '/api/auth/providers' })).json().local).toBe(false);
+    expect((await signup(a, 'nope')).statusCode).toBe(404); // routes not registered
+    await a.close();
+  });
+});
+
+describe('local signup', () => {
+  it('first user becomes admin + active; the next lands pending', async () => {
+    const firstRes = await signup(app, 'owner');
+    expect(firstRes.statusCode).toBe(200);
+    const firstMe = await app.inject({ method: 'GET', url: '/api/me', cookies: sessionCookie(firstRes) });
+    expect(firstMe.json()).toMatchObject({ username: 'owner', role: 'admin', status: 'active' });
+
+    const secondRes = await signup(app, 'guest');
+    const secondMe = await app.inject({ method: 'GET', url: '/api/me', cookies: sessionCookie(secondRes) });
+    expect(secondMe.json()).toMatchObject({ username: 'guest', role: 'user', status: 'pending' });
+  });
+
+  it('rejects a duplicate username (case-insensitive) with 409', async () => {
+    await signup(app, 'Dup');
+    const dup = await signup(app, 'dup');
+    expect(dup.statusCode).toBe(409);
+    expect(dup.json().error.code).toBe('USERNAME_TAKEN');
+  });
+
+  it('rejects a too-short username/password with 400', async () => {
+    expect((await signup(app, 'ab')).statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: '/api/auth/local/signup', payload: { username: 'okname', password: 'short' } })).statusCode).toBe(400);
+  });
+});
+
+describe('local login', () => {
+  it('verifies the password and is generic on failure', async () => {
+    await signup(app, 'todd', 'hunter2hunter2');
+    expect((await login(app, 'todd', 'hunter2hunter2')).statusCode).toBe(200);
+
+    const wrong = await login(app, 'todd', 'wrongpassword');
+    expect(wrong.statusCode).toBe(401);
+    const missing = await login(app, 'ghost', 'whatever123');
+    expect(missing.statusCode).toBe(401);
+    // Same generic message whether the user exists or not (no enumeration).
+    expect(wrong.json().error.message).toBe(missing.json().error.message);
+  });
+});
+
+describe('approval gate', () => {
+  it('blocks a pending user from creating a request (403 ACCOUNT_PENDING)', async () => {
+    await signup(app, 'owner'); // first user, admin+active
+    const guest = await signup(app, 'guest'); // pending
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/requests',
+      cookies: sessionCookie(guest),
+      payload: { asin: 'B01', title: 'A Book' },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('ACCOUNT_PENDING');
+  });
+
+  it('lets the active admin create a request through the gate', async () => {
+    const owner = await signup(app, 'owner'); // admin+active, auto-approves
+    // Admin auto-approve → handoff to narratorr; our stub rejects, so we only assert the
+    // gate let us THROUGH (not a 401/403). A 5xx from the stub handoff is fine here.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/requests',
+      cookies: sessionCookie(owner),
+      payload: { asin: 'B01', title: 'A Book' },
+    });
+    expect(res.statusCode).not.toBe(401);
+    expect(res.statusCode).not.toBe(403);
+  });
+});
+
+describe('rate limiting', () => {
+  it('returns 429 with the RATE_LIMITED envelope once the signup cap is exceeded', async () => {
+    // Cap is 5/min per (ip, username); the 6th attempt for the same key trips it.
+    let last;
+    for (let i = 0; i < 6; i++) last = await signup(app, 'spammer');
+    expect(last?.statusCode).toBe(429);
+    expect(last?.json().error.code).toBe('RATE_LIMITED');
+  });
+});
+
+describe('generic OIDC routes', () => {
+  it('404s an unknown provider on both login and callback', async () => {
+    expect((await app.inject({ method: 'GET', url: '/api/auth/oidc/nope/login' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: '/api/auth/oidc/nope/callback?code=x&state=y' })).statusCode).toBe(404);
+  });
+
+  it('redirects login to the provider and the callback mints a session', async () => {
+    const a = await buildApp({ oidc: fakeOidc() });
+    const loginRes = await a.inject({ method: 'GET', url: '/api/auth/oidc/test/login' });
+    expect(loginRes.statusCode).toBe(302);
+    expect(loginRes.headers.location).toContain('idp.example.com');
+
+    const cbRes = await a.inject({ method: 'GET', url: '/api/auth/oidc/test/callback?code=x&state=y' });
+    expect(cbRes.statusCode).toBe(302);
+    const me = await a.inject({ method: 'GET', url: '/api/me', cookies: sessionCookie(cbRes) });
+    // First user via OIDC → admin + active.
+    expect(me.json()).toMatchObject({ username: 'oidcuser', authProvider: 'test', role: 'admin', status: 'active' });
+    await a.close();
+  });
+
+  it('redirects to login with ?login_error=oidc when the callback fails', async () => {
+    const failing = new Map([
+      ['test', {
+        service: { buildAuthUrl: () => Promise.resolve('x'), handleCallback: () => Promise.reject(new Error('boom')) },
+        config: { id: 'test', label: 'Test', redirectUri: 'http://localhost/api/auth/oidc/test/callback' },
+      }],
+    ]) as unknown as AppDeps['oidc'];
+    const a = await buildApp({ oidc: failing });
+    const res = await a.inject({ method: 'GET', url: '/api/auth/oidc/test/callback?code=x&state=y' });
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toContain('login_error=oidc');
+    await a.close();
+  });
+});

@@ -15,7 +15,7 @@ const ctx: SendContext = {
   event: 'request.created',
   payload: {
     request: { publicId: 'rq_1', title: 'Dune', author: 'Frank Herbert', asin: 'B1', coverUrl: 'https://x/c.jpg' },
-    requester: { plexUsername: 'todd' },
+    requester: { username: 'todd' },
   },
   message: {
     title: 'New audiobook request',
@@ -75,7 +75,7 @@ describe('WebhookChannel', () => {
     expect(body.content).toContain('https://req.example.com/admin');
     expect(body.event).toBe('request.created');
     expect(body.request.asin).toBe('B1');
-    expect(body.requester.plexUsername).toBe('todd');
+    expect(body.requester.username).toBe('todd');
   });
 });
 

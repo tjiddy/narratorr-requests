@@ -30,7 +30,7 @@ function describeNarratorrError(err: unknown): string {
 function testContext(cfg: NotificationsConfig): SendContext {
   const payload = {
     request: { publicId: 'rq_test', title: 'Test notification', author: 'narrator-request', asin: 'TEST', coverUrl: null },
-    requester: { plexUsername: '(settings test)' },
+    requester: { username: '(settings test)' },
   };
   // Render via the real renderer so a test notification matches production formatting.
   return { event: 'request.created', payload, message: render('request.created', payload, cfg.publicUrl) };

@@ -5,7 +5,7 @@ import type { AppConfig } from '../config.js';
 import type { UserService } from '../services/user.service.js';
 import type { AuthUser } from '../types.js';
 import { createSessionToken, verifySessionToken, SESSION_TTL_MS } from '../util/session.js';
-import { forbidden, unauthorized } from '../util/errors.js';
+import { accountPending, accountRejected, forbidden, unauthorized } from '../util/errors.js';
 
 export const SESSION_COOKIE = 'nreq_session';
 
@@ -70,6 +70,18 @@ export const authPlugin = fp(authPluginInner, { name: 'auth' });
 export function requireUser(request: FastifyRequest): AuthUser {
   if (!request.user) throw unauthorized();
   return request.user;
+}
+
+/**
+ * Throw 401/403 unless the request is an authenticated, *approved* user. Admins are
+ * always treated as active (they can't be locked out by the approval queue). This is
+ * the authorization boundary for every user-facing data route — authentication alone
+ * (a session for a pending/rejected account) is not enough to act.
+ */
+export function requireActiveUser(request: FastifyRequest): AuthUser {
+  const user = requireUser(request);
+  if (user.role === 'admin' || user.status === 'active') return user;
+  throw user.status === 'rejected' ? accountRejected() : accountPending();
 }
 
 /** Throw 401/403 unless the request is an authenticated admin. */

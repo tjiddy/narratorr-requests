@@ -32,7 +32,7 @@ function QueueRow({ r }: { r: RequestDto }) {
           <p className="truncate font-medium">{r.title}</p>
           {r.author && <p className="truncate text-sm text-muted-foreground">{r.author}</p>}
           <p className="text-xs text-muted-foreground/70">
-            by {r.requester.plexUsername} · {new Date(r.requestedAt).toLocaleDateString()}
+            by {r.requester.username} · {new Date(r.requestedAt).toLocaleDateString()}
           </p>
           {r.note && (
             <p className="mt-1 text-xs text-muted-foreground">

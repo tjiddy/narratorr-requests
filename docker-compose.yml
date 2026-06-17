@@ -4,8 +4,8 @@
 # confirm the image runs and serves the UI with zero config. The narratorr connection
 # and notification channels are NOT set here — they're configured in the admin
 # Settings page after first boot (stored encrypted in the DB). For a real deployment,
-# copy .env.docker.example to .env, fill in a session secret + Plex OIDC, and set
-# NODE_ENV=production + AUTH_BYPASS=0.
+# copy .env.docker.example to .env, fill in a session secret + an auth method (local
+# and/or OIDC), and set NODE_ENV=production + AUTH_BYPASS=0.
 services:
   narrator-request:
     # Builds from local source by default. To run the published image instead,
@@ -17,18 +17,26 @@ services:
       - "${PORT:-3000}:3000"
     volumes:
       - narrator-request-data:/data
+    # Inject the whole .env (so arbitrary OIDC_<ID>_* provider vars flow through without
+    # enumerating each one here). Optional — `docker compose up` with no .env still smoke-boots.
+    env_file:
+      - path: .env
+        required: false
     environment:
+      # Container-fixed + smoke defaults. These OVERRIDE env_file, and read your .env via
+      # compose's automatic ${VAR} interpolation, so a real .env still wins.
       TZ: ${TZ:-UTC}
       PORT: 3000
       BIND_HOST: 0.0.0.0
       DATABASE_PATH: /data/narrator-request.db
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
       DEFAULT_REQUEST_QUOTA: ${DEFAULT_REQUEST_QUOTA:-10}
+      TRUST_PROXY: ${TRUST_PROXY:-}
 
-      # --- Smoke defaults (override in .env for production) ---
       # AUTH_BYPASS makes every request the dev admin, so it's only safe on an isolated
       # host — ALLOW_INSECURE_AUTH_BYPASS acknowledges the 0.0.0.0 bind. Search/requests
-      # stay inert until narratorr is configured in Settings.
+      # stay inert until narratorr is configured in Settings. For a real deploy set
+      # NODE_ENV=production + AUTH_BYPASS=0 and configure LOCAL_AUTH and/or OIDC_* in .env.
       NODE_ENV: ${NODE_ENV:-development}
       AUTH_BYPASS: ${AUTH_BYPASS:-1}
       ALLOW_INSECURE_AUTH_BYPASS: ${ALLOW_INSECURE_AUTH_BYPASS:-1}
@@ -38,21 +46,6 @@ services:
       # Optional: stable key for encrypting connector secrets at rest. When unset, the
       # key is derived from SESSION_SECRET — see .env.docker.example for the caveat.
       SETTINGS_KEY: ${SETTINGS_KEY:-}
-
-      # --- Real deployment (set in .env; see .env.docker.example) ---
-      # Plex OIDC (required when AUTH_BYPASS=0). Set PLEX_ALLOWLIST or PLEX_OWNER_USERNAME.
-      PLEX_OIDC_ISSUER: ${PLEX_OIDC_ISSUER:-}
-      PLEX_OIDC_CLIENT_ID: ${PLEX_OIDC_CLIENT_ID:-}
-      PLEX_OIDC_CLIENT_SECRET: ${PLEX_OIDC_CLIENT_SECRET:-}
-      PLEX_OIDC_REDIRECT_URI: ${PLEX_OIDC_REDIRECT_URI:-}
-      PLEX_ALLOWLIST: ${PLEX_ALLOWLIST:-}
-      PLEX_OWNER_USERNAME: ${PLEX_OWNER_USERNAME:-}
-      # Optional operator admin SSO (Authelia OIDC).
-      AUTHELIA_OIDC_ISSUER: ${AUTHELIA_OIDC_ISSUER:-}
-      AUTHELIA_OIDC_CLIENT_ID: ${AUTHELIA_OIDC_CLIENT_ID:-}
-      AUTHELIA_OIDC_CLIENT_SECRET: ${AUTHELIA_OIDC_CLIENT_SECRET:-}
-      AUTHELIA_OIDC_REDIRECT_URI: ${AUTHELIA_OIDC_REDIRECT_URI:-}
-      AUTHELIA_ADMIN_SUBJECT: ${AUTHELIA_ADMIN_SUBJECT:-}
     restart: unless-stopped
 
 volumes:

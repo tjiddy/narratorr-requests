@@ -21,7 +21,7 @@ function fakeChannel(
 
 const payload = {
   request: { publicId: 'rq_1', title: 'Dune', author: 'Frank Herbert', asin: 'B1', coverUrl: 'https://x/c.jpg' },
-  requester: { plexUsername: 'todd' },
+  requester: { username: 'todd' },
 };
 
 describe('Notifier', () => {

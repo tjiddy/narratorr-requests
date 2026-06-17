@@ -8,7 +8,7 @@ const healthSchema = z.object({
   status: z.enum(['ok', 'degraded']),
   db: z.enum(['ok', 'down']),
   narratorrConfigured: z.boolean(),
-  authMode: z.enum(['bypass', 'plex']),
+  authMode: z.enum(['bypass', 'standard']),
 });
 
 /** Liveness + readiness: confirms the DB is actually reachable, not just that the process is up. */

@@ -25,10 +25,19 @@ const intFromString = (def: string) =>
     .transform((v) => Number(v.trim() === '' ? def : v.trim()))
     .pipe(z.number().int());
 
+const TRUTHY = ['1', 'true', 'yes', 'on'];
 const boolFromString = z
   .string()
   .default('')
-  .transform((v) => ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase()));
+  .transform((v) => TRUTHY.includes(v.trim().toLowerCase()));
+
+// Like boolFromString but with a configurable default for the unset/blank case
+// (used for LOCAL_AUTH, which defaults ON so a fresh container always has a way in).
+const boolFromStringDefault = (def: boolean) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v.trim() === '' ? def : TRUTHY.includes(v.trim().toLowerCase())));
 
 // Comma/semicolon separated → trimmed non-empty list.
 const csv = z
@@ -64,19 +73,19 @@ const envSchema = z.object({
   AUTH_BYPASS: boolFromString,
   // Escape hatch to allow AUTH_BYPASS while bound to a non-loopback host.
   ALLOW_INSECURE_AUTH_BYPASS: boolFromString,
-  PLEX_OIDC_ISSUER: z.string().optional(),
-  PLEX_OIDC_CLIENT_ID: z.string().optional(),
-  PLEX_OIDC_CLIENT_SECRET: z.string().optional(),
-  PLEX_OIDC_REDIRECT_URI: z.string().optional(),
-  PLEX_ALLOWLIST: csv,
-  PLEX_OWNER_USERNAME: z.string().optional(),
-  // Authelia OIDC — optional second provider for the operator's own admin login.
-  AUTHELIA_OIDC_ISSUER: z.string().optional(),
-  AUTHELIA_OIDC_CLIENT_ID: z.string().optional(),
-  AUTHELIA_OIDC_CLIENT_SECRET: z.string().optional(),
-  AUTHELIA_OIDC_REDIRECT_URI: z.string().optional(),
-  // Optional pin: only this exact Authelia `sub` may sign in (belt-and-suspenders).
-  AUTHELIA_ADMIN_SUBJECT: z.string().optional(),
+  // Local username/password auth. Default ON so a fresh container always has a way in;
+  // set false (LOCAL_AUTH=false) for pure-OIDC deployments.
+  LOCAL_AUTH: boolFromStringDefault(true),
+  // Comma/semicolon list of OIDC provider ids (each `[a-z0-9_]`, 1–32 chars). Each id's
+  // settings live in `OIDC_<ID>_*` env vars (see parseOidcProviders + docs). Plex (via
+  // bridge) and Authelia are just provider instances now — no special-casing.
+  OIDC_PROVIDERS: csv,
+  // Optional: pin admin to one identity as "<provider>:<subjectOrUsername>" (e.g.
+  // "authelia:todd"). When set, first-user-auto-admin is DISABLED.
+  BOOTSTRAP_ADMIN: z.string().optional(),
+  // Reverse-proxy awareness for client IPs (used for rate-limit keying). '' / 'false' =
+  // off; 'true' = trust all proxies; or a CIDR/IP list or hop count passed to Fastify.
+  TRUST_PROXY: z.string().default(''),
 
   // Requests. Validated here (fail-fast, like PORT): a non-negative integer, with
   // blank/0 meaning unlimited (null). Rejects junk like "10abc" and negatives.
@@ -102,7 +111,10 @@ const isDev = !isProd;
 // container boots with them unset; the admin configures them in the UI. This keeps the
 // app a low-friction "plug-in" sidecar with a minimal env surface (auth + secrets only).
 
-const authMode: 'bypass' | 'plex' = env.AUTH_BYPASS ? 'bypass' : 'plex';
+// Authentication is pluggable: AUTH_BYPASS (dev), local username/password, and N OIDC
+// providers. Authorization (who may actually request) is the in-app approval queue, not
+// auth. `standard` = the real stack (local + OIDC); `bypass` = dev shortcut only.
+const authMode: 'bypass' | 'standard' = env.AUTH_BYPASS ? 'bypass' : 'standard';
 
 if (authMode === 'bypass' && isProd) {
   throw new Error('AUTH_BYPASS must not be enabled in production (NODE_ENV=production).');
@@ -125,82 +137,95 @@ if (!sessionSecret) {
   sessionSecret = randomBytes(32).toString('hex');
 }
 
-// Plex OIDC config is only assembled (and required) when not bypassing auth.
-let plexOidc: {
+export interface OidcProviderConfig {
+  id: string; // lowercase slug; also the user's authProvider value + the route param
+  label: string; // login-button text
   issuer: string;
   clientId: string;
   clientSecret: string | undefined;
   redirectUri: string;
-  allowlist: string[];
-  ownerUsername: string | null;
-} | null = null;
-
-if (authMode === 'plex') {
-  const missing = (
-    [
-      ['PLEX_OIDC_ISSUER', env.PLEX_OIDC_ISSUER],
-      ['PLEX_OIDC_CLIENT_ID', env.PLEX_OIDC_CLIENT_ID],
-      ['PLEX_OIDC_REDIRECT_URI', env.PLEX_OIDC_REDIRECT_URI],
-    ] as const
-  )
-    .filter(([, v]) => !v)
-    .map(([k]) => k);
-  if (missing.length) {
-    throw new Error(
-      `Plex OIDC is enabled (AUTH_BYPASS off) but missing: ${missing.join(', ')}. ` +
-        `Set them or enable AUTH_BYPASS=1 for standalone dev.`,
-    );
-  }
-  // An empty allowlist would let ANY Plex account sign in, and the first becomes
-  // admin. Tolerable in dev; refuse it in production.
-  if (isProd && env.PLEX_ALLOWLIST.length === 0 && !env.PLEX_OWNER_USERNAME) {
-    throw new Error(
-      'In production Plex mode set PLEX_ALLOWLIST or PLEX_OWNER_USERNAME — an empty allowlist ' +
-        'lets any Plex account sign in and the first one become admin.',
-    );
-  }
-  plexOidc = {
-    issuer: env.PLEX_OIDC_ISSUER as string,
-    clientId: env.PLEX_OIDC_CLIENT_ID as string,
-    clientSecret: env.PLEX_OIDC_CLIENT_SECRET,
-    redirectUri: env.PLEX_OIDC_REDIRECT_URI as string,
-    allowlist: env.PLEX_ALLOWLIST,
-    ownerUsername: env.PLEX_OWNER_USERNAME ?? null,
-  };
+  scope: string;
+  subjectClaim: string | undefined;
+  usernameClaim: string | undefined;
+  emailClaim: string | undefined;
 }
 
-// Authelia OIDC: OPTIONAL additional provider (operator's own admin SSO), available
-// only in real-auth (plex) mode. Assembled when the issuer is set; a partial config
-// fails fast like the Plex one.
-let autheliaOidc: {
-  issuer: string;
-  clientId: string;
-  clientSecret: string | undefined;
-  redirectUri: string;
-  adminSubject: string | null;
-} | null = null;
+// Provider ids feed env var names AND a route param — restrict to a safe slug so an id
+// like "../x" or "a/b" can never escape either context.
+const PROVIDER_ID_RE = /^[a-z0-9_]{1,32}$/;
 
-if (authMode === 'plex' && env.AUTHELIA_OIDC_ISSUER) {
-  const missing = (
-    [
-      ['AUTHELIA_OIDC_CLIENT_ID', env.AUTHELIA_OIDC_CLIENT_ID],
-      ['AUTHELIA_OIDC_REDIRECT_URI', env.AUTHELIA_OIDC_REDIRECT_URI],
-    ] as const
-  )
-    .filter(([, v]) => !v)
-    .map(([k]) => k);
-  if (missing.length) {
-    throw new Error(
-      `Authelia OIDC is partially configured (AUTHELIA_OIDC_ISSUER set) but missing: ${missing.join(', ')}.`,
-    );
+export function parseOidcProviders(ids: string[]): OidcProviderConfig[] {
+  const seen = new Set<string>();
+  return ids.map((id) => {
+    if (!PROVIDER_ID_RE.test(id)) {
+      throw new Error(`Invalid OIDC provider id "${id}" — must match ${PROVIDER_ID_RE} (lowercase letters, digits, _).`);
+    }
+    if (seen.has(id)) throw new Error(`Duplicate OIDC provider id "${id}" in OIDC_PROVIDERS.`);
+    seen.add(id);
+    const key = (suffix: string) => {
+      const v = process.env[`OIDC_${id.toUpperCase()}_${suffix}`];
+      return v && v.trim() !== '' ? v.trim() : undefined;
+    };
+    const issuer = key('ISSUER');
+    const clientId = key('CLIENT_ID');
+    const redirectUri = key('REDIRECT_URI');
+    const missing = (
+      [
+        ['ISSUER', issuer],
+        ['CLIENT_ID', clientId],
+        ['REDIRECT_URI', redirectUri],
+      ] as const
+    )
+      .filter(([, v]) => !v)
+      .map(([k]) => `OIDC_${id.toUpperCase()}_${k}`);
+    if (missing.length) {
+      throw new Error(`OIDC provider "${id}" is missing: ${missing.join(', ')}.`);
+    }
+    return {
+      id,
+      label: key('LABEL') ?? id.charAt(0).toUpperCase() + id.slice(1),
+      issuer: issuer as string,
+      clientId: clientId as string,
+      clientSecret: key('CLIENT_SECRET'),
+      redirectUri: redirectUri as string,
+      scope: key('SCOPE') ?? 'openid profile email',
+      subjectClaim: key('SUBJECT_CLAIM'),
+      usernameClaim: key('USERNAME_CLAIM'),
+      emailClaim: key('EMAIL_CLAIM'),
+    };
+  });
+}
+
+export function parseBootstrapAdmin(raw: string | undefined): { provider: string; value: string } | null {
+  if (!raw || raw.trim() === '') return null;
+  const idx = raw.indexOf(':');
+  if (idx <= 0 || idx === raw.length - 1) {
+    throw new Error('BOOTSTRAP_ADMIN must be "<provider>:<subjectOrUsername>" (e.g. "authelia:todd").');
   }
-  autheliaOidc = {
-    issuer: env.AUTHELIA_OIDC_ISSUER,
-    clientId: env.AUTHELIA_OIDC_CLIENT_ID as string,
-    clientSecret: env.AUTHELIA_OIDC_CLIENT_SECRET,
-    redirectUri: env.AUTHELIA_OIDC_REDIRECT_URI as string,
-    adminSubject: env.AUTHELIA_ADMIN_SUBJECT ?? null,
-  };
+  return { provider: raw.slice(0, idx).trim().toLowerCase(), value: raw.slice(idx + 1).trim() };
+}
+
+// Fastify trustProxy: '' / 'false' → off; 'true' → trust all; numeric → hop count;
+// anything else → passed through as a CIDR/IP list.
+export function parseTrustProxy(raw: string): boolean | number | string {
+  const v = raw.trim();
+  if (v === '' || v.toLowerCase() === 'false') return false;
+  if (v.toLowerCase() === 'true') return true;
+  if (/^\d+$/.test(v)) return Number(v);
+  return v;
+}
+
+const localAuth = env.LOCAL_AUTH;
+const oidcProviders = authMode === 'standard' ? parseOidcProviders(env.OIDC_PROVIDERS) : [];
+const bootstrapAdmin = parseBootstrapAdmin(env.BOOTSTRAP_ADMIN);
+const trustProxy = parseTrustProxy(env.TRUST_PROXY);
+
+// A standard-mode install with no way in is a misconfiguration — fail fast at boot.
+if (authMode === 'standard' && !localAuth && oidcProviders.length === 0) {
+  throw new Error(
+    'No authentication method is configured: enable LOCAL_AUTH or configure at least one OIDC ' +
+      'provider via OIDC_PROVIDERS (+ OIDC_<ID>_* env). Or set AUTH_BYPASS=1 for local dev.',
+  );
 }
 
 // Parsed + validated in the env schema (blank/0 → unlimited).
@@ -215,9 +240,11 @@ export const config = {
   databasePath: env.DATABASE_PATH,
   sessionSecret,
   settingsKey: env.SETTINGS_KEY,
+  trustProxy,
   authMode,
-  plexOidc,
-  autheliaOidc,
+  localAuth,
+  oidcProviders,
+  bootstrapAdmin,
   defaultRequestQuota,
   /** Rolling quota window in days (PLAN decision #5). */
   quotaWindowDays: 30,
