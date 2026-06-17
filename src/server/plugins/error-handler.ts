@@ -17,8 +17,17 @@ function isValidationError(error: FastifyError | Error): boolean {
 async function errorHandlerInner(app: FastifyInstance): Promise<void> {
   app.setErrorHandler((error: FastifyError | Error, request, reply) => {
     if (error instanceof ApiError) {
-      if (error.statusCode >= 500) request.log.error({ err: error, code: error.code }, error.message);
-      else request.log.warn({ code: error.code }, error.message);
+      if (error.statusCode >= 500) {
+        request.log.error({ err: error, code: error.code }, error.message);
+        // Keep the machine-readable code, but never leak internal/upstream detail
+        // (e.g. NarratorrError's "Narratorr GET … failed") to the browser.
+        const publicMessage =
+          error.statusCode === 502 || error.statusCode === 503 || error.statusCode === 504
+            ? 'A required service is temporarily unavailable. Please try again.'
+            : 'Internal server error';
+        return reply.status(error.statusCode).send(errorBody(error.code, publicMessage));
+      }
+      request.log.warn({ code: error.code }, error.message);
       return reply.status(error.statusCode).send(errorBody(error.code, error.message));
     }
 
