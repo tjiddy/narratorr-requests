@@ -22,6 +22,7 @@ import {
   mapAutheliaClaims,
   autheliaAdminGate,
 } from './services/oidc.service.js';
+import { buildNotifier } from './services/notifications/index.js';
 import { MOCK_BASE_URL } from './mocks/constants.js';
 import { errorHandlerPlugin } from './plugins/error-handler.js';
 import { authPlugin } from './plugins/auth.js';
@@ -74,11 +75,13 @@ async function main(): Promise<void> {
 
   if (config.authMode === 'bypass') await users.ensureDevAdmin();
 
-  const deps: AppDeps = { config, db, users, settings, requests, search, plexOidc, autheliaOidc };
-
   const app = Fastify({ logger: { level: config.isDev ? 'info' : 'warn' } }).withTypeProvider<ZodTypeProvider>();
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
+
+  // Built after `app` so the dispatcher can log through Fastify's logger.
+  const notifier = buildNotifier(config.notifications, app.log);
+  const deps: AppDeps = { config, db, users, settings, requests, search, plexOidc, autheliaOidc, notifier };
 
   // Serve the built SPA whenever a client build is present — the prod image, a bare
   // `pnpm start`, or the standalone container. Under `pnpm dev` there's no build here

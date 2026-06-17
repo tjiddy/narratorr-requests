@@ -25,6 +25,23 @@ export function registerRequestRoutes(app: FastifyInstance, deps: AppDeps): void
     async (request, reply) => {
       const user = requireUser(request);
       const { row, created } = await deps.requests.create(user.id, request.body);
+
+      // Notify the admin only for a genuinely new request awaiting review —
+      // auto-approved ones (admins / flagged users) need no action. Fire-and-forget:
+      // the dispatcher never throws, and we don't block the response on delivery.
+      if (created && row.status === 'pending') {
+        void deps.notifier.notify('request.created', {
+          request: {
+            publicId: row.publicId,
+            title: row.title,
+            author: row.author,
+            asin: row.asin,
+            coverUrl: row.coverUrl,
+          },
+          requester: { plexUsername: user.plexUsername },
+        });
+      }
+
       const dto = deps.requests.toDto(row, { publicId: user.publicId, plexUsername: user.plexUsername });
       return reply.status(created ? 201 : 200).send(dto);
     },

@@ -87,6 +87,22 @@ const envSchema = z.object({
     .transform((v) => v.trim())
     .refine((v) => v === '' || /^\d+$/.test(v), 'must be a non-negative integer or blank')
     .transform((v) => (v === '' || v === '0' ? null : Number(v))),
+
+  // Notifications (all optional). A channel turns on only when its required vars are
+  // present; PUBLIC_URL is the app's public origin used to deep-link into the queue.
+  PUBLIC_URL: z.string().optional(),
+  NTFY_URL: z.string().optional(),
+  NTFY_TOPIC: z.string().optional(),
+  NTFY_TOKEN: z.string().optional(),
+  NTFY_PRIORITY: z.string().optional(),
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.string().optional(),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_FROM: z.string().optional(),
+  SMTP_TO: z.string().optional(),
+  SMTP_SECURE: boolFromString,
+  NOTIFY_WEBHOOK_URL: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -212,6 +228,48 @@ if (authMode === 'plex' && env.AUTHELIA_OIDC_ISSUER) {
 // Parsed + validated in the env schema (blank/0 → unlimited).
 const defaultRequestQuota = env.DEFAULT_REQUEST_QUOTA;
 
+// --- Notifications -----------------------------------------------------------
+// Each channel is enabled iff its required vars are present; a half-configured
+// channel is almost always a mistake, so fail fast (mirrors the narratorr-mode guard).
+const publicUrl = env.PUBLIC_URL ? env.PUBLIC_URL.replace(/\/+$/, '') : null;
+
+if (Boolean(env.NTFY_URL) !== Boolean(env.NTFY_TOPIC)) {
+  throw new Error('ntfy notifications need BOTH NTFY_URL and NTFY_TOPIC (or neither).');
+}
+const ntfy =
+  env.NTFY_URL && env.NTFY_TOPIC
+    ? {
+        url: env.NTFY_URL.replace(/\/+$/, ''),
+        topic: env.NTFY_TOPIC,
+        token: env.NTFY_TOKEN ?? null,
+        priority: env.NTFY_PRIORITY ?? null,
+      }
+    : null;
+
+// Symmetric guard (like ntfy's): all three required together, or none — a partial
+// email config must fail fast rather than silently disable the channel.
+const smtpAny = Boolean(env.SMTP_HOST || env.SMTP_FROM || env.SMTP_TO);
+const smtpAll = Boolean(env.SMTP_HOST && env.SMTP_FROM && env.SMTP_TO);
+if (smtpAny && !smtpAll) {
+  throw new Error('Email notifications need ALL of SMTP_HOST, SMTP_FROM, and SMTP_TO (or none).');
+}
+const email =
+  env.SMTP_HOST && env.SMTP_FROM && env.SMTP_TO
+    ? {
+        host: env.SMTP_HOST,
+        port: Number(env.SMTP_PORT) || 587,
+        secure: env.SMTP_SECURE,
+        user: env.SMTP_USER ?? null,
+        pass: env.SMTP_PASS ?? null,
+        from: env.SMTP_FROM,
+        to: env.SMTP_TO,
+      }
+    : null;
+
+const webhook = env.NOTIFY_WEBHOOK_URL ? { url: env.NOTIFY_WEBHOOK_URL } : null;
+
+const notifications = { publicUrl, ntfy, email, webhook };
+
 export const config = {
   port: env.PORT,
   bindHost: env.BIND_HOST,
@@ -231,6 +289,8 @@ export const config = {
   defaultRequestQuota,
   /** Rolling quota window in days (PLAN decision #5). */
   quotaWindowDays: 30,
+  notifications,
 };
 
 export type AppConfig = typeof config;
+export type NotificationsConfig = typeof config.notifications;
