@@ -23,7 +23,9 @@ import {
   autheliaAdminGate,
 } from './services/oidc.service.js';
 import { buildNotifier } from './services/notifications/index.js';
-import { MOCK_BASE_URL } from './mocks/constants.js';
+import { ConnectorSettingsService } from './services/connector-settings.service.js';
+import { NarratorrClientHolder } from './services/narratorr-client-holder.js';
+import { SecretCodec, deriveSettingsKey } from './util/secret-codec.js';
 import { errorHandlerPlugin } from './plugins/error-handler.js';
 import { authPlugin } from './plugins/auth.js';
 import { registerRoutes } from './routes/index.js';
@@ -36,22 +38,32 @@ async function main(): Promise<void> {
   await runMigrations(config.databasePath);
   const db = createDb(config.databasePath);
 
-  // Standalone mode: intercept the client's HTTP calls with the MSW contract mock.
-  // Lazily imported so msw/graphql never lands in a production (narratorr-mode) bundle.
-  if (config.mode === 'standalone') {
-    const { createMockNarratorrServer } = await import('./mocks/narratorr-v1.js');
-    createMockNarratorrServer().listen({ onUnhandledRequest: 'bypass' });
-  }
-
-  const narratorr = new NarratorrClient(
-    config.narratorr
-      ? { baseUrl: config.narratorr.url, apiKey: config.narratorr.apiKey }
-      : { baseUrl: MOCK_BASE_URL, apiKey: 'standalone-mock' },
-  );
-
   const users = new UserService(db);
   const settings = new SettingsService(db);
   const settingsRow = await settings.ensure(config.defaultRequestQuota);
+
+  // App (and its logger) first, so the connector service can WARN through it when a
+  // stored secret can't be decrypted.
+  const app = Fastify({ logger: { level: config.isDev ? 'info' : 'warn' } }).withTypeProvider<ZodTypeProvider>();
+  app.setValidatorCompiler(validatorCompiler);
+  app.setSerializerCompiler(serializerCompiler);
+
+  // Connector config (narratorr connection + notification channels) lives in the DB,
+  // edited in the Settings UI — secrets encrypted with a key derived from SETTINGS_KEY
+  // (or SESSION_SECRET). A fresh install boots with narratorr unconfigured; the holder
+  // makes calls fail cleanly until the admin sets it, and saving rebuilds it live.
+  const codec = new SecretCodec(deriveSettingsKey({ settingsKey: config.settingsKey, sessionSecret: config.sessionSecret }));
+  const connectorSettings = new ConnectorSettingsService(db, codec, app.log);
+  const narratorrCfg = await connectorSettings.getNarratorrConfig();
+  const narratorr = new NarratorrClientHolder(
+    narratorrCfg ? new NarratorrClient({ baseUrl: narratorrCfg.url, apiKey: narratorrCfg.apiKey }) : null,
+  );
+  // Surface the unconfigured state at WARN so it survives the prod log level (info is
+  // filtered in production) — the on-call breadcrumb for "search/requests don't work".
+  if (!narratorr.configured) {
+    app.log.warn('narratorr is not configured — search and requests will fail until it is set on the Settings page');
+  }
+
   const requests = new RequestService(db, narratorr, {
     defaultQuota: settingsRow.defaultQuota,
     windowDays: config.quotaWindowDays,
@@ -75,13 +87,20 @@ async function main(): Promise<void> {
 
   if (config.authMode === 'bypass') await users.ensureDevAdmin();
 
-  const app = Fastify({ logger: { level: config.isDev ? 'info' : 'warn' } }).withTypeProvider<ZodTypeProvider>();
-  app.setValidatorCompiler(validatorCompiler);
-  app.setSerializerCompiler(serializerCompiler);
-
-  // Built after `app` so the dispatcher can log through Fastify's logger.
-  const notifier = buildNotifier(config.notifications, app.log);
-  const deps: AppDeps = { config, db, users, settings, requests, search, plexOidc, autheliaOidc, notifier };
+  const notifier = buildNotifier(await connectorSettings.getNotificationsConfig(), app.log);
+  const deps: AppDeps = {
+    config,
+    db,
+    users,
+    settings,
+    requests,
+    search,
+    connectorSettings,
+    narratorr,
+    notifier,
+    plexOidc,
+    autheliaOidc,
+  };
 
   // Serve the built SPA whenever a client build is present — the prod image, a bare
   // `pnpm start`, or the standalone container. Under `pnpm dev` there's no build here
@@ -136,16 +155,17 @@ async function main(): Promise<void> {
 
   await app.listen({ port: config.port, host: config.bindHost });
   app.log.info(
-    `narrator-request on :${config.port} (mode=${config.mode}, auth=${config.authMode})`,
+    `narrator-request on :${config.port} (auth=${config.authMode}, narratorr=${narratorr.configured ? 'configured' : 'unconfigured'})`,
   );
 
-  // Reconcile in-flight acquisitions. Standalone polls fast (the mock advances
-  // over ~9s); a live Narratorr is polled gently.
+  // Reconcile in-flight acquisitions against narratorr. No-op while narratorr is
+  // unconfigured (nothing reaches `acquiring`); the client holder is read live, so it
+  // starts working the moment the connection is saved.
   const poller = new StatusPoller({
     requests,
     client: narratorr,
     logger: app.log,
-    intervalSeconds: config.mode === 'standalone' ? 3 : 20,
+    intervalSeconds: 20,
   });
   poller.start();
 

@@ -56,10 +56,9 @@ const envSchema = z.object({
     .transform((v) => resolveFromRoot(v || './narrator-request.db')),
 
   SESSION_SECRET: z.string().optional(),
-
-  // Narratorr coupling — presence of both flips mode to "narratorr".
-  NARRATORR_URL: z.string().optional(),
-  NARRATORR_API_KEY: z.string().optional(),
+  // Optional: dedicated key for encrypting connector secrets at rest. When unset,
+  // the key is derived from SESSION_SECRET (see secret-codec.deriveSettingsKey).
+  SETTINGS_KEY: z.string().optional(),
 
   // Auth.
   AUTH_BYPASS: boolFromString,
@@ -87,22 +86,6 @@ const envSchema = z.object({
     .transform((v) => v.trim())
     .refine((v) => v === '' || /^\d+$/.test(v), 'must be a non-negative integer or blank')
     .transform((v) => (v === '' || v === '0' ? null : Number(v))),
-
-  // Notifications (all optional). A channel turns on only when its required vars are
-  // present; PUBLIC_URL is the app's public origin used to deep-link into the queue.
-  PUBLIC_URL: z.string().optional(),
-  NTFY_URL: z.string().optional(),
-  NTFY_TOPIC: z.string().optional(),
-  NTFY_TOKEN: z.string().optional(),
-  NTFY_PRIORITY: z.string().optional(),
-  SMTP_HOST: z.string().optional(),
-  SMTP_PORT: z.string().optional(),
-  SMTP_USER: z.string().optional(),
-  SMTP_PASS: z.string().optional(),
-  SMTP_FROM: z.string().optional(),
-  SMTP_TO: z.string().optional(),
-  SMTP_SECURE: boolFromString,
-  NOTIFY_WEBHOOK_URL: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -114,15 +97,10 @@ const env = parsed.data;
 const isProd = env.NODE_ENV === 'production';
 const isDev = !isProd;
 
-// Narratorr mode needs BOTH url + key. Half-configured is almost always a mistake
-// that would silently run against the mock — fail fast instead.
-if (Boolean(env.NARRATORR_URL) !== Boolean(env.NARRATORR_API_KEY)) {
-  throw new Error(
-    'Set BOTH NARRATORR_URL and NARRATORR_API_KEY for narratorr mode, or NEITHER for standalone.',
-  );
-}
-const mode: 'standalone' | 'narratorr' =
-  env.NARRATORR_URL && env.NARRATORR_API_KEY ? 'narratorr' : 'standalone';
+// The narratorr connection + notification channels are NOT env-configured — they're
+// edited on the admin Settings page and stored (secrets encrypted) in the DB. A fresh
+// container boots with them unset; the admin configures them in the UI. This keeps the
+// app a low-friction "plug-in" sidecar with a minimal env surface (auth + secrets only).
 
 const authMode: 'bypass' | 'plex' = env.AUTH_BYPASS ? 'bypass' : 'plex';
 
@@ -228,48 +206,6 @@ if (authMode === 'plex' && env.AUTHELIA_OIDC_ISSUER) {
 // Parsed + validated in the env schema (blank/0 → unlimited).
 const defaultRequestQuota = env.DEFAULT_REQUEST_QUOTA;
 
-// --- Notifications -----------------------------------------------------------
-// Each channel is enabled iff its required vars are present; a half-configured
-// channel is almost always a mistake, so fail fast (mirrors the narratorr-mode guard).
-const publicUrl = env.PUBLIC_URL ? env.PUBLIC_URL.replace(/\/+$/, '') : null;
-
-if (Boolean(env.NTFY_URL) !== Boolean(env.NTFY_TOPIC)) {
-  throw new Error('ntfy notifications need BOTH NTFY_URL and NTFY_TOPIC (or neither).');
-}
-const ntfy =
-  env.NTFY_URL && env.NTFY_TOPIC
-    ? {
-        url: env.NTFY_URL.replace(/\/+$/, ''),
-        topic: env.NTFY_TOPIC,
-        token: env.NTFY_TOKEN ?? null,
-        priority: env.NTFY_PRIORITY ?? null,
-      }
-    : null;
-
-// Symmetric guard (like ntfy's): all three required together, or none — a partial
-// email config must fail fast rather than silently disable the channel.
-const smtpAny = Boolean(env.SMTP_HOST || env.SMTP_FROM || env.SMTP_TO);
-const smtpAll = Boolean(env.SMTP_HOST && env.SMTP_FROM && env.SMTP_TO);
-if (smtpAny && !smtpAll) {
-  throw new Error('Email notifications need ALL of SMTP_HOST, SMTP_FROM, and SMTP_TO (or none).');
-}
-const email =
-  env.SMTP_HOST && env.SMTP_FROM && env.SMTP_TO
-    ? {
-        host: env.SMTP_HOST,
-        port: Number(env.SMTP_PORT) || 587,
-        secure: env.SMTP_SECURE,
-        user: env.SMTP_USER ?? null,
-        pass: env.SMTP_PASS ?? null,
-        from: env.SMTP_FROM,
-        to: env.SMTP_TO,
-      }
-    : null;
-
-const webhook = env.NOTIFY_WEBHOOK_URL ? { url: env.NOTIFY_WEBHOOK_URL } : null;
-
-const notifications = { publicUrl, ntfy, email, webhook };
-
 export const config = {
   port: env.PORT,
   bindHost: env.BIND_HOST,
@@ -278,19 +214,13 @@ export const config = {
   corsOrigin: env.CORS_ORIGIN,
   databasePath: env.DATABASE_PATH,
   sessionSecret,
-  mode,
-  narratorr:
-    mode === 'narratorr'
-      ? { url: env.NARRATORR_URL as string, apiKey: env.NARRATORR_API_KEY as string }
-      : null,
+  settingsKey: env.SETTINGS_KEY,
   authMode,
   plexOidc,
   autheliaOidc,
   defaultRequestQuota,
   /** Rolling quota window in days (PLAN decision #5). */
   quotaWindowDays: 30,
-  notifications,
 };
 
 export type AppConfig = typeof config;
-export type NotificationsConfig = typeof config.notifications;

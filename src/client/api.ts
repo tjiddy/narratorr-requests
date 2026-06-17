@@ -2,6 +2,13 @@ import type { MeDto, UserDto, UpdateUserBody } from '@shared/schemas/user';
 import type { RequestDto, RequestStatus } from '@shared/schemas/request';
 import type { V1AudibleResult } from '@shared/schemas/narratorr-v1';
 import type { ListEnvelope } from '@shared/schemas/v1/common';
+import type {
+  ConnectorSettingsDto,
+  UpdateConnectorSettingsBody,
+  TestConnectorResult,
+} from '@shared/schemas/connectors';
+
+export type ConnectorChannel = 'narratorr' | 'ntfy' | 'email' | 'webhook';
 
 export class ApiError extends Error {
   constructor(
@@ -81,3 +88,20 @@ export const listUserRequests = (publicId: string) =>
   fetch(`/api/admin/users/${publicId}/requests`, opts()).then(parse<ListEnvelope<RequestDto>>);
 
 export const logout = () => fetch('/api/auth/logout', opts({ method: 'POST' })).then(parse<{ ok: true }>);
+
+export const getConnectorSettings = () =>
+  fetch('/api/admin/settings/connectors', opts()).then(parse<ConnectorSettingsDto>);
+
+export const updateConnectorSettings = (body: UpdateConnectorSettingsBody) =>
+  fetch('/api/admin/settings/connectors', opts({
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })).then(parse<ConnectorSettingsDto>);
+
+export const testConnector = (channel: ConnectorChannel) =>
+  fetch('/api/admin/settings/connectors/test', opts({
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ channel }),
+  })).then(parse<TestConnectorResult>);

@@ -1,6 +1,7 @@
 import fp from 'fastify-plugin';
 import type { FastifyError, FastifyInstance } from 'fastify';
 import { ApiError } from '../util/errors.js';
+import { NarratorrError } from '../services/narratorr-client.js';
 import { errorBody } from '../../shared/schemas/v1/common.js';
 
 function isValidationError(error: FastifyError | Error): boolean {
@@ -19,8 +20,14 @@ async function errorHandlerInner(app: FastifyInstance): Promise<void> {
     if (error instanceof ApiError) {
       if (error.statusCode >= 500) {
         request.log.error({ err: error, code: error.code }, error.message);
-        // Keep the machine-readable code, but never leak internal/upstream detail
-        // (e.g. NarratorrError's "Narratorr GET … failed") to the browser.
+        // "Narratorr not configured" is a deliberately user-facing, leak-free message
+        // (the normal state on a fresh install) — let it through the 5xx scrub with a
+        // 503 so the client shows "set it up in Settings" instead of "try again".
+        if (error instanceof NarratorrError && error.upstreamCode === 'NOT_CONFIGURED') {
+          return reply.status(503).send(errorBody('NOT_CONFIGURED', error.message));
+        }
+        // Otherwise keep the machine-readable code but never leak internal/upstream
+        // detail (e.g. NarratorrError's "Narratorr GET … failed") to the browser.
         const publicMessage =
           error.statusCode === 502 || error.statusCode === 503 || error.statusCode === 504
             ? 'A required service is temporarily unavailable. Please try again.'

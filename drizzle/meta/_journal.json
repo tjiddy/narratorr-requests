@@ -15,6 +15,13 @@
       "when": 1781598545437,
       "tag": "0001_nifty_kingpin",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1781682798646,
+      "tag": "0002_broken_changeling",
+      "breakpoints": true
     }
   ]
 }

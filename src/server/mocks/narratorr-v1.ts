@@ -1,13 +1,13 @@
 import { http, HttpResponse, type RequestHandler } from 'msw';
-import { setupServer } from 'msw/node';
 import type { V1AudibleResult, V1Book, BookStatus } from '../../shared/schemas/narratorr-v1.js';
 import { errorBody } from '../../shared/schemas/v1/common.js';
 import { publicId } from '../util/ids.js';
 import { MOCK_BASE_URL } from './constants.js';
 
-// Base origin the standalone client points at; MSW intercepts requests to it so
-// the whole app runs with no Narratorr instance. (Defined in ./constants to keep
-// it importable without pulling msw.)
+// TEST FIXTURE ONLY. These handlers back the contract tests (narratorr-client.test.ts
+// etc.) — there is no standalone runtime mode anymore; production always talks to a
+// real narratorr configured via the Settings UI. MOCK_BASE_URL lives in ./constants so
+// it's importable without pulling msw into a runtime path.
 export { MOCK_BASE_URL };
 
 // ---------------------------------------------------------------------------
@@ -229,9 +229,4 @@ export function narratorrV1Handlers(baseUrl: string = MOCK_BASE_URL): RequestHan
       return HttpResponse.json(toBook(state, Date.now()));
     }),
   ];
-}
-
-/** A configured msw/node server for standalone boot. */
-export function createMockNarratorrServer(baseUrl: string = MOCK_BASE_URL): ReturnType<typeof setupServer> {
-  return setupServer(...narratorrV1Handlers(baseUrl));
 }

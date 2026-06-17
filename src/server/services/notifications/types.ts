@@ -1,8 +1,9 @@
 /**
  * Notification framework — channel-agnostic event dispatch. Mirrors Narratorr's
- * notifier in spirit (fire-and-forget fan-out to N channels) but config-driven:
- * no DB-backed settings, no encrypted-secret store, no per-event UI. Channels are
- * turned on by presence of their env config (see config.ts → buildNotifier).
+ * notifier in spirit (fire-and-forget fan-out to N channels). The config it runs on is
+ * the decrypted connector settings from ConnectorSettingsService.getNotificationsConfig()
+ * (edited in the admin Settings UI, secrets stored encrypted); buildNotifier assembles a
+ * channel for each populated block — see ./index.ts.
  */
 
 /** Events the app can emit. One today; widen the union as more are added. */
@@ -45,6 +46,26 @@ export interface SendContext {
 export interface NotificationChannel {
   readonly name: string;
   send(ctx: SendContext): Promise<void>;
+}
+
+/**
+ * Decrypted notification config the dispatcher is built from. Produced by the
+ * connector-settings service (reads the DB, decrypts secrets); a channel block is
+ * null when unconfigured. Shapes mirror the adapter configs.
+ */
+export interface NotificationsConfig {
+  publicUrl: string | null;
+  ntfy: { url: string; topic: string; token: string | null; priority: string | null } | null;
+  email: {
+    host: string;
+    port: number;
+    secure: boolean;
+    user: string | null;
+    pass: string | null;
+    from: string;
+    to: string;
+  } | null;
+  webhook: { url: string } | null;
 }
 
 /** Minimal structural logger — Fastify's pino logger satisfies it. */

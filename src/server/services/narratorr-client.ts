@@ -93,6 +93,20 @@ export class NarratorrClient {
     return this.request('GET', `/api/v1/books/${encodeURIComponent(publicId)}`, v1BookSchema);
   }
 
+  /**
+   * Connectivity probe for the Settings "Test" button. A bogus book id that returns a
+   * structured 404 proves the URL is reachable AND the API key authenticated — so we
+   * treat a 404 as success and let any other error (network, 401/403, contract) surface.
+   */
+  async ping(): Promise<void> {
+    try {
+      await this.getBook('__healthcheck__');
+    } catch (err) {
+      if (err instanceof NarratorrError && err.upstreamStatus === 404) return;
+      throw err;
+    }
+  }
+
   // --- internals -------------------------------------------------------------
 
   private buildUrl(path: string, query?: Record<string, unknown>): string {

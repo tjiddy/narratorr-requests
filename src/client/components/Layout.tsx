@@ -6,7 +6,7 @@ import type { MeDto } from '@shared/schemas/user';
 import { logout } from '../api';
 import { useTheme } from '../hooks';
 import { Button } from './Button';
-import { SunIcon, MoonIcon, HeadphonesIcon, SearchIcon, InboxIcon, ActivityIcon, UsersIcon } from './icons';
+import { SunIcon, MoonIcon, HeadphonesIcon, SearchIcon, InboxIcon, ActivityIcon, UsersIcon, SettingsIcon } from './icons';
 
 type NavItem = {
   to: string;
@@ -21,6 +21,7 @@ const navItems: NavItem[] = [
   { to: '/requests', label: 'My Requests', icon: InboxIcon },
   { to: '/admin', label: 'Queue', icon: ActivityIcon, adminOnly: true },
   { to: '/users', label: 'Users', icon: UsersIcon, adminOnly: true },
+  { to: '/settings', label: 'Settings', icon: SettingsIcon, adminOnly: true },
 ];
 
 // Pill nav, mirrored from Narratorr's Layout: rounded-xl pills, active link gets

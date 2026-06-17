@@ -7,6 +7,7 @@ import { MyRequestsPage } from './pages/MyRequestsPage';
 import { AdminQueuePage } from './pages/AdminQueuePage';
 import { UsersPage } from './pages/UsersPage';
 import { UserDetailPage } from './pages/UserDetailPage';
+import { SettingsPage } from './pages/SettingsPage';
 import { LoginPage } from './pages/LoginPage';
 
 export function App() {
@@ -43,6 +44,7 @@ export function App() {
           <Route path="admin" element={isAdmin ? <AdminQueuePage /> : <Navigate to="/" replace />} />
           <Route path="users" element={isAdmin ? <UsersPage /> : <Navigate to="/" replace />} />
           <Route path="users/:publicId" element={isAdmin ? <UserDetailPage /> : <Navigate to="/" replace />} />
+          <Route path="settings" element={isAdmin ? <SettingsPage /> : <Navigate to="/" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

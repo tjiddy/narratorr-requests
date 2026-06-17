@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import type { V1AudibleResult } from '@shared/schemas/narratorr-v1';
 import type { RequestStatus } from '@shared/schemas/request';
 import type { UpdateUserBody } from '@shared/schemas/user';
+import type { UpdateConnectorSettingsBody } from '@shared/schemas/connectors';
 import {
   getMe,
   searchCatalog,
@@ -14,6 +15,10 @@ import {
   listUsers,
   updateUser,
   listUserRequests,
+  getConnectorSettings,
+  updateConnectorSettings,
+  testConnector,
+  type ConnectorChannel,
   ApiError,
 } from './api';
 
@@ -83,6 +88,36 @@ export function useDecide() {
       void qc.invalidateQueries({ queryKey: ['admin', 'requests'] });
     },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Action failed'),
+  });
+}
+
+// --- Connector settings (admin) ----------------------------------------------
+export const useConnectorSettings = () =>
+  // No refetch-on-focus: the Settings form remounts on cache change, so a background
+  // refetch would discard in-progress edits.
+  useQuery({
+    queryKey: ['admin', 'settings', 'connectors'],
+    queryFn: getConnectorSettings,
+    refetchOnWindowFocus: false,
+  });
+
+export function useUpdateConnectors() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: UpdateConnectorSettingsBody) => updateConnectorSettings(body),
+    onSuccess: (dto) => {
+      qc.setQueryData(['admin', 'settings', 'connectors'], dto);
+      toast.success('Settings saved');
+    },
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Save failed'),
+  });
+}
+
+export function useTestConnector() {
+  return useMutation({
+    mutationFn: (channel: ConnectorChannel) => testConnector(channel),
+    onSuccess: (res) => (res.success ? toast.success(res.message) : toast.error(res.message)),
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Test failed'),
   });
 }
 

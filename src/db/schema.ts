@@ -2,6 +2,7 @@ import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqli
 import { sql } from 'drizzle-orm';
 import { USER_ROLES } from '../shared/schemas/user.js';
 import { REQUEST_STATUSES, ACTIVE_REQUEST_STATUSES } from '../shared/schemas/request.js';
+import type { StoredConnectors } from '../shared/schemas/connectors.js';
 
 // ============ USERS ============
 // Identity is owned here, keyed on Plex (plexId). The dev-admin (AUTH_BYPASS)
@@ -91,8 +92,13 @@ export const appSettings = sqliteTable('app_settings', {
     .notNull()
     .$type<string[]>()
     .default(sql`'["admin"]'`),
-  // Free-form notification config (placeholder for fast-follow).
+  // Legacy placeholder, never written — superseded by `connectors` below. Kept so the
+  // migration diff stays a clean ADD COLUMN (dropping it makes drizzle-kit prompt).
   notifyConfig: text('notify_config', { mode: 'json' }).$type<Record<string, unknown>>(),
+  // Connector config (narratorr connection + notification channels) edited on the
+  // admin Settings page. Secret fields are stored ENCRYPTED (see SecretCodec). null
+  // until the admin configures it in the UI (no env seeding).
+  connectors: text('connectors', { mode: 'json' }).$type<StoredConnectors>(),
   updatedAt: integer('updated_at', { mode: 'timestamp' })
     .notNull()
     .default(sql`(unixepoch())`),
