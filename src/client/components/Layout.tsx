@@ -62,7 +62,7 @@ export function Layout({ me }: { me: MeDto }) {
               </div>
             </div>
             <span className="font-display text-xl font-semibold tracking-tight sm:text-2xl">
-              Audiobook Requests
+              Requests
             </span>
           </NavLink>
 

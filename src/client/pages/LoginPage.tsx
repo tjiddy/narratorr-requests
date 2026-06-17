@@ -14,7 +14,7 @@ export function LoginPage() {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gradient-bg noise-overlay px-4">
       <div className="glass-card w-full max-w-sm rounded-2xl p-8">
-        <h1 className="text-center font-display text-2xl font-semibold tracking-tight">Audiobook Requests</h1>
+        <h1 className="text-center font-display text-2xl font-semibold tracking-tight">Requests</h1>
         <p className="mt-2 text-center text-sm text-muted-foreground">Sign in to request audiobooks for the library.</p>
 
         {oidcError && (
