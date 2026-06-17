@@ -18,6 +18,12 @@ function RequestRow({ r }: { r: RequestDto }) {
         <p className="text-xs text-muted-foreground/70">
           Requested {new Date(r.requestedAt).toLocaleDateString()}
         </p>
+        {r.note && (
+          <p className="mt-1 text-xs text-muted-foreground">
+            <span className="text-muted-foreground/70">{r.status === 'denied' ? 'Reason: ' : 'Note: '}</span>
+            {r.note}
+          </p>
+        )}
       </div>
       <StatusBadge status={r.status} />
     </li>

@@ -10,41 +10,88 @@ import { Button } from '../components/Button';
 
 function QueueRow({ r }: { r: RequestDto }) {
   const decide = useDecide();
+  const [denying, setDenying] = useState(false);
+  const [reason, setReason] = useState('');
+
+  function confirmDeny() {
+    const note = reason.trim();
+    // Spread the note only when present — passing `note: undefined` trips
+    // exactOptionalPropertyTypes, and an empty reason should stay null.
+    decide.mutate({ publicId: r.publicId, action: 'deny', ...(note ? { note } : {}) });
+  }
+
   return (
-    <li className="glass-card flex items-center gap-4 rounded-xl p-3">
-      {r.coverUrl ? (
-        <img src={r.coverUrl} alt="" className="h-16 w-11 shrink-0 rounded object-cover" />
-      ) : (
-        <div className="h-16 w-11 shrink-0 rounded bg-muted" />
-      )}
-      <div className="min-w-0 flex-1">
-        <p className="truncate font-medium">{r.title}</p>
-        {r.author && <p className="truncate text-sm text-muted-foreground">{r.author}</p>}
-        <p className="text-xs text-muted-foreground/70">
-          by {r.requester.plexUsername} · {new Date(r.requestedAt).toLocaleDateString()}
-        </p>
-      </div>
-      {r.status === 'pending' ? (
-        <div className="flex shrink-0 gap-2">
-          <Button
-            variant="success"
-            size="sm"
-            loading={decide.isPending}
-            onClick={() => decide.mutate({ publicId: r.publicId, action: 'approve' })}
-          >
-            Approve
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={decide.isPending}
-            onClick={() => decide.mutate({ publicId: r.publicId, action: 'deny' })}
-          >
-            Deny
-          </Button>
+    <li className="glass-card flex flex-col gap-3 rounded-xl p-3">
+      <div className="flex items-center gap-4">
+        {r.coverUrl ? (
+          <img src={r.coverUrl} alt="" className="h-16 w-11 shrink-0 rounded object-cover" />
+        ) : (
+          <div className="h-16 w-11 shrink-0 rounded bg-muted" />
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-medium">{r.title}</p>
+          {r.author && <p className="truncate text-sm text-muted-foreground">{r.author}</p>}
+          <p className="text-xs text-muted-foreground/70">
+            by {r.requester.plexUsername} · {new Date(r.requestedAt).toLocaleDateString()}
+          </p>
+          {r.note && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              <span className="text-muted-foreground/70">{r.status === 'denied' ? 'Reason: ' : 'Note: '}</span>
+              {r.note}
+            </p>
+          )}
         </div>
-      ) : (
-        <StatusBadge status={r.status} />
+        {r.status === 'pending' && !denying ? (
+          <div className="flex shrink-0 gap-2">
+            <Button
+              variant="success"
+              size="sm"
+              loading={decide.isPending}
+              onClick={() => decide.mutate({ publicId: r.publicId, action: 'approve' })}
+            >
+              Approve
+            </Button>
+            <Button variant="secondary" size="sm" disabled={decide.isPending} onClick={() => setDenying(true)}>
+              Deny
+            </Button>
+          </div>
+        ) : r.status !== 'pending' ? (
+          <StatusBadge status={r.status} />
+        ) : null}
+      </div>
+
+      {denying && (
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <input
+            autoFocus
+            type="text"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') confirmDeny();
+              if (e.key === 'Escape') setDenying(false);
+            }}
+            maxLength={500}
+            placeholder="Reason (optional) — e.g. this is the German edition"
+            className="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+          <div className="flex shrink-0 gap-2">
+            <Button variant="secondary" size="sm" loading={decide.isPending} onClick={confirmDeny}>
+              Confirm deny
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={decide.isPending}
+              onClick={() => {
+                setDenying(false);
+                setReason('');
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
       )}
     </li>
   );
