@@ -38,7 +38,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
     providers: [...deps.oidc.values()].map(({ config }) => ({ id: config.id, label: config.label })),
   }));
 
-  // --- Local username/password (only when enabled) ---------------------------
+  // --- Local email/password (only when enabled) ------------------------------
   if (deps.config.localAuth) {
     // Sign up → create a local identity. New users land `pending` (approval queue);
     // the very first user in any method becomes admin + active (see UserService).
@@ -46,29 +46,29 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
       '/api/auth/local/signup',
       { ...rl(5), schema: { body: localCredentialsSchema, response: { 200: okSchema } } },
       async (request, reply) => {
-        const { username, password } = request.body;
-        const exists = await deps.users.findLocalByUsername(username);
-        // Signup necessarily reveals whether a username is free (every signup form does);
+        const { email, password } = request.body;
+        const exists = await deps.users.findLocalByEmail(email);
+        // Signup necessarily reveals whether an email is free (every signup form does);
         // accepted low-risk enumeration. Login below stays generic + constant-time.
-        if (exists) throw conflict('USERNAME_TAKEN', 'That username is already taken.');
+        if (exists) throw conflict('EMAIL_TAKEN', 'That email is already registered.');
         const passwordHash = await hashPassword(password);
-        const user = await deps.users.createLocalUser({ username, passwordHash });
+        const user = await deps.users.createLocalUser({ email, passwordHash });
         setSessionCookie(reply, deps.config, user);
         return { ok: true as const };
       },
     );
 
-    // Log in → verify the password. Generic error + a dummy verify when the user is
+    // Log in → verify the password. Generic error + a dummy KDF run when the user is
     // missing (or is an OIDC identity with no hash) so timing/response don't leak which
-    // usernames exist.
+    // emails are registered.
     a.post(
       '/api/auth/local/login',
       { ...rl(10), schema: { body: localCredentialsSchema, response: { 200: okSchema } } },
       async (request, reply) => {
-        const { username, password } = request.body;
-        const user = await deps.users.findLocalByUsername(username);
+        const { email, password } = request.body;
+        const user = await deps.users.findLocalByEmail(email);
         const ok = await verifyPassword(password, user?.passwordHash ?? null);
-        if (!user || !ok) throw unauthorized('Invalid username or password');
+        if (!user || !ok) throw unauthorized('Invalid email or password');
         setSessionCookie(reply, deps.config, user);
         return { ok: true as const };
       },

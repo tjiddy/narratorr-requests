@@ -65,12 +65,12 @@ export const authProvidersDtoSchema = z.object({
 });
 export type AuthProvidersDto = z.infer<typeof authProvidersDtoSchema>;
 
-// Local-auth credentials. Username is ASCII-restricted so its lowercase form is a
-// stable identity key; password floor is 8 (length is the cheap, effective lever).
-export const USERNAME_REGEX = /^[a-zA-Z0-9_.-]{3,32}$/;
+// Local-auth credentials. Email is the login identity (lowercased → the stable subject
+// key) and doubles as the user's contact + display source. Password floor is 8 (length is
+// the cheap, effective lever).
 export const localCredentialsSchema = z
   .object({
-    username: z.string().trim().regex(USERNAME_REGEX, 'username must be 3–32 chars: letters, digits, . _ -'),
+    email: z.string().trim().toLowerCase().pipe(z.email('enter a valid email address').max(254)),
     password: z.string().min(8, 'password must be at least 8 characters').max(200),
   })
   .strict();

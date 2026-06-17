@@ -73,7 +73,7 @@ const envSchema = z.object({
   AUTH_BYPASS: boolFromString,
   // Escape hatch to allow AUTH_BYPASS while bound to a non-loopback host.
   ALLOW_INSECURE_AUTH_BYPASS: boolFromString,
-  // Local username/password auth. Default ON so a fresh container always has a way in;
+  // Local email/password auth. Default ON so a fresh container always has a way in;
   // set false (LOCAL_AUTH=false) for pure-OIDC deployments.
   LOCAL_AUTH: boolFromStringDefault(true),
   // Comma/semicolon list of OIDC provider ids (each `[a-z0-9_]`, 1–32 chars). Each id's
@@ -111,7 +111,7 @@ const isDev = !isProd;
 // container boots with them unset; the admin configures them in the UI. This keeps the
 // app a low-friction "plug-in" sidecar with a minimal env surface (auth + secrets only).
 
-// Authentication is pluggable: AUTH_BYPASS (dev), local username/password, and N OIDC
+// Authentication is pluggable: AUTH_BYPASS (dev), local email/password, and N OIDC
 // providers. Authorization (who may actually request) is the in-app approval queue, not
 // auth. `standard` = the real stack (local + OIDC); `bypass` = dev shortcut only.
 const authMode: 'bypass' | 'standard' = env.AUTH_BYPASS ? 'bypass' : 'standard';

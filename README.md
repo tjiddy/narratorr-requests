@@ -2,7 +2,7 @@
 
 An [Overseerr](https://overseerr.dev/)-style request manager for
 [Narratorr](https://github.com/) (Sonarr/Radarr for audiobooks). Family and friends sign in
-(local username/password or any OIDC provider — Plex bridge, Authelia, Authentik, Google, …),
+(local email/password or any OIDC provider — Plex bridge, Authelia, Authentik, Google, …),
 search/browse audiobooks, and request them. New users land in an **approval queue** until an
 admin lets them in; an admin then approves each request; approved requests are handed to
 Narratorr's `search → download → import` pipeline; the requester is notified when the book is
@@ -43,7 +43,8 @@ Authentication (who you are) is **pluggable**; authorization (who may request) i
 **approval queue**. The two are independent.
 
 - **Methods** — enable either or both:
-  - **Local** username/password (`LOCAL_AUTH=true`, the default). The first signup becomes admin.
+  - **Local** email/password (`LOCAL_AUTH=true`, the default). Email is the login + contact;
+    the first signup becomes admin.
   - **OIDC** — list provider ids in `OIDC_PROVIDERS` and configure each with `OIDC_<ID>_*`
     (issuer / client id / secret / redirect uri / label, plus optional claim overrides). Plex
     (via the bridge), Authelia, Authentik, Keycloak, Pocket-ID, Google, … are all just provider

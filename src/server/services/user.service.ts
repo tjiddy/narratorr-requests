@@ -77,9 +77,9 @@ export class UserService {
     });
   }
 
-  /** Look up a local-auth user by username (case-insensitive via the lowercased subject). */
-  async findLocalByUsername(username: string): Promise<UserRow | undefined> {
-    return this.findByIdentity('local', username.trim().toLowerCase());
+  /** Look up a local-auth user by email (the lowercased email is the local subject key). */
+  async findLocalByEmail(email: string): Promise<UserRow | undefined> {
+    return this.findByIdentity('local', email.trim().toLowerCase());
   }
 
   /** Partial-update a user (admin Users page): role, approval status, per-user quota
@@ -134,14 +134,15 @@ export class UserService {
     });
   }
 
-  /** Create a local-auth user. Subject = lowercased username (the stable key); display
-   *  `username` keeps the original case. Goes through the approval queue. */
-  async createLocalUser(input: { username: string; passwordHash: string }): Promise<UserRow> {
-    const display = input.username.trim();
+  /** Create a local-auth user. The (lowercased) email is the stable subject key and the
+   *  stored contact; the display `username` is the email's local-part. Approval queue applies. */
+  async createLocalUser(input: { email: string; passwordHash: string }): Promise<UserRow> {
+    const email = input.email.trim().toLowerCase();
     return this.createIdentity({
       authProvider: 'local',
-      authSubject: display.toLowerCase(),
-      username: display,
+      authSubject: email,
+      username: email.split('@')[0] || email,
+      email,
       passwordHash: input.passwordHash,
     });
   }

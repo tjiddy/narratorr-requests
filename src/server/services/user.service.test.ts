@@ -89,16 +89,23 @@ describe('UserService OIDC upsert + approval queue', () => {
 });
 
 describe('UserService local auth', () => {
-  it('creates a local user with a lowercased subject and case-insensitive lookup', async () => {
-    const u = await svc.createLocalUser({ username: 'Todd', passwordHash: 'hash' });
-    expect(u).toMatchObject({ authProvider: 'local', authSubject: 'todd', username: 'Todd', role: 'admin', status: 'active' });
-    expect((await svc.findLocalByUsername('TODD'))?.id).toBe(u.id);
-    expect((await svc.findLocalByUsername('todd'))?.passwordHash).toBe('hash');
+  it('keys a local user on the lowercased email; display = local-part; email stored', async () => {
+    const u = await svc.createLocalUser({ email: 'Todd@Example.com', passwordHash: 'hash' });
+    expect(u).toMatchObject({
+      authProvider: 'local',
+      authSubject: 'todd@example.com',
+      username: 'todd',
+      email: 'todd@example.com',
+      role: 'admin',
+      status: 'active',
+    });
+    expect((await svc.findLocalByEmail('TODD@EXAMPLE.COM'))?.id).toBe(u.id);
+    expect((await svc.findLocalByEmail('todd@example.com'))?.passwordHash).toBe('hash');
   });
 
   it('a second local user lands pending', async () => {
-    await svc.createLocalUser({ username: 'first', passwordHash: 'h' });
-    const second = await svc.createLocalUser({ username: 'second', passwordHash: 'h' });
+    await svc.createLocalUser({ email: 'first@x.com', passwordHash: 'h' });
+    const second = await svc.createLocalUser({ email: 'second@x.com', passwordHash: 'h' });
     expect(second).toMatchObject({ role: 'user', status: 'pending' });
   });
 });

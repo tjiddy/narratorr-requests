@@ -66,13 +66,13 @@ export function LoginPage() {
 
 function LocalAuthForm() {
   const [mode, setMode] = useState<'login' | 'signup'>('login');
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const auth = useLocalAuth(mode);
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    auth.mutate({ username: username.trim(), password });
+    auth.mutate({ email: email.trim(), password });
   }
 
   const errorMsg = auth.error ? (auth.error instanceof ApiError ? auth.error.message : 'Something went wrong') : null;
@@ -81,10 +81,11 @@ function LocalAuthForm() {
     <form onSubmit={submit} className="flex flex-col gap-3">
       <input
         className={inputCls}
-        value={username}
-        onChange={(e) => setUsername(e.target.value)}
-        placeholder="Username"
-        autoComplete="username"
+        type="email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        placeholder="Email"
+        autoComplete="email"
         autoCapitalize="none"
         autoCorrect="off"
         spellCheck={false}

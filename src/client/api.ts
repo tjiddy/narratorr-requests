@@ -93,18 +93,18 @@ export const logout = () => fetch('/api/auth/logout', opts({ method: 'POST' })).
 export const getAuthProviders = () =>
   fetch('/api/auth/providers', opts()).then(parse<AuthProvidersDto>);
 
-const postCredentials = (path: string, username: string, password: string) =>
+const postCredentials = (path: string, email: string, password: string) =>
   fetch(path, opts({
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ email, password }),
   })).then(parse<{ ok: true }>);
 
-export const localLogin = (username: string, password: string) =>
-  postCredentials('/api/auth/local/login', username, password);
+export const localLogin = (email: string, password: string) =>
+  postCredentials('/api/auth/local/login', email, password);
 
-export const localSignup = (username: string, password: string) =>
-  postCredentials('/api/auth/local/signup', username, password);
+export const localSignup = (email: string, password: string) =>
+  postCredentials('/api/auth/local/signup', email, password);
 
 export const getConnectorSettings = () =>
   fetch('/api/admin/settings/connectors', opts()).then(parse<ConnectorSettingsDto>);

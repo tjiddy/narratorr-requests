@@ -135,8 +135,8 @@ export const useAuthProviders = () =>
 export function useLocalAuth(mode: 'login' | 'signup') {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { username: string; password: string }) =>
-      (mode === 'login' ? localLogin : localSignup)(v.username, v.password),
+    mutationFn: (v: { email: string; password: string }) =>
+      (mode === 'login' ? localLogin : localSignup)(v.email, v.password),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.me }),
   });
 }
