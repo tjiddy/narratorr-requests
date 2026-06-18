@@ -58,40 +58,46 @@ describe('UserService role/status management', () => {
 describe('UserService OIDC upsert + approval queue', () => {
   it('first user (any method) becomes admin + active; everyone after lands pending', async () => {
     const first = await svc.upsertFromOidc('plex', prof('p1', 'todd'));
-    expect(first).toMatchObject({ role: 'admin', status: 'active', authProvider: 'plex', authSubject: 'p1' });
+    expect(first.created).toBe(true);
+    expect(first.user).toMatchObject({ role: 'admin', status: 'active', authProvider: 'plex', authSubject: 'p1' });
 
     const second = await svc.upsertFromOidc('plex', prof('p2', 'bob'));
-    expect(second).toMatchObject({ role: 'user', status: 'pending' });
+    expect(second.created).toBe(true);
+    expect(second.user).toMatchObject({ role: 'user', status: 'pending' });
   });
 
   it('upserts are keyed on (provider, subject) — same subject across providers = two accounts', async () => {
     const a = await svc.upsertFromOidc('plex', prof('shared', 'a'));
     const b = await svc.upsertFromOidc('authelia', prof('shared', 'b'));
-    expect(a.id).not.toBe(b.id);
+    expect(a.user.id).not.toBe(b.user.id);
     expect((await svc.listAll()).length).toBe(2);
   });
 
-  it('refreshes display fields for a returning active user', async () => {
+  it('refreshes display fields for a returning active user (and reports created=false)', async () => {
     const created = await svc.upsertFromOidc('plex', prof('p1', 'old-name', 'old@x.com'));
+    expect(created.created).toBe(true);
     const again = await svc.upsertFromOidc('plex', prof('p1', 'new-name', 'new@x.com'));
-    expect(again.id).toBe(created.id);
-    expect(again).toMatchObject({ username: 'new-name', email: 'new@x.com' });
+    expect(again.created).toBe(false); // returning login — not a new signup, no notification
+    expect(again.user.id).toBe(created.user.id);
+    expect(again.user).toMatchObject({ username: 'new-name', email: 'new@x.com' });
   });
 
   it('freezes profile metadata for a rejected user on re-login', async () => {
     await svc.upsertFromOidc('plex', prof('p1', 'first')); // becomes admin+active (first user)
     const target = await svc.upsertFromOidc('plex', prof('p2', 'frozen-name', 'a@x.com'));
-    await svc.updateUser(target.publicId, { status: 'rejected' });
+    await svc.updateUser(target.user.publicId, { status: 'rejected' });
 
     const reauth = await svc.upsertFromOidc('plex', prof('p2', 'changed', 'b@x.com'));
-    expect(reauth).toMatchObject({ status: 'rejected', username: 'frozen-name', email: 'a@x.com' });
+    expect(reauth.created).toBe(false);
+    expect(reauth.user).toMatchObject({ status: 'rejected', username: 'frozen-name', email: 'a@x.com' });
   });
 });
 
 describe('UserService local auth', () => {
   it('keys a local user on the lowercased email; display = local-part; email stored', async () => {
     const u = await svc.createLocalUser({ email: 'Todd@Example.com', passwordHash: 'hash' });
-    expect(u).toMatchObject({
+    expect(u.created).toBe(true);
+    expect(u.user).toMatchObject({
       authProvider: 'local',
       authSubject: 'todd@example.com',
       username: 'todd',
@@ -99,14 +105,15 @@ describe('UserService local auth', () => {
       role: 'admin',
       status: 'active',
     });
-    expect((await svc.findLocalByEmail('TODD@EXAMPLE.COM'))?.id).toBe(u.id);
+    expect((await svc.findLocalByEmail('TODD@EXAMPLE.COM'))?.id).toBe(u.user.id);
     expect((await svc.findLocalByEmail('todd@example.com'))?.passwordHash).toBe('hash');
   });
 
   it('a second local user lands pending', async () => {
     await svc.createLocalUser({ email: 'first@x.com', passwordHash: 'h' });
     const second = await svc.createLocalUser({ email: 'second@x.com', passwordHash: 'h' });
-    expect(second).toMatchObject({ role: 'user', status: 'pending' });
+    expect(second.created).toBe(true);
+    expect(second.user).toMatchObject({ role: 'user', status: 'pending' });
   });
 });
 
@@ -116,17 +123,17 @@ describe('UserService BOOTSTRAP_ADMIN', () => {
 
     // First to arrive does NOT match the pin → pending, not admin.
     const stranger = await svc.upsertFromOidc('plex', prof('p1', 'stranger'));
-    expect(stranger).toMatchObject({ role: 'user', status: 'pending' });
+    expect(stranger.user).toMatchObject({ role: 'user', status: 'pending' });
 
     // The pinned identity → admin + active.
     const owner = await svc.upsertFromOidc('authelia', prof('sub-todd', 'todd'));
-    expect(owner).toMatchObject({ role: 'admin', status: 'active' });
+    expect(owner.user).toMatchObject({ role: 'admin', status: 'active' });
   });
 
   it('matches the pin by exact subject too', async () => {
     svc = new UserService(db, { bootstrapAdmin: { provider: 'authelia', value: 'sub-xyz' } });
     const owner = await svc.upsertFromOidc('authelia', prof('sub-xyz', 'display'));
-    expect(owner.role).toBe('admin');
+    expect(owner.user.role).toBe('admin');
   });
 });
 
@@ -144,6 +151,6 @@ describe('UserService.ensureDevAdmin', () => {
     // would land pending with no admin to approve it (bricked install).
     await svc.ensureDevAdmin();
     const firstReal = await svc.upsertFromOidc('plex', prof('p1', 'todd'));
-    expect(firstReal).toMatchObject({ role: 'admin', status: 'active' });
+    expect(firstReal.user).toMatchObject({ role: 'admin', status: 'active' });
   });
 });

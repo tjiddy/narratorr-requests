@@ -25,7 +25,10 @@ export class NtfyChannel implements NotificationChannel {
     if (this.cfg.token) headers.Authorization = `Bearer ${this.cfg.token}`;
     if (this.cfg.priority) headers.Priority = this.cfg.priority;
     if (message.url) headers.Click = message.url;
-    if (payload.request.coverUrl) headers.Icon = payload.request.coverUrl;
+    // Only request events carry a cover; user.pending has no image to attach.
+    if (payload.event === 'request.created' && payload.request.coverUrl) {
+      headers.Icon = payload.request.coverUrl;
+    }
 
     const res = await fetch(`${this.cfg.url}/${this.cfg.topic}`, {
       method: 'POST',

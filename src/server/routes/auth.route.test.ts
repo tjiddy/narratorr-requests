@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
@@ -35,12 +35,20 @@ function fakeOidc(profile = { subject: 'oidc-sub-1', username: 'oidcuser', email
   return new Map([['test', { service, config }]]) as unknown as AppDeps['oidc'];
 }
 
+// Captures the notifier dispatch so tests can assert the user.pending heads-up fires
+// (or doesn't). Reassigned per buildApp() call; the latest app's spy is the live one.
+let notifySpy: ReturnType<typeof vi.fn>;
+// The live UserService so tests can spy on it (e.g. to simulate a signup losing the
+// unique-constraint race). Reassigned per buildApp().
+let usersSvc: UserService;
+
 async function buildApp(
   opts: { config?: Partial<AppConfig>; oidc?: AppDeps['oidc'] } = {},
 ): Promise<FastifyInstance> {
   const db = await createTestDb();
   await new SettingsService(db).ensure(10);
   const users = new UserService(db, {});
+  usersSvc = users;
   const requests = new RequestService(db, stubNarratorr, {
     defaultQuota: 10,
     windowDays: 30,
@@ -54,12 +62,13 @@ async function buildApp(
     localAuth: true,
     ...opts.config,
   } as unknown as AppConfig;
+  notifySpy = vi.fn().mockResolvedValue(undefined);
   const deps = {
     config,
     db,
     users,
     requests,
-    notifier: { notify: () => Promise.resolve() },
+    notifier: { notify: notifySpy },
     oidc: opts.oidc ?? new Map(),
   } as unknown as AppDeps;
 
@@ -123,11 +132,42 @@ describe('local signup', () => {
     expect(secondMe.json()).toMatchObject({ username: 'guest', role: 'user', status: 'pending' });
   });
 
+  it('fires a user.pending notification for a pending signup, never for the first-user admin', async () => {
+    await signup(app, 'owner@example.com'); // first user → admin + active
+    expect(notifySpy).not.toHaveBeenCalled();
+
+    await signup(app, 'guest@example.com'); // → pending
+    expect(notifySpy).toHaveBeenCalledTimes(1);
+    expect(notifySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'user.pending',
+        user: expect.objectContaining({ username: 'guest', authProvider: 'local', email: 'guest@example.com' }),
+      }),
+    );
+  });
+
   it('rejects a duplicate email (case-insensitive) with 409', async () => {
     await signup(app, 'Dup@Example.com');
     const dup = await signup(app, 'dup@example.com');
     expect(dup.statusCode).toBe(409);
     expect(dup.json().error.code).toBe('EMAIL_TAKEN');
+  });
+
+  it('treats a signup that loses the unique-constraint race as EMAIL_TAKEN and mints no session', async () => {
+    // Seed a real "winner" row to hand back from the simulated race.
+    await signup(app, 'winner@example.com');
+    const winner = await usersSvc.findLocalByEmail('winner@example.com');
+    expect(winner).toBeDefined();
+
+    // The racer clears the pre-check (its email isn't stored yet) but loses the INSERT,
+    // so createLocalUser returns the EXISTING row with created=false. The route must NOT
+    // log the racer into the winner's account — it should 409 with no session cookie.
+    vi.spyOn(usersSvc, 'createLocalUser').mockResolvedValue({ user: winner!, created: false });
+
+    const res = await signup(app, 'racer@example.com');
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('EMAIL_TAKEN');
+    expect(res.cookies.find((c) => c.name === 'nreq_session')).toBeUndefined();
   });
 
   it('rejects a malformed email / too-short password with 400', async () => {
@@ -208,6 +248,29 @@ describe('generic OIDC routes', () => {
     const me = await a.inject({ method: 'GET', url: '/api/me', cookies: sessionCookie(cbRes) });
     // First user via OIDC → admin + active.
     expect(me.json()).toMatchObject({ username: 'oidcuser', authProvider: 'test', role: 'admin', status: 'active' });
+    await a.close();
+  });
+
+  it('notifies once when a new OIDC user lands pending, and not on their return login', async () => {
+    const a = await buildApp({ oidc: fakeOidc() });
+    // A local signup claims the first-user admin slot so the OIDC user lands pending.
+    await signup(a, 'owner@example.com');
+    notifySpy.mockClear();
+
+    // New OIDC identity → pending → exactly one heads-up.
+    await a.inject({ method: 'GET', url: '/api/auth/oidc/test/callback?code=x&state=y' });
+    expect(notifySpy).toHaveBeenCalledTimes(1);
+    expect(notifySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'user.pending',
+        user: expect.objectContaining({ username: 'oidcuser', authProvider: 'test' }),
+      }),
+    );
+
+    // The same identity logging back in is not a new signup → no notification.
+    notifySpy.mockClear();
+    await a.inject({ method: 'GET', url: '/api/auth/oidc/test/callback?code=x&state=y' });
+    expect(notifySpy).not.toHaveBeenCalled();
     await a.close();
   });
 

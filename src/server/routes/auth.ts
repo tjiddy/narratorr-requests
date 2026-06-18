@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { AppDeps } from '../services/deps.js';
+import type { UpsertResult } from '../services/user.service.js';
 import { meDtoSchema, authProvidersDtoSchema, localCredentialsSchema } from '../../shared/schemas/user.js';
 import { requireUser, setSessionCookie, clearSessionCookie } from '../plugins/auth.js';
 import { hashPassword, verifyPassword } from '../util/password.js';
@@ -12,6 +13,25 @@ const okSchema = z.object({ ok: z.literal(true) });
 export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
   const a = app.withTypeProvider<ZodTypeProvider>();
   const postLoginRedirect = deps.config.isProd ? '/' : deps.config.corsOrigin;
+
+  // Fire the "new user awaiting approval" heads-up — but ONLY for a freshly-created
+  // identity that landed `pending`. This excludes the first-user-auto-admin and any
+  // BOOTSTRAP_ADMIN (those come back `active`) and returning logins (`created` false),
+  // so an admin is pinged once per genuine signup, never on a repeat sign-in.
+  // Fire-and-forget: the dispatcher never throws and we never block login on delivery.
+  const notifyIfPending = ({ user, created }: UpsertResult): void => {
+    if (created && user.status === 'pending') {
+      void deps.notifier.notify({
+        event: 'user.pending',
+        user: {
+          publicId: user.publicId,
+          username: user.username,
+          email: user.email,
+          authProvider: user.authProvider,
+        },
+      });
+    }
+  };
 
   // Opt-in rate limit on the auth endpoints (the limiter is global:false, so polling
   // routes are never throttled). Keyed on IP + username (see index.ts) and resolved
@@ -52,8 +72,16 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
         // accepted low-risk enumeration. Login below stays generic + constant-time.
         if (exists) throw conflict('EMAIL_TAKEN', 'That email is already registered.');
         const passwordHash = await hashPassword(password);
-        const user = await deps.users.createLocalUser({ email, passwordHash });
-        setSessionCookie(reply, deps.config, user);
+        const result = await deps.users.createLocalUser({ email, passwordHash });
+        // Race guard: two concurrent signups for the same email both clear the pre-check
+        // above, then one wins the INSERT and the other hits the unique (provider,subject)
+        // index — createLocalUser returns the EXISTING row with created=false. For local
+        // auth that means the email is taken; we must NOT mint a session, or the losing
+        // racer would be logged into the winner's account without its password. (OIDC's
+        // return-existing-on-conflict is correct there — same subject is the same person.)
+        if (!result.created) throw conflict('EMAIL_TAKEN', 'That email is already registered.');
+        setSessionCookie(reply, deps.config, result.user);
+        notifyIfPending(result);
         return { ok: true as const };
       },
     );
@@ -96,8 +124,9 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
       const callbackUrl = new URL(entry.config.redirectUri);
       callbackUrl.search = new URL(request.url, callbackUrl.origin).search;
       const profile = await entry.service.handleCallback(callbackUrl.toString());
-      const user = await deps.users.upsertFromOidc(provider, profile);
-      setSessionCookie(reply, deps.config, user);
+      const result = await deps.users.upsertFromOidc(provider, profile);
+      setSessionCookie(reply, deps.config, result.user);
+      notifyIfPending(result);
       return reply.redirect(postLoginRedirect);
     } catch (err) {
       // This is a top-level browser navigation — a raw JSON error page is a dead end.

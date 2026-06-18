@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Notifier } from './notifier.service.js';
-import type { NotificationChannel, NotifierLogger, SendContext } from './types.js';
+import type { NotificationChannel, NotificationPayload, NotifierLogger, SendContext } from './types.js';
 
 const silentLog: NotifierLogger = { info() {}, warn() {}, error() {}, debug() {} };
 
@@ -19,9 +19,15 @@ function fakeChannel(
   };
 }
 
-const payload = {
+const payload: NotificationPayload = {
+  event: 'request.created',
   request: { publicId: 'rq_1', title: 'Dune', author: 'Frank Herbert', asin: 'B1', coverUrl: 'https://x/c.jpg' },
   requester: { username: 'todd' },
+};
+
+const userPending: NotificationPayload = {
+  event: 'user.pending',
+  user: { publicId: 'us_1', username: 'newbie', email: 'newbie@x.com', authProvider: 'authelia' },
 };
 
 describe('Notifier', () => {
@@ -30,7 +36,7 @@ describe('Notifier', () => {
     const b = fakeChannel('b');
     const n = new Notifier([a, b], 'https://req.example.com', silentLog);
 
-    await n.notify('request.created', payload);
+    await n.notify(payload);
 
     expect(a.calls).toHaveLength(1);
     expect(b.calls).toHaveLength(1);
@@ -38,6 +44,19 @@ describe('Notifier', () => {
     expect(a.calls[0]!.message.body).toContain('todd');
     expect(a.calls[0]!.message.body).toContain('Dune');
     expect(a.calls[0]!.message.url).toBe('https://req.example.com/admin');
+  });
+
+  it('renders a user.pending event and deep-links to the Users page', async () => {
+    const a = fakeChannel('a');
+    const n = new Notifier([a], 'https://req.example.com', silentLog);
+
+    await n.notify(userPending);
+
+    expect(a.calls[0]!.message.title).toBe('New user awaiting approval');
+    expect(a.calls[0]!.message.body).toContain('newbie');
+    expect(a.calls[0]!.message.body).toContain('authelia');
+    // Approving a user happens on /users, not the request queue.
+    expect(a.calls[0]!.message.url).toBe('https://req.example.com/users');
   });
 
   it('isolates a failing channel — the others still fire and notify resolves', async () => {
@@ -48,7 +67,7 @@ describe('Notifier', () => {
     const warn = vi.fn();
     const n = new Notifier([boom, ok], null, { ...silentLog, warn });
 
-    await expect(n.notify('request.created', payload)).resolves.toBeUndefined();
+    await expect(n.notify(payload)).resolves.toBeUndefined();
     expect(ok.calls).toHaveLength(1);
     expect(warn).toHaveBeenCalledOnce();
   });
@@ -57,7 +76,7 @@ describe('Notifier', () => {
     const a = fakeChannel('a');
     const n = new Notifier([a], null, silentLog);
 
-    await n.notify('request.created', payload);
+    await n.notify(payload);
 
     expect(a.calls[0]!.message.url).toBeNull();
   });
@@ -65,6 +84,6 @@ describe('Notifier', () => {
   it('is a no-op when no channels are configured', async () => {
     const n = new Notifier([], null, silentLog);
     expect(n.enabled).toBe(false);
-    await expect(n.notify('request.created', payload)).resolves.toBeUndefined();
+    await expect(n.notify(payload)).resolves.toBeUndefined();
   });
 });

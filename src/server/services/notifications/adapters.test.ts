@@ -12,8 +12,8 @@ import { EmailChannel } from './adapters/email.js';
 import type { SendContext } from './types.js';
 
 const ctx: SendContext = {
-  event: 'request.created',
   payload: {
+    event: 'request.created',
     request: { publicId: 'rq_1', title: 'Dune', author: 'Frank Herbert', asin: 'B1', coverUrl: 'https://x/c.jpg' },
     requester: { username: 'todd' },
   },
@@ -21,6 +21,20 @@ const ctx: SendContext = {
     title: 'New audiobook request',
     body: 'todd requested “Dune” by Frank Herbert.',
     url: 'https://req.example.com/admin',
+  },
+};
+
+// A user.pending event carries no request/cover — adapters that read the payload
+// directly must narrow on `event` instead of assuming a request is present.
+const userCtx: SendContext = {
+  payload: {
+    event: 'user.pending',
+    user: { publicId: 'us_1', username: 'newbie', email: 'newbie@x.com', authProvider: 'authelia' },
+  },
+  message: {
+    title: 'New user awaiting approval',
+    body: 'newbie (newbie@x.com) signed up via authelia and is waiting for your approval.',
+    url: 'https://req.example.com/users',
   },
 };
 
@@ -53,6 +67,14 @@ describe('NtfyChannel', () => {
     const ch = new NtfyChannel({ url: 'https://ntfy.sh', topic: 'narr', token: null, priority: null });
     await expect(ch.send(ctx)).rejects.toThrow(/500/);
   });
+
+  it('omits the Icon header for an event with no cover (user.pending)', async () => {
+    const ch = new NtfyChannel({ url: 'https://ntfy.sh', topic: 'narr', token: null, priority: null });
+    await ch.send(userCtx);
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(init.headers.Icon).toBeUndefined();
+    expect(init.headers.Click).toBe('https://req.example.com/users');
+  });
 });
 
 describe('WebhookChannel', () => {
@@ -76,6 +98,16 @@ describe('WebhookChannel', () => {
     expect(body.event).toBe('request.created');
     expect(body.request.asin).toBe('B1');
     expect(body.requester.username).toBe('todd');
+  });
+
+  it('carries the user (not a request) for a user.pending event', async () => {
+    const ch = new WebhookChannel({ url: 'https://discord/webhook' });
+    await ch.send(userCtx);
+
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body);
+    expect(body.event).toBe('user.pending');
+    expect(body.user.username).toBe('newbie');
+    expect(body.request).toBeUndefined();
   });
 });
 

@@ -27,6 +27,17 @@ export interface BootstrapAdmin {
   value: string;
 }
 
+/**
+ * Result of a login/signup upsert. `created` is true only when THIS call inserted a
+ * brand-new identity — the auth routes use it to fire the `user.pending` notification
+ * exactly once (a returning user re-logging in must not re-notify). Mirrors
+ * RequestService.create's `{ row, created }`.
+ */
+export interface UpsertResult {
+  user: UserRow;
+  created: boolean;
+}
+
 export class UserService {
   constructor(
     private readonly db: Db,
@@ -108,10 +119,10 @@ export class UserService {
    * Role/status are never downgraded here. A new identity goes through the approval
    * queue (see `createIdentity`).
    */
-  async upsertFromOidc(provider: string, profile: OidcProfile): Promise<UserRow> {
+  async upsertFromOidc(provider: string, profile: OidcProfile): Promise<UpsertResult> {
     const existing = await this.findByIdentity(provider, profile.subject);
     if (existing) {
-      if (existing.status === 'rejected') return existing;
+      if (existing.status === 'rejected') return { user: existing, created: false };
       // Coalesce email/thumb against the stored row: a later login that omits a claim
       // shouldn't blank out a value we already have.
       const [updated] = await this.db
@@ -123,7 +134,7 @@ export class UserService {
         })
         .where(eq(users.id, existing.id))
         .returning();
-      return updated ?? existing;
+      return { user: updated ?? existing, created: false };
     }
     return this.createIdentity({
       authProvider: provider,
@@ -136,7 +147,7 @@ export class UserService {
 
   /** Create a local-auth user. The (lowercased) email is the stable subject key and the
    *  stored contact; the display `username` is the email's local-part. Approval queue applies. */
-  async createLocalUser(input: { email: string; passwordHash: string }): Promise<UserRow> {
+  async createLocalUser(input: { email: string; passwordHash: string }): Promise<UpsertResult> {
     const email = input.email.trim().toLowerCase();
     return this.createIdentity({
       authProvider: 'local',
@@ -156,7 +167,7 @@ export class UserService {
    * read-on-conflict if the unique (provider, subject) index fires from a concurrent
    * identical login.
    */
-  private async createIdentity(identity: NewIdentity): Promise<UserRow> {
+  private async createIdentity(identity: NewIdentity): Promise<UpsertResult> {
     const literal = this.bootstrapGrant(identity);
     // First-user-admin as an atomic subquery (only when no bootstrap pin is set). The
     // count EXCLUDES the AUTH_BYPASS dev-admin sentinel so that flipping a smoke install
@@ -185,11 +196,13 @@ export class UserService {
         })
         .returning();
       if (!created) throw new Error('failed to create user');
-      return created;
+      return { user: created, created: true };
     } catch (err) {
       if (isUniqueViolation(err)) {
+        // Lost a race to a concurrent identical login — the row already exists and we
+        // did NOT create it, so the caller must not treat this as a new signup.
         const existing = await this.findByIdentity(identity.authProvider, identity.authSubject);
-        if (existing) return existing;
+        if (existing) return { user: existing, created: false };
       }
       throw err;
     }

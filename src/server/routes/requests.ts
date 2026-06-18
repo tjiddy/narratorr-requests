@@ -30,7 +30,8 @@ export function registerRequestRoutes(app: FastifyInstance, deps: AppDeps): void
       // auto-approved ones (admins / flagged users) need no action. Fire-and-forget:
       // the dispatcher never throws, and we don't block the response on delivery.
       if (created && row.status === 'pending') {
-        void deps.notifier.notify('request.created', {
+        void deps.notifier.notify({
+          event: 'request.created',
           request: {
             publicId: row.publicId,
             title: row.title,

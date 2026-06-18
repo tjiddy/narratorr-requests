@@ -6,34 +6,48 @@
  * channel for each populated block — see ./index.ts.
  */
 
-/** Events the app can emit. One today; widen the union as more are added. */
-export type NotificationEvent = 'request.created';
-
 /**
- * Structured data the renderer + adapters draw from. A single shape today; promote
- * to a discriminated union keyed on event when a second event needs different data.
+ * Everything the app can notify about, as a discriminated union keyed on `event`.
+ * Each member carries exactly the data that event needs — the renderer and the
+ * adapters narrow on `event`. Add an event by adding a member here, a `case` in
+ * render(), and (only if it carries channel-specific data) a branch in the adapters
+ * that read the payload directly (ntfy cover icon, webhook body).
  */
-export interface NotificationPayload {
-  request: {
-    publicId: string;
-    title: string;
-    author: string | null;
-    asin: string;
-    coverUrl: string | null;
-  };
-  requester: { username: string };
-}
+export type NotificationPayload =
+  | {
+      event: 'request.created';
+      request: {
+        publicId: string;
+        title: string;
+        author: string | null;
+        asin: string;
+        coverUrl: string | null;
+      };
+      requester: { username: string };
+    }
+  | {
+      event: 'user.pending';
+      user: {
+        publicId: string;
+        username: string;
+        email: string | null;
+        authProvider: string;
+      };
+    };
+
+/** The set of event keys — the discriminant of NotificationPayload. */
+export type NotificationEvent = NotificationPayload['event'];
 
 /** Human-facing message, rendered once and handed to every channel. */
 export interface RenderedMessage {
   title: string;
   body: string;
-  /** Deep link to act on the event (the admin queue), or null if PUBLIC_URL is unset. */
+  /** Deep link to act on the event (admin queue / users page), or null if PUBLIC_URL is unset. */
   url: string | null;
 }
 
+/** What each channel's send() receives: the structured event + the rendered message. */
 export interface SendContext {
-  event: NotificationEvent;
   payload: NotificationPayload;
   message: RenderedMessage;
 }

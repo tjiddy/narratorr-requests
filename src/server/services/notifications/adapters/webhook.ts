@@ -13,18 +13,18 @@ export class WebhookChannel implements NotificationChannel {
   readonly name = 'webhook';
   constructor(private readonly cfg: WebhookConfig) {}
 
-  async send({ event, payload, message }: SendContext): Promise<void> {
+  async send({ payload, message }: SendContext): Promise<void> {
     const content = [message.title, message.body, message.url].filter(Boolean).join('\n');
+    // `content` works for Discord (it renders that and ignores the rest); the
+    // event-specific fields give a generic consumer the structured data.
+    const structured =
+      payload.event === 'request.created'
+        ? { request: payload.request, requester: payload.requester }
+        : { user: payload.user };
     const res = await fetch(this.cfg.url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        content,
-        event,
-        request: payload.request,
-        requester: payload.requester,
-        url: message.url,
-      }),
+      body: JSON.stringify({ content, event: payload.event, ...structured, url: message.url }),
       // Bound the call — see ntfy adapter: a hung endpoint must not leak sockets.
       signal: AbortSignal.timeout(10_000),
     });
