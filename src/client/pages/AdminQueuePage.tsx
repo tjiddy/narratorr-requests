@@ -24,9 +24,9 @@ function QueueRow({ r }: { r: RequestDto }) {
     <li className="glass-card flex flex-col gap-3 rounded-xl p-3">
       <div className="flex items-center gap-4">
         {r.coverUrl ? (
-          <img src={r.coverUrl} alt="" className="h-16 w-11 shrink-0 rounded object-cover" />
+          <img src={r.coverUrl} alt="" className="h-16 w-16 shrink-0 rounded object-cover" />
         ) : (
-          <div className="h-16 w-11 shrink-0 rounded bg-muted" />
+          <div className="h-16 w-16 shrink-0 rounded bg-muted" />
         )}
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium">{r.title}</p>

@@ -8,9 +8,9 @@ function RequestRow({ r }: { r: RequestDto }) {
   return (
     <li className="glass-card flex items-center gap-4 rounded-xl p-3">
       {r.coverUrl ? (
-        <img src={r.coverUrl} alt="" className="h-16 w-11 shrink-0 rounded object-cover" />
+        <img src={r.coverUrl} alt="" className="h-16 w-16 shrink-0 rounded object-cover" />
       ) : (
-        <div className="h-16 w-11 shrink-0 rounded bg-muted" />
+        <div className="h-16 w-16 shrink-0 rounded bg-muted" />
       )}
       <div className="min-w-0 flex-1">
         <p className="truncate font-medium">{r.title}</p>
