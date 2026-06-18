@@ -31,7 +31,7 @@ services:
       DATABASE_PATH: /data/narrator-request.db
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
       DEFAULT_REQUEST_QUOTA: ${DEFAULT_REQUEST_QUOTA:-10}
-      TRUST_PROXY: ${TRUST_PROXY:-}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
 
       # AUTH_BYPASS makes every request the dev admin, so it's only safe on an isolated
       # host — ALLOW_INSECURE_AUTH_BYPASS acknowledges the 0.0.0.0 bind. Search/requests

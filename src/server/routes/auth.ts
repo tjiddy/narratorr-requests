@@ -15,7 +15,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
 
   // Opt-in rate limit on the auth endpoints (the limiter is global:false, so polling
   // routes are never throttled). Keyed on IP + username (see index.ts) and resolved
-  // against the real client IP via TRUST_PROXY behind a proxy. Disabled under AUTH_BYPASS
+  // against the real client IP via TRUSTED_PROXIES behind a proxy. Disabled under AUTH_BYPASS
   // (every request is the dev admin there — a limiter would only let a dev self-lockout).
   // CSRF on these state-changing POSTs rests on the session cookie's SameSite=Lax, which
   // blocks cross-site POSTs from carrying it; the single-origin CORS policy backs it up.

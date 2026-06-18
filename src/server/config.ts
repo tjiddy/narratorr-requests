@@ -85,7 +85,8 @@ const envSchema = z.object({
   BOOTSTRAP_ADMIN: z.string().optional(),
   // Reverse-proxy awareness for client IPs (used for rate-limit keying). '' / 'false' =
   // off; 'true' = trust all proxies; or a CIDR/IP list or hop count passed to Fastify.
-  TRUST_PROXY: z.string().default(''),
+  // Named to match narratorr's env (both map to Fastify's `trustProxy`).
+  TRUSTED_PROXIES: z.string().default(''),
 
   // Requests. Validated here (fail-fast, like PORT): a non-negative integer, with
   // blank/0 meaning unlimited (null). Rejects junk like "10abc" and negatives.
@@ -218,7 +219,7 @@ export function parseTrustProxy(raw: string): boolean | number | string {
 const localAuth = env.LOCAL_AUTH;
 const oidcProviders = authMode === 'standard' ? parseOidcProviders(env.OIDC_PROVIDERS) : [];
 const bootstrapAdmin = parseBootstrapAdmin(env.BOOTSTRAP_ADMIN);
-const trustProxy = parseTrustProxy(env.TRUST_PROXY);
+const trustProxy = parseTrustProxy(env.TRUSTED_PROXIES);
 
 // A standard-mode install with no way in is a misconfiguration — fail fast at boot.
 if (authMode === 'standard' && !localAuth && oidcProviders.length === 0) {

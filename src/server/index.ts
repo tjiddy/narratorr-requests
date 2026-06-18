@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   const app = Fastify({
     logger: { level: config.isDev ? 'info' : 'warn' },
     // Behind a reverse proxy, trust X-Forwarded-* so request.ip is the real client (used
-    // for auth rate-limit keying). Off by default; configured via TRUST_PROXY.
+    // for auth rate-limit keying). Off by default; configured via TRUSTED_PROXIES.
     trustProxy: config.trustProxy,
   }).withTypeProvider<ZodTypeProvider>();
   app.setValidatorCompiler(validatorCompiler);

@@ -10,7 +10,7 @@ import type { FastifyRequest } from 'fastify';
  * - keyed on client IP + attempted email: one fat-fingered member behind a shared
  *   NAT/proxy IP can't lock out the household, while per-account guessing is still capped.
  *   (Routes with no email body — e.g. OIDC login — key on IP alone.) Behind a proxy,
- *   set TRUST_PROXY so `req.ip` is the real client.
+ *   set TRUSTED_PROXIES so `req.ip` is the real client.
  *
  * When the cap trips, the plugin throws an error carrying `statusCode: 429`; the central
  * error handler turns that into the app's `RATE_LIMITED` envelope (see error-handler.ts),

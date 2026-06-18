@@ -56,7 +56,7 @@ Authentication (who you are) is **pluggable**; authorization (who may request) i
   disables first-user-auto-admin so a stranger can't grab it by signing in first).
 - **Dev** — `AUTH_BYPASS=1` seeds a dev admin and makes every request that admin, so it's
   refused in production and on non-loopback binds.
-- Behind a reverse proxy, set `TRUST_PROXY` so the real client IP is used for the login
+- Behind a reverse proxy, set `TRUSTED_PROXIES` (same var name as narratorr) so the real client IP is used for the login
   rate-limit. See [`.env.example`](.env.example) for copy-paste presets.
 
 > Single-instance note: OIDC login state and the auth rate-limiter are in-memory, so running

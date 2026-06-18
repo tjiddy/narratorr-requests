@@ -227,7 +227,7 @@ Codex reviewed this plan; I agree with all findings. Changes folded in:
    (closes "first public OIDC login owns the app" for open IdPs like any-Plex/any-Google). When unset,
    fall back to first-user-admin (fine for local-auth bootstrap / single-user IdP). Generalizes the old
    `PLEX_OWNER_USERNAME`.
-7. **Rate-limit keying + proxy [SHOULD-FIX].** Add `TRUST_PROXY` env (default off; `true`/CIDR behind a
+7. **Rate-limit keying + proxy [SHOULD-FIX].** Add `TRUSTED_PROXIES` env (default off; `true`/CIDR behind a
    reverse proxy) → Fastify `trustProxy`. Rate-limit local login by `IP + normalized username`, signup by
    `IP + username`; skip entirely in `AUTH_BYPASS`.
 8. **Route policy, explicit [SHOULD-FIX].** `requireActiveUser` gates ALL user-facing data routes:
