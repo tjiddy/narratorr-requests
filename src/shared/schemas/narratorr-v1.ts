@@ -74,6 +74,20 @@ export const v1AudibleResultSchema = z.object({
   publishedDate: z.string().nullable().optional(),
   duration: z.number().nullable().optional(), // seconds (not sent today; tolerated)
   language: z.string().nullable().optional(),
+  // Library cross-reference (narratorr #1537): narratorr annotates each result with
+  // its OWN library status for that ASIN, so the UI can show "In library" / "On the
+  // way" instead of a redundant Request button. The raw BookStatus comes from narratorr;
+  // the tri-state collapse is the consumer's (see client/components/book-card-state.ts).
+  // Additive + best-effort: absent until narratorr ships/deploys the field, `null` when
+  // the book isn't owned, and `.catch(undefined)` degrades a malformed/unknown-status
+  // annotation to "not owned" rather than 502-ing the whole search — this is decoration,
+  // never load-bearing like the poll `status` on v1BookSchema. `bookId` is an opaque
+  // `bk_…` publicId (kept as a plain string per the ids-are-opaque rule above).
+  library: z
+    .object({ bookId: z.string(), status: bookStatusSchema })
+    .nullable()
+    .optional()
+    .catch(undefined),
 });
 export type V1AudibleResult = z.infer<typeof v1AudibleResultSchema>;
 

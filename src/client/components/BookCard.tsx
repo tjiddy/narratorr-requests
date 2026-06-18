@@ -3,13 +3,15 @@ import type { V1AudibleResult } from '@shared/schemas/narratorr-v1';
 import type { RequestStatus } from '@shared/schemas/request';
 import { useRequestBook } from '../hooks';
 import { StatusBadge } from './StatusBadge';
+import { Badge } from './Badge';
 import { Button } from './Button';
+import { resolveBookCardState } from './book-card-state';
 
 function Cover({ url, title }: { url: string | null; title: string }) {
   const [broken, setBroken] = useState(false);
   if (!url || broken) {
     return (
-      <div className="flex aspect-2/3 w-full items-center justify-center bg-gradient-to-br from-muted to-card p-3 text-center text-sm font-medium text-muted-foreground">
+      <div className="flex aspect-square w-full items-center justify-center bg-gradient-to-br from-muted to-card p-3 text-center text-sm font-medium text-muted-foreground">
         {title}
       </div>
     );
@@ -20,7 +22,7 @@ function Cover({ url, title }: { url: string | null; title: string }) {
       alt={`Cover of ${title}`}
       loading="lazy"
       onError={() => setBroken(true)}
-      className="aspect-2/3 w-full object-cover"
+      className="aspect-square w-full object-cover"
     />
   );
 }
@@ -35,6 +37,7 @@ export function BookCard({
   const request = useRequestBook();
   const author = result.authors.map((a) => a.name).join(', ');
   const narrator = result.narrators.map((n) => n.name).join(', ');
+  const state = resolveBookCardState(result.library, requestedStatus);
 
   return (
     <div className="glass-card flex flex-col overflow-hidden rounded-xl transition-all hover:-translate-y-0.5 hover:shadow-card-hover">
@@ -52,8 +55,15 @@ export function BookCard({
           </p>
         )}
         <div className="mt-auto pt-2">
-          {requestedStatus ? (
-            <StatusBadge status={requestedStatus} />
+          {state.kind === 'request-status' ? (
+            <StatusBadge status={state.status} />
+          ) : state.kind === 'library' ? (
+            <Badge variant={state.variant}>
+              {state.pulse && (
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" aria-hidden />
+              )}
+              {state.label}
+            </Badge>
           ) : (
             <Button
               variant="primary"

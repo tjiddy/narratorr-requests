@@ -143,6 +143,18 @@ function projectStatus(state: BookState, nowMs: number): BookStatus {
   return 'imported';
 }
 
+/**
+ * Library cross-reference for a search result (narratorr #1537): a result is annotated
+ * iff narratorr already has a book record for that ASIN (added in this session), with
+ * the live projected status. Absent otherwise — exactly the contract the consumer codes
+ * against. So: search → request → search again now shows "On the way" / "In library".
+ */
+function libraryFor(asin: string, nowMs: number): V1AudibleResult['library'] {
+  const state = bookByAsin.get(asin);
+  if (!state) return undefined;
+  return { bookId: state.id, status: projectStatus(state, nowMs) };
+}
+
 function toBook(state: BookState, nowMs: number): V1Book {
   const f = byAsin.get(state.asin)!;
   return {
@@ -174,9 +186,13 @@ export function narratorrV1Handlers(baseUrl: string = MOCK_BASE_URL): RequestHan
       if (unauth) return unauth;
       const q = (new URL(request.url).searchParams.get('q') ?? '').trim().toLowerCase();
       if (!q) return HttpResponse.json(errorBody('BAD_REQUEST', 'q is required'), { status: 400 });
+      const now = Date.now();
       const data: V1AudibleResult[] = CATALOG.filter((f) => {
         const hay = `${f.title} ${f.authors.map((a) => a.name).join(' ')} ${f.series?.name ?? ''}`.toLowerCase();
         return hay.includes(q);
+      }).map((f) => {
+        const library = libraryFor(f.asin, now);
+        return library ? { ...f, library } : f;
       });
       return HttpResponse.json({ data, total: data.length });
     }),

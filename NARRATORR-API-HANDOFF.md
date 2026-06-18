@@ -135,6 +135,41 @@ proposal is to expose it on v1 as a thin wrapper.
 - 🤝 **Open question:** people are `{ name, asin? }` here, not `{ id, name }` like `BookV1` —
   because these are *pre-add* metadata results with no `bk_`/person `publicId` yet. If you prefer
   a different identity, say so; we'll adapt. (See §6.)
+- 🤝 **NEW ask — library cross-reference (Overseerr tri-state).** Today the consumer can only show
+  "already requested" for books **this user** personally requested (it cross-references the user's
+  own request list client-side). It has **no way to know a result is already in the Narratorr
+  library** (imported by someone else, or pre-existing), so it shows a "Request" button on books
+  the library already owns — the most confusing gap vs. Overseerr. `V1AudibleResult` is pure
+  Audible metadata; only Narratorr knows its own library, so this must come from you.
+
+  **Proposal — annotate each result with its library status, matched by `asin` server-side:**
+
+  ```ts
+  {
+    // …existing V1AudibleResult fields…
+    library?: {                 // 🤝 null/absent = not in library (→ "Request")
+      bookId: string,           //    bk_… of the existing library book
+      status: BookStatus,       //    'wanted'|'searching'|'downloading'|'importing'|'imported'|'failed'|'missing'
+    } | null,
+  }
+  ```
+
+  Consumer renders the tri-state from it: `imported` → **"In library"** (no Request button);
+  in-flight (`wanted`/`searching`/`downloading`/`importing`) → **"On the way"**; `failed`/`missing`
+  or absent → **"Request"** (re-request allowed). This is exactly Overseerr's Available/Requested/
+  Request, minus the per-user "Requested" piece we already do ourselves.
+
+  - **Why on the search response (not a separate consumer call):** Narratorr owns the library, so
+    matching the result ASINs against it is one indexed lookup on your side — vs. the consumer
+    firing an N-result fan-out of "do you have this ASIN?" calls. Keeps the consumer thin and
+    avoids hammering you. 🤝 your call: if you'd rather expose a batch
+    `POST /api/v1/library/by-asin { asins[] } → { asin: { bookId, status } }` and let us join,
+    that's fine too — we'll adapt.
+  - **Compat / failure mode:** purely additive + optional. We're non-strict, so absent = "not in
+    library." Best-effort — if the cross-ref fails, omit it; never fail the search over it.
+  - **Auth/scope:** same key + scope as the base search call.
+  - **Acceptance:** searching a title already imported in Narratorr returns that result with
+    `library.status === 'imported'`; a title not in the library returns `library` null/absent.
 
 ### 4.2 `POST /api/v1/acquisitions` — the request-app write path
 
