@@ -49,9 +49,15 @@ export function BookCard({
         {author && <p className="truncate text-sm text-muted-foreground">{author}</p>}
         {narrator && <p className="truncate text-xs text-muted-foreground/70">Narrated by {narrator}</p>}
         {result.series && (
-          <p className="truncate text-xs text-muted-foreground/70">
-            {result.series.name}
-            {result.series.position != null && ` #${result.series.position}`}
+          // Pin the book number so it's never the casualty of truncation — it's the
+          // signal that this title is part of a series at all. Only the (often long)
+          // series name ellipsizes; the full string is on hover.
+          <p
+            className="flex items-baseline gap-1 text-xs font-medium text-primary/90"
+            title={`${result.series.name}${result.series.position != null ? ` #${result.series.position}` : ''}`}
+          >
+            <span className="min-w-0 truncate">{result.series.name}</span>
+            {result.series.position != null && <span className="shrink-0">#{result.series.position}</span>}
           </p>
         )}
         <div className="mt-auto pt-2">
