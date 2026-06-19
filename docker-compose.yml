@@ -1,4 +1,4 @@
-# narrator-request — single-container deploy.
+# narratorr-request — single-container deploy.
 #
 # `docker compose up` boots in AUTH_BYPASS smoke mode (seeded dev admin) so you can
 # confirm the image runs and serves the UI with zero config. The narratorr connection
@@ -7,16 +7,16 @@
 # copy .env.docker.example to .env, fill in a session secret + an auth method (local
 # and/or OIDC), and set NODE_ENV=production + AUTH_BYPASS=0.
 services:
-  narrator-request:
+  narratorr-request:
     # Builds from local source by default. To run the published image instead,
     # comment out `build:` and `docker compose pull` (tags published by .github/workflows/docker.yml).
     build: .
     image: narratorr/narratorr-request:latest
-    container_name: narrator-request
+    container_name: narratorr-request
     ports:
       - "${PORT:-3000}:3000"
     volumes:
-      - narrator-request-data:/data
+      - narratorr-request-data:/data
     # Inject the whole .env (so arbitrary OIDC_<ID>_* provider vars flow through without
     # enumerating each one here). Optional — `docker compose up` with no .env still smoke-boots.
     env_file:
@@ -28,7 +28,7 @@ services:
       TZ: ${TZ:-UTC}
       PORT: 3000
       BIND_HOST: 0.0.0.0
-      DATABASE_PATH: /data/narrator-request.db
+      DATABASE_PATH: /data/narratorr-request.db
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
       DEFAULT_REQUEST_QUOTA: ${DEFAULT_REQUEST_QUOTA:-10}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
@@ -49,4 +49,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  narrator-request-data:
+  narratorr-request-data:

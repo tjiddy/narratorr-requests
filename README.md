@@ -1,4 +1,4 @@
-# narrator-request
+# narratorr-request
 
 An [Overseerr](https://overseerr.dev/)-style request manager for
 [Narratorr](https://github.com/) (Sonarr/Radarr for audiobooks). Family and friends sign in
@@ -103,12 +103,12 @@ In production the app **refuses to start** without a `SESSION_SECRET`, refuses `
 entirely, and requires at least one auth method (`LOCAL_AUTH` or an OIDC provider) — so a
 misconfigured deployment fails fast rather than exposing an open admin. The build is a 3-stage
 `node:24-slim` image that runs as the non-root `node` user; the DB persists in the
-`narrator-request-data` volume (`/data`).
+`narratorr-request-data` volume (`/data`).
 
 > **Upgrading:** migrations apply automatically on boot and are **forward-only** (no
 > down-migrations). The v0.8.0 auth migration (`0003`) rebuilds the `users` table in place —
 > it's atomic and preserves existing users + request history, but it is **irreversible**.
-> Before upgrading a populated instance, **snapshot the `narrator-request-data` volume**;
+> Before upgrading a populated instance, **snapshot the `narratorr-request-data` volume**;
 > to roll back, restore that snapshot and redeploy the previous image (the old image can't
 > run against the new schema).
 

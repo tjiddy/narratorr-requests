@@ -196,7 +196,7 @@ function SettingsForm({ initial }: { initial: ConnectorSettingsDto }) {
           <input className={inputCls} value={ntfyUrl} onChange={(e) => setNtfyUrl(e.target.value)} placeholder="https://ntfy.sh" />
         </Field>
         <Field label="Topic">
-          <input className={inputCls} value={ntfyTopic} onChange={(e) => setNtfyTopic(e.target.value)} placeholder="my-narrator-requests" />
+          <input className={inputCls} value={ntfyTopic} onChange={(e) => setNtfyTopic(e.target.value)} placeholder="my-narratorr-requests" />
         </Field>
         <Field label="Access token" hint={ntfyHasToken ? 'Leave blank to keep the current token.' : 'Only needed for protected topics.'}>
           <input className={inputCls} type="password" autoComplete="off" value={ntfyToken} onChange={(e) => setNtfyToken(e.target.value)} placeholder={secretPlaceholder(ntfyHasToken)} />
@@ -246,7 +246,7 @@ function SettingsForm({ initial }: { initial: ConnectorSettingsDto }) {
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="From">
-            <input className={inputCls} value={emailFrom} onChange={(e) => setEmailFrom(e.target.value)} placeholder="narrator-request@example.com" />
+            <input className={inputCls} value={emailFrom} onChange={(e) => setEmailFrom(e.target.value)} placeholder="narratorr-request@example.com" />
           </Field>
           <Field label="To (admin)">
             <input className={inputCls} value={emailTo} onChange={(e) => setEmailTo(e.target.value)} placeholder="you@example.com" />

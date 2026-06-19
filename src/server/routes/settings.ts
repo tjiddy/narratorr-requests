@@ -31,7 +31,7 @@ function describeNarratorrError(err: unknown): string {
 function testContext(cfg: NotificationsConfig): SendContext {
   const payload: NotificationPayload = {
     event: 'request.created',
-    request: { publicId: 'rq_test', title: 'Test notification', author: 'narrator-request', asin: 'TEST', coverUrl: null },
+    request: { publicId: 'rq_test', title: 'Test notification', author: 'narratorr-request', asin: 'TEST', coverUrl: null },
     requester: { username: '(settings test)' },
   };
   // Render via the real renderer so a test notification matches production formatting.

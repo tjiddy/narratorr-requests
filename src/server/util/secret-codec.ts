@@ -19,7 +19,7 @@ const TAG_LEN = 16;
 /** Derive a stable 32-byte key from whichever source string is configured. */
 export function deriveSettingsKey(opts: { settingsKey?: string | undefined; sessionSecret: string }): Buffer {
   const source = opts.settingsKey?.trim() || opts.sessionSecret;
-  const derived = hkdfSync('sha256', source, new Uint8Array(0), 'narrator-request:settings:v1', 32);
+  const derived = hkdfSync('sha256', source, new Uint8Array(0), 'narratorr-request:settings:v1', 32);
   return Buffer.from(derived);
 }
 

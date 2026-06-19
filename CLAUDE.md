@@ -1,4 +1,4 @@
-# CLAUDE.md — narrator-request
+# CLAUDE.md — narratorr-request
 
 Operating notes for working in this codebase. The user-facing pitch + run instructions are in
 [`README.md`](README.md); this file is the conventions/gotchas an agent or contributor needs to
