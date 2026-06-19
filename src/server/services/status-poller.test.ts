@@ -7,7 +7,8 @@ import { createTestDb, insertUser } from '../test-support/db.js';
 import { requests } from '../../db/schema.js';
 import type { Db } from '../../db/client.js';
 import type { FastifyBaseLogger } from 'fastify';
-import type { V1Book, BookStatus } from '../../shared/schemas/narratorr-v1.js';
+import type { V1Book } from '../../shared/schemas/v1/books.js';
+import type { BookStatus } from '../../shared/schemas/book.js';
 
 const noopLogger = {
   info() {},

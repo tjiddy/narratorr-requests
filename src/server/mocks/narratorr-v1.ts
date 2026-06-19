@@ -1,5 +1,7 @@
 import { http, HttpResponse, type RequestHandler } from 'msw';
-import type { V1AudibleResult, V1Book, BookStatus } from '../../shared/schemas/narratorr-v1.js';
+import type { V1AudibleResult } from '../../shared/schemas/v1/metadata.js';
+import type { V1Book } from '../../shared/schemas/v1/books.js';
+import type { BookStatus } from '../../shared/schemas/book.js';
 import { errorBody } from '../../shared/schemas/v1/common.js';
 import { publicId } from '../util/ids.js';
 import { MOCK_BASE_URL } from './constants.js';

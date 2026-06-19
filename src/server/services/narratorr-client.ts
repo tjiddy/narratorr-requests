@@ -1,10 +1,6 @@
 import type { z } from 'zod';
-import {
-  v1AudibleSearchSchema,
-  v1BookSchema,
-  type V1AudibleResult,
-  type V1Book,
-} from '../../shared/schemas/narratorr-v1.js';
+import { v1AudibleSearchSchema, type V1AudibleResult } from '../../shared/schemas/v1/metadata.js';
+import { v1BookSchema, type V1Book } from '../../shared/schemas/v1/books.js';
 import { errorEnvelopeSchema } from '../../shared/schemas/v1/common.js';
 import { ApiError } from '../util/errors.js';
 

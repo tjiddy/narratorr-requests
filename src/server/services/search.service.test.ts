@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { SearchService } from './search.service.js';
 import type { INarratorrClient } from './narratorr-client.js';
-import type { V1AudibleResult } from '../../shared/schemas/narratorr-v1.js';
+import type { V1AudibleResult } from '../../shared/schemas/v1/metadata.js';
 
 function fakeClient() {
   let calls = 0;

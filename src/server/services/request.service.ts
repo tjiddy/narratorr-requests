@@ -9,7 +9,7 @@ import type {
 } from '../../shared/schemas/request.js';
 import { OPEN_REQUEST_STATUSES, ACTIVE_REQUEST_STATUSES } from '../../shared/schemas/request.js';
 import type { Role } from '../../shared/schemas/user.js';
-import type { V1Book } from '../../shared/schemas/narratorr-v1.js';
+import type { V1Book } from '../../shared/schemas/v1/books.js';
 import type { INarratorrClient } from './narratorr-client.js';
 import { NarratorrError } from './narratorr-client.js';
 import { publicId } from '../util/ids.js';

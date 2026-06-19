@@ -1,6 +1,6 @@
 import type { MeDto, UserDto, UpdateUserBody, AuthProvidersDto } from '@shared/schemas/user';
 import type { RequestDto, RequestStatus } from '@shared/schemas/request';
-import type { V1AudibleResult } from '@shared/schemas/narratorr-v1';
+import type { V1AudibleResult } from '@shared/schemas/v1/metadata';
 import type { ListEnvelope } from '@shared/schemas/v1/common';
 import type {
   ConnectorSettingsDto,

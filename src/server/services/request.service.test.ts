@@ -5,7 +5,8 @@ import { NarratorrError, type INarratorrClient } from './narratorr-client.js';
 import { createTestDb, insertUser } from '../test-support/db.js';
 import { requests } from '../../db/schema.js';
 import type { Db } from '../../db/client.js';
-import type { V1Book, BookStatus } from '../../shared/schemas/narratorr-v1.js';
+import type { V1Book } from '../../shared/schemas/v1/books.js';
+import type { BookStatus } from '../../shared/schemas/book.js';
 import type { CreateRequestBody } from '../../shared/schemas/request.js';
 
 /** Configurable fake — controls the book status the handoff/poll observes. */

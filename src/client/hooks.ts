@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import type { V1AudibleResult } from '@shared/schemas/narratorr-v1';
+import type { V1AudibleResult } from '@shared/schemas/v1/metadata';
 import type { RequestStatus } from '@shared/schemas/request';
 import type { UpdateUserBody } from '@shared/schemas/user';
 import type { UpdateConnectorSettingsBody } from '@shared/schemas/connectors';

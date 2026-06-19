@@ -1,4 +1,4 @@
-import type { V1AudibleResult } from '../../shared/schemas/narratorr-v1.js';
+import type { V1AudibleResult } from '../../shared/schemas/v1/metadata.js';
 import type { INarratorrClient } from './narratorr-client.js';
 import { tooManyRequests } from '../util/errors.js';
 

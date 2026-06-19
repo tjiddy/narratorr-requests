@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { resolveBookCardState } from './book-card-state';
-import type { V1AudibleResult } from '@shared/schemas/narratorr-v1';
+import type { V1AudibleResult } from '@shared/schemas/v1/metadata';
 
 const lib = (status: NonNullable<V1AudibleResult['library']>['status'], bookId = 'bk_1') =>
   ({ bookId, status }) satisfies V1AudibleResult['library'];
