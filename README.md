@@ -16,13 +16,13 @@ takes a minimal env (a session secret + auth) and the rest is point-and-click.
 
 ## Contract-first
 
-The `/api/v1` surface this app consumes is vendored as Zod schemas in
-[`src/shared/schemas/narratorr-v1.ts`](src/shared/schemas/narratorr-v1.ts) (annotated with
-source-file pointers and `PROPOSED` tags); that vendored file is the spec that lands in
-Narratorr. The matching **MSW handlers** (`src/server/mocks/narratorr-v1.ts`) are a **test
-fixture** — they back the contract tests; there is no mock runtime mode.
+The `/api/v1` surface this app consumes is vendored as Zod schemas under
+[`src/shared/schemas/v1/`](src/shared/schemas/v1/) (+ [`book.ts`](src/shared/schemas/book.ts)),
+mirroring Narratorr's own schema layout so the contract lifts cleanly upstream. The matching
+**MSW handlers** (`src/server/mocks/narratorr-v1.ts`) are a **test fixture** — they back the
+contract tests; there is no mock runtime mode.
 
-See [`PLAN.md`](PLAN.md) for the full design, decisions, and Narratorr-side contributions.
+See [`CLAUDE.md`](CLAUDE.md) for the architecture, conventions, and the contract/auth model.
 
 ## Run it (local dev)
 
