@@ -4,6 +4,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fastify-type-provider-zod';
 import { config, APP_ROOT } from './config.js';
@@ -15,9 +16,13 @@ import { RequestService } from './services/request.service.js';
 import { SearchService } from './services/search.service.js';
 import { StatusPoller } from './services/status-poller.js';
 import { NarratorrClient } from './services/narratorr-client.js';
-import { PlexOidcService } from './services/plex-oidc.service.js';
-import { MOCK_BASE_URL } from './mocks/constants.js';
+import { OidcService, makeOidcMapper, type OidcProfile } from './services/oidc.service.js';
+import { buildNotifier } from './services/notifications/index.js';
+import { ConnectorSettingsService } from './services/connector-settings.service.js';
+import { NarratorrClientHolder } from './services/narratorr-client-holder.js';
+import { SecretCodec, deriveSettingsKey } from './util/secret-codec.js';
 import { errorHandlerPlugin } from './plugins/error-handler.js';
+import { authRateLimitOptions } from './plugins/rate-limit.js';
 import { authPlugin } from './plugins/auth.js';
 import { registerRoutes } from './routes/index.js';
 import { errorBody } from '../shared/schemas/v1/common.js';
@@ -29,37 +34,69 @@ async function main(): Promise<void> {
   await runMigrations(config.databasePath);
   const db = createDb(config.databasePath);
 
-  // Standalone mode: intercept the client's HTTP calls with the MSW contract mock.
-  // Lazily imported so msw/graphql never lands in a production (narratorr-mode) bundle.
-  if (config.mode === 'standalone') {
-    const { createMockNarratorrServer } = await import('./mocks/narratorr-v1.js');
-    createMockNarratorrServer().listen({ onUnhandledRequest: 'bypass' });
-  }
-
-  const narratorr = new NarratorrClient(
-    config.narratorr
-      ? { baseUrl: config.narratorr.url, apiKey: config.narratorr.apiKey }
-      : { baseUrl: MOCK_BASE_URL, apiKey: 'standalone-mock' },
-  );
-
-  const users = new UserService(db);
+  const users = new UserService(db, { bootstrapAdmin: config.bootstrapAdmin });
   const settings = new SettingsService(db);
   const settingsRow = await settings.ensure(config.defaultRequestQuota);
+
+  // App (and its logger) first, so the connector service can WARN through it when a
+  // stored secret can't be decrypted.
+  const app = Fastify({
+    logger: { level: config.isDev ? 'info' : 'warn' },
+    // Behind a reverse proxy, trust X-Forwarded-* so request.ip is the real client (used
+    // for auth rate-limit keying). Off by default; configured via TRUSTED_PROXIES.
+    trustProxy: config.trustProxy,
+  }).withTypeProvider<ZodTypeProvider>();
+  app.setValidatorCompiler(validatorCompiler);
+  app.setSerializerCompiler(serializerCompiler);
+
+  // Connector config (narratorr connection + notification channels) lives in the DB,
+  // edited in the Settings UI — secrets encrypted with a key derived from SETTINGS_KEY
+  // (or SESSION_SECRET). A fresh install boots with narratorr unconfigured; the holder
+  // makes calls fail cleanly until the admin sets it, and saving rebuilds it live.
+  const codec = new SecretCodec(deriveSettingsKey({ settingsKey: config.settingsKey, sessionSecret: config.sessionSecret }));
+  const connectorSettings = new ConnectorSettingsService(db, codec, app.log);
+  const narratorrCfg = await connectorSettings.getNarratorrConfig();
+  const narratorr = new NarratorrClientHolder(
+    narratorrCfg ? new NarratorrClient({ baseUrl: narratorrCfg.url, apiKey: narratorrCfg.apiKey }) : null,
+  );
+  // Surface the unconfigured state at WARN so it survives the prod log level (info is
+  // filtered in production) — the on-call breadcrumb for "search/requests don't work".
+  if (!narratorr.configured) {
+    app.log.warn('narratorr is not configured — search and requests will fail until it is set on the Settings page');
+  }
+
   const requests = new RequestService(db, narratorr, {
     defaultQuota: settingsRow.defaultQuota,
     windowDays: config.quotaWindowDays,
     autoApproveRoles: settingsRow.autoApproveRoles as Role[],
   });
   const search = new SearchService(narratorr);
-  const plexOidc = config.plexOidc ? new PlexOidcService(config.plexOidc) : null;
+  // One OidcService per configured provider, keyed by id. Authorization is the approval
+  // queue (no per-provider gate), so the mapped profile flows straight to upsertFromOidc.
+  const oidc = new Map<string, { service: OidcService<OidcProfile>; config: (typeof config.oidcProviders)[number] }>();
+  for (const p of config.oidcProviders) {
+    const service = new OidcService<OidcProfile>(
+      { issuer: p.issuer, clientId: p.clientId, clientSecret: p.clientSecret, redirectUri: p.redirectUri, scope: p.scope, label: p.label },
+      makeOidcMapper(p.label, { subjectClaim: p.subjectClaim, usernameClaim: p.usernameClaim, emailClaim: p.emailClaim }),
+    );
+    oidc.set(p.id, { service, config: p });
+  }
 
   if (config.authMode === 'bypass') await users.ensureDevAdmin();
 
-  const deps: AppDeps = { config, db, users, settings, requests, search, plexOidc };
-
-  const app = Fastify({ logger: { level: config.isDev ? 'info' : 'warn' } }).withTypeProvider<ZodTypeProvider>();
-  app.setValidatorCompiler(validatorCompiler);
-  app.setSerializerCompiler(serializerCompiler);
+  const notifier = buildNotifier(await connectorSettings.getNotificationsConfig(), app.log);
+  const deps: AppDeps = {
+    config,
+    db,
+    users,
+    settings,
+    requests,
+    search,
+    connectorSettings,
+    narratorr,
+    notifier,
+    oidc,
+  };
 
   // Serve the built SPA whenever a client build is present — the prod image, a bare
   // `pnpm start`, or the standalone container. Under `pnpm dev` there's no build here
@@ -78,8 +115,13 @@ async function main(): Promise<void> {
           objectSrc: ["'none'"],
           frameAncestors: ["'none'"],
           imgSrc: ["'self'", 'https:', 'data:'],
+          // scriptSrc stays strict 'self' — the no-flash boot script is served as an
+          // external /theme-init.js (not inline) so no hash/nonce is needed.
           scriptSrc: ["'self'"],
-          styleSrc: ["'self'", "'unsafe-inline'"],
+          // Google Fonts: stylesheet from fonts.googleapis.com, font files from
+          // fonts.gstatic.com (mirrors Narratorr's helmet-options.ts).
+          styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+          fontSrc: ["'self'", 'https://fonts.gstatic.com'],
         },
       },
       referrerPolicy: { policy: 'no-referrer' },
@@ -88,6 +130,7 @@ async function main(): Promise<void> {
 
   await app.register(cors, { origin: config.corsOrigin, credentials: true });
   await app.register(cookie, { secret: config.sessionSecret });
+  await app.register(rateLimit, authRateLimitOptions);
   await app.register(errorHandlerPlugin);
   await app.register(authPlugin, deps);
 
@@ -109,16 +152,17 @@ async function main(): Promise<void> {
 
   await app.listen({ port: config.port, host: config.bindHost });
   app.log.info(
-    `narrator-request on :${config.port} (mode=${config.mode}, auth=${config.authMode})`,
+    `narrator-request on :${config.port} (auth=${config.authMode}, narratorr=${narratorr.configured ? 'configured' : 'unconfigured'})`,
   );
 
-  // Reconcile in-flight acquisitions. Standalone polls fast (the mock advances
-  // over ~9s); a live Narratorr is polled gently.
+  // Reconcile in-flight acquisitions against narratorr. No-op while narratorr is
+  // unconfigured (nothing reaches `acquiring`); the client holder is read live, so it
+  // starts working the moment the connection is saved.
   const poller = new StatusPoller({
     requests,
     client: narratorr,
     logger: app.log,
-    intervalSeconds: config.mode === 'standalone' ? 3 : 20,
+    intervalSeconds: 20,
   });
   poller.start();
 

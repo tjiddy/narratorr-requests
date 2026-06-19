@@ -1,7 +1,14 @@
-import type { MeDto } from '@shared/schemas/user';
+import type { MeDto, UserDto, UpdateUserBody, AuthProvidersDto } from '@shared/schemas/user';
 import type { RequestDto, RequestStatus } from '@shared/schemas/request';
-import type { V1AudibleResult } from '@shared/schemas/narratorr-v1';
+import type { V1AudibleResult } from '@shared/schemas/v1/metadata';
 import type { ListEnvelope } from '@shared/schemas/v1/common';
+import type {
+  ConnectorSettingsDto,
+  UpdateConnectorSettingsBody,
+  TestConnectorResult,
+} from '@shared/schemas/connectors';
+
+export type ConnectorChannel = 'narratorr' | 'ntfy' | 'email' | 'webhook';
 
 export class ApiError extends Error {
   constructor(
@@ -51,7 +58,7 @@ export function requestBookFrom(result: V1AudibleResult) {
     title: result.title,
     author: result.authors[0]?.name ?? null,
     narrator: result.narrators[0]?.name ?? null,
-    coverUrl: result.coverUrl,
+    coverUrl: result.cover,
   };
   return fetch('/api/requests', opts({
     method: 'POST',
@@ -67,4 +74,51 @@ export const decideRequest = (publicId: string, action: 'approve' | 'deny', note
     body: JSON.stringify({ action, note: note ?? null }),
   })).then(parse<RequestDto>);
 
+export const listUsers = () =>
+  fetch('/api/admin/users', opts()).then(parse<ListEnvelope<UserDto>>);
+
+export const updateUser = (publicId: string, patch: UpdateUserBody) =>
+  fetch(`/api/admin/users/${publicId}`, opts({
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  })).then(parse<UserDto>);
+
+export const listUserRequests = (publicId: string) =>
+  fetch(`/api/admin/users/${publicId}/requests`, opts()).then(parse<ListEnvelope<RequestDto>>);
+
 export const logout = () => fetch('/api/auth/logout', opts({ method: 'POST' })).then(parse<{ ok: true }>);
+
+// --- Auth: login screen + local auth -----------------------------------------
+export const getAuthProviders = () =>
+  fetch('/api/auth/providers', opts()).then(parse<AuthProvidersDto>);
+
+const postCredentials = (path: string, email: string, password: string) =>
+  fetch(path, opts({
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  })).then(parse<{ ok: true }>);
+
+export const localLogin = (email: string, password: string) =>
+  postCredentials('/api/auth/local/login', email, password);
+
+export const localSignup = (email: string, password: string) =>
+  postCredentials('/api/auth/local/signup', email, password);
+
+export const getConnectorSettings = () =>
+  fetch('/api/admin/settings/connectors', opts()).then(parse<ConnectorSettingsDto>);
+
+export const updateConnectorSettings = (body: UpdateConnectorSettingsBody) =>
+  fetch('/api/admin/settings/connectors', opts({
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })).then(parse<ConnectorSettingsDto>);
+
+export const testConnector = (channel: ConnectorChannel) =>
+  fetch('/api/admin/settings/connectors/test', opts({
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ channel }),
+  })).then(parse<TestConnectorResult>);

@@ -7,8 +7,8 @@ import type { AppDeps } from '../services/deps.js';
 const healthSchema = z.object({
   status: z.enum(['ok', 'degraded']),
   db: z.enum(['ok', 'down']),
-  mode: z.enum(['standalone', 'narratorr']),
-  authMode: z.enum(['bypass', 'plex']),
+  narratorrConfigured: z.boolean(),
+  authMode: z.enum(['bypass', 'standard']),
 });
 
 /** Liveness + readiness: confirms the DB is actually reachable, not just that the process is up. */
@@ -27,7 +27,7 @@ export function registerHealthRoutes(app: FastifyInstance, deps: AppDeps): void 
       const body = {
         status: db === 'ok' ? ('ok' as const) : ('degraded' as const),
         db,
-        mode: deps.config.mode,
+        narratorrConfigured: deps.narratorr.configured,
         authMode: deps.config.authMode,
       };
       return db === 'ok' ? body : reply.status(503).send(body);

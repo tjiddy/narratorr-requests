@@ -5,40 +5,28 @@ import { NarratorrError, type INarratorrClient } from './narratorr-client.js';
 import { createTestDb, insertUser } from '../test-support/db.js';
 import { requests } from '../../db/schema.js';
 import type { Db } from '../../db/client.js';
-import type { V1Acquisition, AcquisitionStatus } from '../../shared/schemas/narratorr-v1.js';
+import type { V1Book } from '../../shared/schemas/v1/books.js';
+import type { BookStatus } from '../../shared/schemas/book.js';
 import type { CreateRequestBody } from '../../shared/schemas/request.js';
 
-/** Configurable fake — controls the acquisition status the handoff/poll observes. */
+/** Configurable fake — controls the book status the handoff/poll observes. */
 class FakeClient implements INarratorrClient {
-  status: AcquisitionStatus = 'searching';
-  throwOnCreate: Error | null = null;
-  created: { asin: string; key?: string }[] = [];
+  status: BookStatus = 'searching';
+  throwOnAdd: Error | null = null;
+  added: string[] = [];
   private seq = 0;
 
   async searchMetadata() {
     return [];
   }
-  async createAcquisition(asin: string, key?: string): Promise<V1Acquisition> {
-    this.created.push(key ? { asin, key } : { asin });
-    if (this.throwOnCreate) throw this.throwOnCreate;
+  async addBook(asin: string): Promise<V1Book> {
+    this.added.push(asin);
+    if (this.throwOnAdd) throw this.throwOnAdd;
     this.seq += 1;
-    return {
-      id: `aq_${this.seq}`,
-      bookId: `bk_${this.seq}`,
-      asin,
-      status: this.status,
-      progress: 0,
-      updatedAt: new Date(0).toISOString(),
-    };
+    return { id: `bk_${this.seq}`, title: 'A Book', authors: [], narrators: [], status: this.status };
   }
-  async getAcquisition(id: string): Promise<V1Acquisition> {
-    return { id, bookId: 'bk_x', asin: 'A', status: this.status, progress: 0, updatedAt: new Date(0).toISOString() };
-  }
-  async getBook(): Promise<never> {
-    throw new Error('not used');
-  }
-  async listBooks() {
-    return { data: [], total: 0 };
+  async getBook(id: string): Promise<V1Book> {
+    return { id, title: 'A Book', authors: [], narrators: [], status: this.status };
   }
 }
 
@@ -73,7 +61,7 @@ describe('RequestService.create', () => {
     const { row, created } = await svc.create(user.id, body('B1'));
     expect(created).toBe(true);
     expect(row.status).toBe('pending');
-    expect(client.created).toHaveLength(0); // no handoff until approved
+    expect(client.added).toHaveLength(0); // no handoff until approved
   });
 
   it('de-dupes an active request for the same (user, asin)', async () => {
@@ -90,8 +78,8 @@ describe('RequestService.create', () => {
     const svc = new RequestService(db, client, policy());
     const { row } = await svc.create(admin.id, body('B1'));
     expect(row.status).toBe('acquiring');
-    expect(row.narratorrAcquisitionId).toBe('aq_1');
-    expect(client.created).toEqual([{ asin: 'B1', key: row.publicId }]); // idempotency key = request publicId
+    expect(row.narratorrBookId).toBe('bk_1');
+    expect(client.added).toEqual(['B1']); // idempotent by ASIN — no key needed
   });
 
   it('short-circuits to available when the book is already imported', async () => {
@@ -100,6 +88,21 @@ describe('RequestService.create', () => {
     const svc = new RequestService(db, client, policy());
     const { row } = await svc.create(admin.id, body('B1'));
     expect(row.status).toBe('available');
+  });
+
+  it('auto-approves a per-user flagged (non-admin) user and hands off', async () => {
+    const user = await insertUser(db, { role: 'user', autoApprove: true });
+    const svc = new RequestService(db, client, policy());
+    const { row } = await svc.create(user.id, body('B1'));
+    expect(row.status).toBe('acquiring'); // skipped pending → handed off (FakeClient → searching)
+    expect(client.added).toEqual(['B1']);
+  });
+
+  it('still enforces quota for an auto-approve user (auto-approve ≠ unlimited)', async () => {
+    const user = await insertUser(db, { role: 'user', autoApprove: true });
+    const svc = new RequestService(db, client, policy({ defaultQuota: 1 }));
+    await svc.create(user.id, body('B1'));
+    await expect(svc.create(user.id, body('B2'))).rejects.toMatchObject({ code: 'QUOTA_EXCEEDED' });
   });
 });
 
@@ -181,37 +184,58 @@ describe('admin decisions + handoff', () => {
     expect(rejected[0]?.reason).toMatchObject({ code: 'NOT_PENDING' });
   });
 
-  it('marks a request failed (refundable) when handoff throws, and re-throws', async () => {
+  it('fails a request (refundable) on a TERMINAL handoff error (422), and re-throws', async () => {
     const admin = await insertUser(db, { role: 'admin' });
-    client.throwOnCreate = new NarratorrError(502, 'UPSTREAM', 'down');
+    client.throwOnAdd = new NarratorrError(422, 'not_found', 'unresolvable asin');
     const svc = new RequestService(db, client, policy());
     await expect(svc.create(admin.id, body('B1'))).rejects.toBeInstanceOf(NarratorrError);
     const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
     expect(row?.status).toBe('failed');
     expect(row?.userCausedFailure).toBe(false);
   });
+
+  it('leaves a request `approved` on a TRANSIENT handoff error (5xx) for the poller to retry', async () => {
+    const admin = await insertUser(db, { role: 'admin' });
+    client.throwOnAdd = new NarratorrError(502, 'UPSTREAM', 'down');
+    const svc = new RequestService(db, client, policy());
+    await expect(svc.create(admin.id, body('B1'))).rejects.toBeInstanceOf(NarratorrError);
+    const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+    expect(row?.status).toBe('approved'); // stranded — findApprovedAwaitingHandoff retries it
+    expect(row?.narratorrBookId).toBeNull();
+  });
 });
 
-describe('applyAcquisition (poller reconciliation)', () => {
+describe('applyBook (poller reconciliation)', () => {
+  const mkBook = (status: BookStatus): V1Book => ({
+    id: 'bk_1',
+    title: 't',
+    authors: [],
+    narrators: [],
+    status,
+  });
+
   it('drives acquiring → available on imported and acquiring → failed on missing', async () => {
     const user = await insertUser(db, { role: 'user' });
     const svc = new RequestService(db, client, policy());
     const { row } = await svc.create(user.id, body('B1'));
 
-    const acq = (status: AcquisitionStatus): V1Acquisition => ({
-      id: 'aq_1',
-      bookId: 'bk_1',
-      asin: 'B1',
-      status,
-      progress: 100,
-      updatedAt: new Date(0).toISOString(),
-    });
-
-    const toAvailable = await svc.applyAcquisition(row, acq('imported'));
+    const toAvailable = await svc.applyBook(row, mkBook('imported'));
     expect(toAvailable).toBe('available');
 
     const { row: row2 } = await svc.create(user.id, body('B2'));
-    const toFailed = await svc.applyAcquisition(row2, acq('missing'));
+    const toFailed = await svc.applyBook(row2, mkBook('missing'));
     expect(toFailed).toBe('failed');
+  });
+
+  it('leaves a `wanted` request acquiring indefinitely — no app-side timeout', async () => {
+    const admin = await insertUser(db, { role: 'admin' });
+    const svc = new RequestService(db, client, policy());
+    const { row } = await svc.create(admin.id, body('B1')); // auto-approved → acquiring
+
+    // A not-found book sits `wanted` upstream; we mirror that, never auto-fail on a timer.
+    const result = await svc.applyBook(row, mkBook('wanted'));
+    expect(result).toBeNull(); // no transition — still acquiring
+    const [fresh] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+    expect(fresh?.status).toBe('acquiring');
   });
 });

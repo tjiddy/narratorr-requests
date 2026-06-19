@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "28636a6d-c924-44c6-9656-4f2d1c61e285",
+  "id": "b25ef883-9d80-4d04-ac9f-0c84a5ed8f70",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "app_settings": {
@@ -117,13 +117,6 @@
           "notNull": true,
           "autoincrement": false,
           "default": "'pending'"
-        },
-        "narratorr_acquisition_id": {
-          "name": "narratorr_acquisition_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
         },
         "narratorr_book_id": {
           "name": "narratorr_book_id",
@@ -269,7 +262,14 @@
           "name": "plex_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "authelia_subject": {
+          "name": "authelia_subject",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "plex_username": {
@@ -329,6 +329,13 @@
           "name": "users_plex_id_unique",
           "columns": [
             "plex_id"
+          ],
+          "isUnique": true
+        },
+        "users_authelia_subject_unique": {
+          "name": "users_authelia_subject_unique",
+          "columns": [
+            "authelia_subject"
           ],
           "isUnique": true
         },

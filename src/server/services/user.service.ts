@@ -1,40 +1,70 @@
-import { eq, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
 import { users, type UserRow } from '../../db/schema.js';
-import type { Role, UserDto } from '../../shared/schemas/user.js';
+import type { Role, UserStatus, UserDto, UpdateUserBody } from '../../shared/schemas/user.js';
 import type { AuthUser } from '../types.js';
+import type { OidcProfile } from './oidc.service.js';
 import { publicId } from '../util/ids.js';
+import { notFound } from '../util/errors.js';
 
-const DEV_ADMIN_PLEX_ID = 'dev-admin';
+export const DEV_ADMIN_PROVIDER = 'local';
+export const DEV_ADMIN_SUBJECT = 'dev-admin';
 
-/** Profile fields we accept from a Plex claim adapter (see auth.service). */
-export interface PlexProfile {
-  plexId: string;
-  plexUsername: string;
+/** Identity fields written when creating a user (local or OIDC). */
+interface NewIdentity {
+  authProvider: string;
+  authSubject: string;
+  username: string;
   email?: string | null;
   thumb?: string | null;
+  passwordHash?: string | null;
+}
+
+/** Pins admin to a single identity; disables first-user-auto-admin when set. */
+export interface BootstrapAdmin {
+  provider: string;
+  /** Matches an identity's authSubject (exact) or username (case-insensitive). */
+  value: string;
+}
+
+/**
+ * Result of a login/signup upsert. `created` is true only when THIS call inserted a
+ * brand-new identity — the auth routes use it to fire the `user.pending` notification
+ * exactly once (a returning user re-logging in must not re-notify). Mirrors
+ * RequestService.create's `{ row, created }`.
+ */
+export interface UpsertResult {
+  user: UserRow;
+  created: boolean;
 }
 
 export class UserService {
-  constructor(private readonly db: Db) {}
+  constructor(
+    private readonly db: Db,
+    private readonly opts: { bootstrapAdmin?: BootstrapAdmin | null } = {},
+  ) {}
 
   toAuthUser(row: UserRow): AuthUser {
     return {
       id: row.id,
       publicId: row.publicId,
-      plexUsername: row.plexUsername,
+      username: row.username,
       role: row.role,
+      status: row.status,
     };
   }
 
   toDto(row: UserRow): UserDto {
     return {
       publicId: row.publicId,
-      plexUsername: row.plexUsername,
+      username: row.username,
+      authProvider: row.authProvider,
       email: row.email,
       thumb: row.thumb,
       role: row.role,
+      status: row.status,
       requestQuota: row.requestQuota,
+      autoApprove: row.autoApprove,
       createdAt: row.createdAt.toISOString(),
     };
   }
@@ -47,80 +77,182 @@ export class UserService {
     return this.db.query.users.findFirst({ where: eq(users.publicId, pid) });
   }
 
-  private async count(): Promise<number> {
-    const [row] = await this.db.select({ n: sql<number>`count(*)` }).from(users);
-    return row?.n ?? 0;
+  /** All users, oldest first — for the admin Users page. */
+  async listAll(): Promise<UserRow[]> {
+    return this.db.query.users.findMany({ orderBy: asc(users.createdAt) });
+  }
+
+  private async findByIdentity(provider: string, subject: string): Promise<UserRow | undefined> {
+    return this.db.query.users.findFirst({
+      where: and(eq(users.authProvider, provider), eq(users.authSubject, subject)),
+    });
+  }
+
+  /** Look up a local-auth user by email (the lowercased email is the local subject key). */
+  async findLocalByEmail(email: string): Promise<UserRow | undefined> {
+    return this.findByIdentity('local', email.trim().toLowerCase());
+  }
+
+  /** Partial-update a user (admin Users page): role, approval status, per-user quota
+   *  override, and/or the auto-approve flag. The "can't change your own role/status"
+   *  guard lives in the route, where the acting admin's identity is known. */
+  async updateUser(pid: string, patch: UpdateUserBody): Promise<UserRow> {
+    const set: Partial<Pick<UserRow, 'role' | 'status' | 'requestQuota' | 'autoApprove'>> = {};
+    if (patch.role !== undefined) set.role = patch.role;
+    if (patch.status !== undefined) set.status = patch.status;
+    if (patch.requestQuota !== undefined) set.requestQuota = patch.requestQuota;
+    if (patch.autoApprove !== undefined) set.autoApprove = patch.autoApprove;
+    if (Object.keys(set).length === 0) {
+      const existing = await this.getByPublicId(pid);
+      if (!existing) throw notFound('user not found');
+      return existing;
+    }
+    const [updated] = await this.db.update(users).set(set).where(eq(users.publicId, pid)).returning();
+    if (!updated) throw notFound('user not found');
+    return updated;
   }
 
   /**
-   * Upsert a user from a Plex profile. On first creation the role is decided:
-   * the configured owner username (or, failing that, the very first user to log
-   * in) becomes `admin`; everyone else is `user`. On a returning user we refresh
-   * the mutable profile fields but never silently change their role.
+   * Upsert a user from an OIDC profile, keyed on (provider, subject). A returning user
+   * refreshes their display fields — but only while `pending`/`active`; a `rejected`
+   * account's metadata is frozen so a denied user can't keep churning their profile.
+   * Role/status are never downgraded here. A new identity goes through the approval
+   * queue (see `createIdentity`).
    */
-  async upsertByPlex(profile: PlexProfile, opts: { ownerUsername?: string | null } = {}): Promise<UserRow> {
-    const existing = await this.db.query.users.findFirst({
-      where: eq(users.plexId, profile.plexId),
-    });
+  async upsertFromOidc(provider: string, profile: OidcProfile): Promise<UpsertResult> {
+    const existing = await this.findByIdentity(provider, profile.subject);
     if (existing) {
+      if (existing.status === 'rejected') return { user: existing, created: false };
+      // Coalesce email/thumb against the stored row: a later login that omits a claim
+      // shouldn't blank out a value we already have.
       const [updated] = await this.db
         .update(users)
         .set({
-          plexUsername: profile.plexUsername,
-          email: profile.email ?? null,
-          thumb: profile.thumb ?? null,
+          username: profile.username,
+          email: profile.email ?? existing.email,
+          thumb: profile.thumb ?? existing.thumb,
         })
         .where(eq(users.id, existing.id))
         .returning();
-      return updated ?? existing;
+      return { user: updated ?? existing, created: false };
     }
+    return this.createIdentity({
+      authProvider: provider,
+      authSubject: profile.subject,
+      username: profile.username,
+      email: profile.email,
+      thumb: profile.thumb,
+    });
+  }
 
-    const isOwner =
-      opts.ownerUsername != null &&
-      opts.ownerUsername.toLowerCase() === profile.plexUsername.toLowerCase();
-    // First-user-admin bootstrap applies ONLY when no explicit owner is configured
-    // (dev/standalone). With an owner set, admin is granted solely on owner match,
-    // which closes the open-allowlist + first-login privilege-escalation path.
-    const isFirstUser = opts.ownerUsername == null && (await this.count()) === 0;
-    const role: Role = isOwner || isFirstUser ? 'admin' : 'user';
+  /** Create a local-auth user. The (lowercased) email is the stable subject key and the
+   *  stored contact; the display `username` is the email's local-part. Approval queue applies. */
+  async createLocalUser(input: { email: string; passwordHash: string }): Promise<UpsertResult> {
+    const email = input.email.trim().toLowerCase();
+    return this.createIdentity({
+      authProvider: 'local',
+      authSubject: email,
+      username: email.split('@')[0] || email,
+      email,
+      passwordHash: input.passwordHash,
+    });
+  }
 
-    const [created] = await this.db
-      .insert(users)
-      .values({
-        publicId: publicId('us'),
-        plexId: profile.plexId,
-        plexUsername: profile.plexUsername,
-        email: profile.email ?? null,
-        thumb: profile.thumb ?? null,
-        role,
-      })
-      .returning();
-    if (!created) throw new Error('failed to create user');
-    return created;
+  /**
+   * Create a new identity, deciding its role + approval status. When BOOTSTRAP_ADMIN is
+   * configured the grant is decided in JS (deterministic identity match). Otherwise the
+   * first-user-admin decision is folded into the INSERT as a `CASE` on `count(*)`, so it
+   * is evaluated atomically under SQLite's single-writer lock — two concurrent first-ever
+   * signups can't both become admin (no read-modify-write race). Falls back to
+   * read-on-conflict if the unique (provider, subject) index fires from a concurrent
+   * identical login.
+   */
+  private async createIdentity(identity: NewIdentity): Promise<UpsertResult> {
+    const literal = this.bootstrapGrant(identity);
+    // First-user-admin as an atomic subquery (only when no bootstrap pin is set). The
+    // count EXCLUDES the AUTH_BYPASS dev-admin sentinel so that flipping a smoke install
+    // (AUTH_BYPASS=1) to real auth on the same volume still lets the first real user become
+    // admin — otherwise the persisted dev-admin row would occupy the slot and brick login.
+    const realUserCount = sql`(SELECT count(*) FROM ${users} WHERE NOT (${users.authProvider} = ${DEV_ADMIN_PROVIDER} AND ${users.authSubject} = ${DEV_ADMIN_SUBJECT}))`;
+    const role = literal
+      ? literal.role
+      : sql<Role>`(CASE WHEN ${realUserCount} = 0 THEN 'admin' ELSE 'user' END)`;
+    const status = literal
+      ? literal.status
+      : sql<UserStatus>`(CASE WHEN ${realUserCount} = 0 THEN 'active' ELSE 'pending' END)`;
+    try {
+      const [created] = await this.db
+        .insert(users)
+        .values({
+          publicId: publicId('us'),
+          authProvider: identity.authProvider,
+          authSubject: identity.authSubject,
+          username: identity.username,
+          passwordHash: identity.passwordHash ?? null,
+          email: identity.email ?? null,
+          thumb: identity.thumb ?? null,
+          role,
+          status,
+        })
+        .returning();
+      if (!created) throw new Error('failed to create user');
+      return { user: created, created: true };
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        // Lost a race to a concurrent identical login — the row already exists and we
+        // did NOT create it, so the caller must not treat this as a new signup.
+        const existing = await this.findByIdentity(identity.authProvider, identity.authSubject);
+        if (existing) return { user: existing, created: false };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * With `BOOTSTRAP_ADMIN` configured, ONLY the pinned identity is admin+active and
+   * everyone else is pending — first-user-auto-admin is OFF (closes "first public OIDC
+   * login owns the app" for open IdPs). Returns null when no pin is set, in which case
+   * the caller applies the count-based first-user rule.
+   */
+  private bootstrapGrant(identity: NewIdentity): { role: Role; status: UserStatus } | null {
+    const bootstrap = this.opts.bootstrapAdmin;
+    if (!bootstrap) return null;
+    // Match on the stable subject OR (conveniently) the display username. NOTE: on an
+    // OPEN IdP the username claim is user-controllable, so the username arm trusts the
+    // provider — docs recommend pinning by `subject` for public/open providers.
+    const matches =
+      bootstrap.provider === identity.authProvider &&
+      (bootstrap.value === identity.authSubject ||
+        bootstrap.value.toLowerCase() === identity.username.toLowerCase());
+    return matches ? { role: 'admin', status: 'active' } : { role: 'user', status: 'pending' };
   }
 
   /** Idempotently ensure the AUTH_BYPASS dev admin exists; returns it. */
   async ensureDevAdmin(): Promise<UserRow> {
-    const existing = await this.db.query.users.findFirst({
-      where: eq(users.plexId, DEV_ADMIN_PLEX_ID),
-    });
+    const existing = await this.findByIdentity(DEV_ADMIN_PROVIDER, DEV_ADMIN_SUBJECT);
     if (existing) return existing;
     const [created] = await this.db
       .insert(users)
       .values({
         publicId: publicId('us'),
-        plexId: DEV_ADMIN_PLEX_ID,
-        plexUsername: 'dev-admin',
-        email: null,
-        thumb: null,
+        authProvider: DEV_ADMIN_PROVIDER,
+        authSubject: DEV_ADMIN_SUBJECT,
+        username: 'dev-admin',
         role: 'admin',
+        status: 'active',
       })
       .onConflictDoNothing()
       .returning();
     if (created) return created;
     // Lost a race — read it back.
-    const row = await this.db.query.users.findFirst({ where: eq(users.plexId, DEV_ADMIN_PLEX_ID) });
+    const row = await this.findByIdentity(DEV_ADMIN_PROVIDER, DEV_ADMIN_SUBJECT);
     if (!row) throw new Error('failed to ensure dev admin');
     return row;
   }
+}
+
+/** libSQL surfaces a unique-constraint breach with this SQLite message fragment. */
+function isUniqueViolation(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /UNIQUE constraint failed/i.test(msg) || /SQLITE_CONSTRAINT/i.test(msg);
 }

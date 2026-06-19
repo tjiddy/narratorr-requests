@@ -23,18 +23,20 @@ describe('NarratorrClient parsing (happy path against the mock)', () => {
     expect(results[0]?.title).toBe('Project Hail Mary');
   });
 
-  it('is idempotent on ASIN for createAcquisition', async () => {
-    const a = await client.createAcquisition('B07KCQDQR9');
-    const b = await client.createAcquisition('B07KCQDQR9');
+  it('is idempotent on ASIN for addBook (201 then 409→existingId resolves to the same book)', async () => {
+    const a = await client.addBook('B07KCQDQR9'); // 201 created
+    const b = await client.addBook('B07KCQDQR9'); // 409 + existingId → fetched
     expect(a.id).toBe(b.id);
-    expect(a.bookId).toBe(b.bookId);
   });
 
-  it('getAcquisition reflects a pre-imported library book as imported', async () => {
-    const acq = await client.createAcquisition('B075FYBP8H'); // Dune, inLibrary
-    const fetched = await client.getAcquisition(acq.id);
+  it('surfaces an unhydratable ASIN as a terminal 422 upstream error', async () => {
+    await expect(client.addBook('B000UNKNOWN')).rejects.toMatchObject({ upstreamStatus: 422 });
+  });
+
+  it('getBook reflects a pre-imported library book as imported', async () => {
+    const added = await client.addBook('B075FYBP8H'); // Dune, already in library
+    const fetched = await client.getBook(added.id);
     expect(fetched.status).toBe('imported');
-    expect(fetched.progress).toBe(100);
   });
 });
 
@@ -71,8 +73,8 @@ describe('NarratorrClient error handling', () => {
     });
   });
 
-  it('returns 404 for an unknown acquisition id', async () => {
-    await expect(client.getAcquisition('aq_doesnotexist')).rejects.toMatchObject({
+  it('returns 404 for an unknown book id', async () => {
+    await expect(client.getBook('bk_doesnotexist')).rejects.toMatchObject({
       upstreamStatus: 404,
     });
   });

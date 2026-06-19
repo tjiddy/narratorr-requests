@@ -4,7 +4,11 @@ import type { UserService } from './user.service.js';
 import type { SettingsService } from './settings.service.js';
 import type { RequestService } from './request.service.js';
 import type { SearchService } from './search.service.js';
-import type { PlexOidcService } from './plex-oidc.service.js';
+import type { OidcService, OidcProfile } from './oidc.service.js';
+import type { OidcProviderConfig } from '../config.js';
+import type { Notifier } from './notifications/index.js';
+import type { ConnectorSettingsService } from './connector-settings.service.js';
+import type { NarratorrClientHolder } from './narratorr-client-holder.js';
 
 /** Wired-up service container handed to the route registrars. */
 export interface AppDeps {
@@ -14,6 +18,13 @@ export interface AppDeps {
   settings: SettingsService;
   requests: RequestService;
   search: SearchService;
-  /** null in AUTH_BYPASS mode. */
-  plexOidc: PlexOidcService | null;
+  /** Connector config (narratorr + notifications) read/written by the Settings page. */
+  connectorSettings: ConnectorSettingsService;
+  /** Swappable narratorr client — rebuilt live when the connection is saved. */
+  narratorr: NarratorrClientHolder;
+  /** Fire-and-forget notification dispatcher; reassigned live when channels are saved. */
+  notifier: Notifier;
+  /** Configured OIDC providers (login service + display config), keyed by provider id.
+   *  Empty in AUTH_BYPASS mode or when no OIDC_PROVIDERS are set. */
+  oidc: Map<string, { service: OidcService<OidcProfile>; config: OidcProviderConfig }>;
 }

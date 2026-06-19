@@ -11,3 +11,11 @@ coverage/
 
 # harness transient
 .claude/scheduled_tasks.lock
+
+# Process / coordination scaffolding — not application assets. Plans, multi-perspective
+# review output, and cross-repo handoffs ("ask narratorr") live as local working files
+# only; the durable spec is the vendored contract (src/shared/schemas/narratorr-v1.ts)
+# and the narratorr repo. Recoverable from git history if ever needed.
+REVIEW.md
+*PLAN.md
+*HANDOFF*.md

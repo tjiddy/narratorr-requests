@@ -1,4 +1,4 @@
-import type { V1AudibleResult } from '../../shared/schemas/narratorr-v1.js';
+import type { V1AudibleResult } from '../../shared/schemas/v1/metadata.js';
 import type { INarratorrClient } from './narratorr-client.js';
 import { tooManyRequests } from '../util/errors.js';
 
@@ -27,6 +27,16 @@ interface RateState {
  * provider (Codex risk #4) with a shared TTL cache keyed on the normalized query
  * and a per-user fixed-window throttle. Cache hits do NOT consume the throttle —
  * a user re-running the same query is cheap; only distinct upstream calls count.
+ *
+ * KNOWN LIMITATION (revisit when narratorr #1537 deploys): once results carry the
+ * `library` cross-reference, the shared cache also snapshots that (mutable) status for
+ * up to cacheTtlMs. The acting requester is masked by their own per-user `requestedStatus`
+ * (uncached), so for them it's correct; for OTHER users a freshly-acquired/imported book
+ * can show a stale "Request" badge until the entry expires. Harmless today (the field is
+ * absent until #1537 ships) and bounded (≤cacheTtlMs); a duplicate request is deduped
+ * downstream (narratorr is idempotent by ASIN, we dedupe per-(user,asin)). The real fix
+ * (separate the static-metadata cache from the live library annotation) is deferred until
+ * the field is live and we can measure actual staleness — not built speculatively here.
  */
 export class SearchService {
   private readonly cache = new Map<string, CacheEntry>();

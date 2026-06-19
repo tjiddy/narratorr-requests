@@ -1,8 +1,9 @@
 import { defineConfig } from 'vitest/config';
 import path from 'node:path';
 
-// Single node project for MVP — unit tests live in server/shared/db. A jsdom
-// client project can be added later when we test React components.
+// Single node project for MVP — unit tests live in server/shared/db plus pure
+// client logic helpers (*.test.ts under src/client; no DOM needed). A jsdom client
+// project can be added later for React component tests (*.test.tsx).
 export default defineConfig({
   resolve: {
     alias: {
@@ -14,7 +15,7 @@ export default defineConfig({
   test: {
     passWithNoTests: true,
     environment: 'node',
-    include: ['src/{server,shared,db}/**/*.test.ts'],
+    include: ['src/{server,shared,db,client}/**/*.test.ts'],
     coverage: {
       provider: 'v8',
       reportsDirectory: 'coverage',

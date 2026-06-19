@@ -1,18 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import type { RequestStatus } from '@shared/schemas/request';
 import { useSearch, useMyRequests } from '../hooks';
 import { BookCard } from '../components/BookCard';
+import { EmptyState } from '../components/EmptyState';
+import { SearchIcon } from '../components/icons';
+import { Button } from '../components/Button';
 import { ApiError } from '../api';
 
 export function SearchPage() {
   const [input, setInput] = useState('');
   const [q, setQ] = useState('');
-
-  // Debounce the query so we don't fire (throttled) searches on every keystroke.
-  useEffect(() => {
-    const t = setTimeout(() => setQ(input), 350);
-    return () => clearTimeout(t);
-  }, [input]);
 
   const search = useSearch(q);
   const mine = useMyRequests();
@@ -23,32 +20,52 @@ export function SearchPage() {
     return map;
   }, [mine.data]);
 
+  // Search on submit only — each query round-trips to narratorr → Audnexus, so we
+  // never fire on keystroke (that hammered the metadata provider and tripped rate limits).
+  const onSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    setQ(input.trim());
+  };
+
   return (
     <div>
       <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight">Discover audiobooks</h1>
-        <p className="mt-1 text-sm text-slate-400">Search the catalog and request what you want to listen to.</p>
+        <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">
+          Request audiobooks
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Search the catalog and request what you want to listen to.
+        </p>
       </div>
 
-      <input
-        autoFocus
-        type="search"
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        placeholder="Search by title, author, or series…"
-        className="w-full rounded-lg border border-slate-800 bg-slate-900 px-4 py-3 text-slate-100 placeholder:text-slate-500 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
-      />
+      <form onSubmit={onSubmit} className="flex gap-2">
+        <input
+          autoFocus
+          type="search"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Search by title, author, or series…"
+          className="w-full rounded-xl border border-border bg-card px-4 py-3 text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+        />
+        <Button type="submit" variant="primary" icon={SearchIcon} loading={search.isFetching} disabled={input.trim() === ''}>
+          Search
+        </Button>
+      </form>
 
       <div className="mt-6">
-        {q.trim() === '' && <p className="text-sm text-slate-500">Start typing to search.</p>}
-        {search.isFetching && <p className="text-sm text-slate-500">Searching…</p>}
+        {q.trim() === '' && <p className="text-sm text-muted-foreground/70">Search for a book to request.</p>}
+        {search.isFetching && <p className="text-sm text-muted-foreground/70">Searching…</p>}
         {search.error && (
-          <p className="text-sm text-rose-400">
+          <p className="text-sm text-destructive">
             {search.error instanceof ApiError ? search.error.message : 'Search failed'}
           </p>
         )}
         {search.data && search.data.data.length === 0 && !search.isFetching && (
-          <p className="text-sm text-slate-500">No results for “{q}”.</p>
+          <EmptyState
+            icon={SearchIcon}
+            title="No results"
+            subtitle={`Nothing matched “${q}”. Try a different title, author, or series.`}
+          />
         )}
         {search.data && search.data.data.length > 0 && (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">

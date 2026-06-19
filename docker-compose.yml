@@ -1,9 +1,11 @@
 # narrator-request — single-container deploy.
 #
-# Out of the box `docker compose up` runs in STANDALONE + AUTH_BYPASS mode (built-in
-# /api/v1 mock, seeded dev admin) so you can smoke-test the image with zero config.
-# For a real deployment, copy .env.docker.example to .env, fill in Plex OIDC + a
-# session secret + your Narratorr URL/key, and set NODE_ENV=production + AUTH_BYPASS=0.
+# `docker compose up` boots in AUTH_BYPASS smoke mode (seeded dev admin) so you can
+# confirm the image runs and serves the UI with zero config. The narratorr connection
+# and notification channels are NOT set here — they're configured in the admin
+# Settings page after first boot (stored encrypted in the DB). For a real deployment,
+# copy .env.docker.example to .env, fill in a session secret + an auth method (local
+# and/or OIDC), and set NODE_ENV=production + AUTH_BYPASS=0.
 services:
   narrator-request:
     # Builds from local source by default. To run the published image instead,
@@ -15,33 +17,35 @@ services:
       - "${PORT:-3000}:3000"
     volumes:
       - narrator-request-data:/data
+    # Inject the whole .env (so arbitrary OIDC_<ID>_* provider vars flow through without
+    # enumerating each one here). Optional — `docker compose up` with no .env still smoke-boots.
+    env_file:
+      - path: .env
+        required: false
     environment:
+      # Container-fixed + smoke defaults. These OVERRIDE env_file, and read your .env via
+      # compose's automatic ${VAR} interpolation, so a real .env still wins.
       TZ: ${TZ:-UTC}
       PORT: 3000
       BIND_HOST: 0.0.0.0
       DATABASE_PATH: /data/narrator-request.db
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
       DEFAULT_REQUEST_QUOTA: ${DEFAULT_REQUEST_QUOTA:-10}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
 
-      # --- Standalone smoke defaults (override in .env for production) ---
-      # AUTH_BYPASS makes every request the dev admin, so it's only safe on an
-      # isolated host — ALLOW_INSECURE_AUTH_BYPASS acknowledges the 0.0.0.0 bind.
+      # AUTH_BYPASS makes every request the dev admin, so it's only safe on an isolated
+      # host — ALLOW_INSECURE_AUTH_BYPASS acknowledges the 0.0.0.0 bind. Search/requests
+      # stay inert until narratorr is configured in Settings. For a real deploy set
+      # NODE_ENV=production + AUTH_BYPASS=0 and configure LOCAL_AUTH and/or OIDC_* in .env.
       NODE_ENV: ${NODE_ENV:-development}
       AUTH_BYPASS: ${AUTH_BYPASS:-1}
       ALLOW_INSECURE_AUTH_BYPASS: ${ALLOW_INSECURE_AUTH_BYPASS:-1}
-      SESSION_SECRET: ${SESSION_SECRET:-dev-only-not-a-real-secret}
-
-      # --- Real deployment (leave blank for standalone) ---
-      # Narratorr coupling: set BOTH to switch to narratorr mode.
-      NARRATORR_URL: ${NARRATORR_URL:-}
-      NARRATORR_API_KEY: ${NARRATORR_API_KEY:-}
-      # Plex OIDC (required when AUTH_BYPASS=0). Set PLEX_ALLOWLIST or PLEX_OWNER_USERNAME.
-      PLEX_OIDC_ISSUER: ${PLEX_OIDC_ISSUER:-}
-      PLEX_OIDC_CLIENT_ID: ${PLEX_OIDC_CLIENT_ID:-}
-      PLEX_OIDC_CLIENT_SECRET: ${PLEX_OIDC_CLIENT_SECRET:-}
-      PLEX_OIDC_REDIRECT_URI: ${PLEX_OIDC_REDIRECT_URI:-}
-      PLEX_ALLOWLIST: ${PLEX_ALLOWLIST:-}
-      PLEX_OWNER_USERNAME: ${PLEX_OWNER_USERNAME:-}
+      # Left blank in smoke mode → the app auto-generates an ephemeral secret each boot
+      # (sessions drop on restart, fine for a smoke test). REQUIRED for a real deploy.
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      # Optional: stable key for encrypting connector secrets at rest. When unset, the
+      # key is derived from SESSION_SECRET — see .env.docker.example for the caveat.
+      SETTINGS_KEY: ${SETTINGS_KEY:-}
     restart: unless-stopped
 
 volumes:

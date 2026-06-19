@@ -1,5 +1,5 @@
 import 'fastify';
-import type { Role } from '../shared/schemas/user.js';
+import type { Role, UserStatus } from '../shared/schemas/user.js';
 
 // The authenticated user attached to every request by the auth plugin. Request
 // creation and admin checks build on THIS, never on ad-hoc header parsing
@@ -7,8 +7,9 @@ import type { Role } from '../shared/schemas/user.js';
 export interface AuthUser {
   id: number;
   publicId: string;
-  plexUsername: string;
+  username: string;
   role: Role;
+  status: UserStatus;
 }
 
 declare module 'fastify' {

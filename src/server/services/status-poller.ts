@@ -20,10 +20,10 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 /**
  * Reconciles in-flight requests (`acquiring`) against Narratorr by polling
- * `GET /api/v1/acquisitions/:id` in jittered batches (PLAN decision #3 — poll,
+ * `GET /api/v1/books/:publicId` in jittered batches (PLAN decision #3 — poll,
  * don't tight-loop; SSE is key-unreachable per S7). Consecutive upstream
  * failures trigger exponential tick-skipping so a flapping Narratorr isn't
- * hammered. A 404 on an acquisition marks the request failed.
+ * hammered. A 404 on a book marks the request failed.
  */
 export class StatusPoller {
   private readonly requests: RequestService;
@@ -93,7 +93,7 @@ export class StatusPoller {
     let upstreamErrors = 0;
 
     // Self-heal requests stranded `approved` (process died between approval and
-    // handoff). The handoff is idempotent (Idempotency-Key = request publicId).
+    // handoff). The handoff is idempotent by ASIN, so a re-run never double-adds.
     const stranded = await this.requests.findApprovedAwaitingHandoff(this.batchSize);
     for (const row of stranded) {
       try {
@@ -109,20 +109,20 @@ export class StatusPoller {
     const rows = await this.requests.findAcquiring(this.batchSize);
 
     for (const row of rows) {
-      if (!row.narratorrAcquisitionId) continue;
+      if (!row.narratorrBookId) continue;
       if (this.jitterMs > 0) await sleep(Math.floor(Math.random() * this.jitterMs));
       try {
-        const acq = await this.client.getAcquisition(row.narratorrAcquisitionId);
-        const next = await this.requests.applyAcquisition(row, acq);
+        const book = await this.client.getBook(row.narratorrBookId);
+        const next = await this.requests.applyBook(row, book);
         if (next) {
           transitioned += 1;
           this.logger.info({ request: row.publicId, status: next }, 'request status updated');
         }
       } catch (err) {
         if (err instanceof NarratorrError && err.upstreamStatus === 404) {
-          await this.requests.markFailed(row, 'acquisition not found upstream');
+          await this.requests.markFailed(row, 'book not found upstream');
           transitioned += 1;
-          this.logger.warn({ request: row.publicId }, 'acquisition vanished upstream — marked failed');
+          this.logger.warn({ request: row.publicId }, 'book vanished upstream — marked failed');
         } else {
           upstreamErrors += 1;
           this.logger.warn({ request: row.publicId, err }, 'poll failed for request');
