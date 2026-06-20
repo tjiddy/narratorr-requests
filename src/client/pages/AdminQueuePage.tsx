@@ -7,11 +7,13 @@ import { REQUEST_STATUS_LABELS } from '../components/status';
 import { EmptyState } from '../components/EmptyState';
 import { InboxIcon } from '../components/icons';
 import { Button } from '../components/Button';
+import { requestFailureReason } from '../components/request-failure';
 
 function QueueRow({ r }: { r: RequestDto }) {
   const decide = useDecide();
   const [denying, setDenying] = useState(false);
   const [reason, setReason] = useState('');
+  const failureReason = requestFailureReason(r);
 
   function confirmDeny() {
     const note = reason.trim();
@@ -38,6 +40,12 @@ function QueueRow({ r }: { r: RequestDto }) {
             <p className="mt-1 text-xs text-muted-foreground">
               <span className="text-muted-foreground/70">{r.status === 'denied' ? 'Reason: ' : 'Note: '}</span>
               {r.note}
+            </p>
+          )}
+          {failureReason && (
+            <p className="mt-1 text-xs text-destructive">
+              <span className="text-destructive/70">Failed: </span>
+              {failureReason}
             </p>
           )}
         </div>

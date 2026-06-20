@@ -70,6 +70,9 @@ export const requestDtoSchema = z.object({
   coverUrl: z.string().nullable(),
   status: requestStatusSchema,
   note: z.string().nullable(),
+  // Why the request `failed` (e.g. an excluded edition, a vanished book). null unless
+  // status is `failed`. Distinct from `note` (the request-time note / deny reason).
+  failureReason: z.string().nullable(),
   requestedAt: z.string(),
   decidedAt: z.string().nullable(),
   narratorrBookId: z.string().nullable(),

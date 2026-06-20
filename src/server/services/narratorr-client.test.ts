@@ -29,8 +29,23 @@ describe('NarratorrClient parsing (happy path against the mock)', () => {
     expect(a.id).toBe(b.id);
   });
 
-  it('surfaces an unhydratable ASIN as a terminal 422 upstream error', async () => {
-    await expect(client.addBook('B000UNKNOWN')).rejects.toMatchObject({ upstreamStatus: 422 });
+  it('surfaces an unresolvable ASIN as a terminal 422 with the asin_not_resolved code', async () => {
+    await expect(client.addBook('B000UNKNOWN')).rejects.toMatchObject({
+      upstreamStatus: 422,
+      upstreamCode: 'asin_not_resolved',
+    });
+  });
+
+  it('surfaces the per-code 422 add-error vocabulary (edition_rejected / invalid_record)', async () => {
+    // The fixture keys these codes off marker ASINs so each handoff branch is reachable.
+    await expect(client.addBook('B000EDITIONX')).rejects.toMatchObject({
+      upstreamStatus: 422,
+      upstreamCode: 'edition_rejected',
+    });
+    await expect(client.addBook('B000INVALIDX')).rejects.toMatchObject({
+      upstreamStatus: 422,
+      upstreamCode: 'invalid_record',
+    });
   });
 
   it('getBook reflects a pre-imported library book as imported', async () => {

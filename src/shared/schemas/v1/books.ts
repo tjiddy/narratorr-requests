@@ -22,12 +22,34 @@ import { authorRefSchema, narratorRefSchema, seriesRefSchema } from './refs.js';
 // at `wanted` until the operator's next scheduled search sweep — normal, not a failure.
 // Response codes carry the semantics (no idempotency key):
 //   - 201 → newly created; returns the bare V1Book.
+//   - 400 → malformed body (e.g. missing/empty `asin`); no book created (terminal).
 //   - 409 → a book with this ASIN already EXISTS (lost-response retry, or a second user
 //           wanting it). Body { error, existingId }; the client resolves `existingId`, so
-//           the add is idempotent by ASIN — no duplicate created, nothing re-grabbed.
-//   - 422 → ASIN can't be resolved (not_found / invalid_record); no book created (terminal).
+//           the add is idempotent by ASIN — no duplicate created, nothing re-grabbed. Runs
+//           BEFORE the 422 gate: an already-owned ASIN is a 409, never a 422.
+//   - 422 → the add was rejected at the gate (narratorr #1545); no book created (terminal).
+//           The `error.code` is one of ADD_BOOK_ERROR_CODES — `edition_rejected` (excluded by
+//           the owner's reject-words), `asin_not_resolved` (provider can't resolve the ASIN),
+//           or `invalid_record` (incomplete provider record). Branch on `code`, never message.
 //   - 429 → metadata provider rate-limited; retry after a backoff (transient).
+//   - 502 → provider_unavailable; the upstream metadata provider is down (transient).
 export const v1AddBookBodySchema = z.object({ asin: z.string().min(1) }).strict();
+
+/**
+ * Authoritative `error.code` strings a `422` from `POST /api/v1/books` can carry
+ * (narratorr #1545, as-shipped). Single source of truth so the service and the test
+ * fixture branch on named codes, not inline string literals. Consumer-lenient by
+ * convention: an unrecognized code is handled as a generic terminal failure, not a crash.
+ */
+export const ADD_BOOK_ERROR_CODES = {
+  /** Edition excluded by the library owner's reject-words filter. */
+  editionRejected: 'edition_rejected',
+  /** The metadata provider couldn't resolve the ASIN to a record. */
+  asinNotResolved: 'asin_not_resolved',
+  /** The provider returned an incomplete/unusable record. */
+  invalidRecord: 'invalid_record',
+} as const;
+export type AddBookErrorCode = (typeof ADD_BOOK_ERROR_CODES)[keyof typeof ADD_BOOK_ERROR_CODES];
 
 // --- 3. Poll — GET /api/v1/books/:publicId → V1Book (bare) --------------------
 // The single resource the request app polls (also the shape POST /books returns). `status`

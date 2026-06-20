@@ -1,6 +1,7 @@
 import { Cron } from 'croner';
 import type { FastifyBaseLogger } from 'fastify';
 import type { RequestService } from './request.service.js';
+import { BOOK_VANISHED_REASON } from './request.service.js';
 import type { INarratorrClient } from './narratorr-client.js';
 import { NarratorrError } from './narratorr-client.js';
 
@@ -120,7 +121,7 @@ export class StatusPoller {
         }
       } catch (err) {
         if (err instanceof NarratorrError && err.upstreamStatus === 404) {
-          await this.requests.markFailed(row, 'book not found upstream');
+          await this.requests.markFailed(row, BOOK_VANISHED_REASON);
           transitioned += 1;
           this.logger.warn({ request: row.publicId }, 'book vanished upstream — marked failed');
         } else {
