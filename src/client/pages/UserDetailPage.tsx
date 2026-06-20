@@ -166,24 +166,27 @@ function UserDetail({ user }: { user: UserDto }) {
         )}
         {requests.data && requests.data.data.length > 0 && (
           <ul className="flex flex-col gap-2">
-            {requests.data.data.map((r) => (
-              <li key={r.publicId} className="glass-card flex items-center gap-3 rounded-lg p-2.5">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{r.title}</p>
-                  {r.author && <p className="truncate text-xs text-muted-foreground">{r.author}</p>}
-                  {requestFailureReason(r) && (
-                    <p className="truncate text-xs text-destructive">
-                      <span className="text-destructive/70">Failed: </span>
-                      {requestFailureReason(r)}
-                    </p>
-                  )}
-                </div>
-                <span className="shrink-0 text-xs text-muted-foreground/70">
-                  {new Date(r.requestedAt).toLocaleDateString()}
-                </span>
-                <StatusBadge status={r.status} />
-              </li>
-            ))}
+            {requests.data.data.map((r) => {
+              const failureReason = requestFailureReason(r);
+              return (
+                <li key={r.publicId} className="glass-card flex items-center gap-3 rounded-lg p-2.5">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{r.title}</p>
+                    {r.author && <p className="truncate text-xs text-muted-foreground">{r.author}</p>}
+                    {failureReason && (
+                      <p className="truncate text-xs text-destructive">
+                        <span className="text-destructive/70">Failed: </span>
+                        {failureReason}
+                      </p>
+                    )}
+                  </div>
+                  <span className="shrink-0 text-xs text-muted-foreground/70">
+                    {new Date(r.requestedAt).toLocaleDateString()}
+                  </span>
+                  <StatusBadge status={r.status} />
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
