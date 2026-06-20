@@ -3,8 +3,10 @@ import { useMyRequests } from '../hooks';
 import { StatusBadge } from '../components/StatusBadge';
 import { EmptyState } from '../components/EmptyState';
 import { InboxIcon } from '../components/icons';
+import { requestFailureReason } from '../components/request-failure';
 
 function RequestRow({ r }: { r: RequestDto }) {
+  const failureReason = requestFailureReason(r);
   return (
     <li className="glass-card flex items-center gap-4 rounded-xl p-3">
       {r.coverUrl ? (
@@ -22,6 +24,12 @@ function RequestRow({ r }: { r: RequestDto }) {
           <p className="mt-1 text-xs text-muted-foreground">
             <span className="text-muted-foreground/70">{r.status === 'denied' ? 'Reason: ' : 'Note: '}</span>
             {r.note}
+          </p>
+        )}
+        {failureReason && (
+          <p className="mt-1 text-xs text-destructive">
+            <span className="text-destructive/70">Failed: </span>
+            {failureReason}
           </p>
         )}
       </div>

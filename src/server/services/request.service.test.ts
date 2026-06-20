@@ -186,7 +186,7 @@ describe('admin decisions + handoff', () => {
 
   it('fails a request (refundable) on a TERMINAL handoff error (422), and re-throws', async () => {
     const admin = await insertUser(db, { role: 'admin' });
-    client.throwOnAdd = new NarratorrError(422, 'not_found', 'unresolvable asin');
+    client.throwOnAdd = new NarratorrError(422, 'asin_not_resolved', 'unresolvable asin');
     const svc = new RequestService(db, client, policy());
     await expect(svc.create(admin.id, body('B1'))).rejects.toBeInstanceOf(NarratorrError);
     const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
@@ -202,6 +202,81 @@ describe('admin decisions + handoff', () => {
     const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
     expect(row?.status).toBe('approved'); // stranded — findApprovedAwaitingHandoff retries it
     expect(row?.narratorrBookId).toBeNull();
+    expect(row?.failureReason).toBeNull(); // transient writes no reason
+  });
+});
+
+describe('handoff failure reasons (friendly per-code add-handoff errors)', () => {
+  // Each terminal code → its friendly reason on the persisted row, refundable, no book id,
+  // and the error still re-throws. A fresh approved request starts with no book, so
+  // `narratorrBookId` must remain null (untouched) on the failed row.
+  const cases: Array<{ code: string; expected: string }> = [
+    { code: 'edition_rejected', expected: "This edition is excluded by the library's filters." },
+    { code: 'asin_not_resolved', expected: "Couldn't find this book in the catalog." },
+    { code: 'invalid_record', expected: 'Incomplete book data from the provider.' },
+  ];
+
+  for (const { code, expected } of cases) {
+    it(`maps a 422 ${code} to its friendly reason on the failed row`, async () => {
+      const admin = await insertUser(db, { role: 'admin' });
+      client.throwOnAdd = new NarratorrError(422, code, 'gate rejected');
+      const svc = new RequestService(db, client, policy());
+      await expect(svc.create(admin.id, body('B1'))).rejects.toBeInstanceOf(NarratorrError);
+      const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+      expect(row?.status).toBe('failed');
+      expect(row?.failureReason).toBe(expected);
+      expect(row?.userCausedFailure).toBe(false);
+      expect(row?.narratorrBookId).toBeNull();
+    });
+  }
+
+  it('falls back to a readable `code: message` for an unknown terminal code (no crash)', async () => {
+    const admin = await insertUser(db, { role: 'admin' });
+    client.throwOnAdd = new NarratorrError(422, 'some_new_code', 'a brand new reason');
+    const svc = new RequestService(db, client, policy());
+    await expect(svc.create(admin.id, body('B1'))).rejects.toBeInstanceOf(NarratorrError);
+    const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+    expect(row?.status).toBe('failed');
+    expect(row?.failureReason).toBe('some_new_code: a brand new reason');
+    expect(row?.userCausedFailure).toBe(false);
+  });
+
+  it('uses the generic fallback reason for a non-NarratorrError terminal throw', async () => {
+    const admin = await insertUser(db, { role: 'admin' });
+    client.throwOnAdd = new Error('db exploded');
+    const svc = new RequestService(db, client, policy());
+    await expect(svc.create(admin.id, body('B1'))).rejects.toThrow('db exploded');
+    const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+    expect(row?.status).toBe('failed');
+    expect(row?.failureReason).toBe('handoff failed');
+    expect(row?.userCausedFailure).toBe(false);
+  });
+
+  it('writes a friendly reason when the added book itself comes back failed/missing', async () => {
+    const admin = await insertUser(db, { role: 'admin' });
+    client.status = 'missing'; // addBook resolves a book already in a terminal-failed state
+    const svc = new RequestService(db, client, policy());
+    const { row } = await svc.create(admin.id, body('B1'));
+    expect(row.status).toBe('failed');
+    const [fresh] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+    expect(fresh?.failureReason).toBe('No source found upstream.');
+  });
+});
+
+describe('toDto', () => {
+  const requester = { publicId: 'us_x', username: 'x' };
+
+  it('maps failureReason onto the DTO (friendly string and null)', async () => {
+    const admin = await insertUser(db, { role: 'admin' });
+    const svc = new RequestService(db, client, policy());
+
+    const { row: pending } = await svc.create(admin.id, body('B1'));
+    expect(svc.toDto(pending, requester).failureReason).toBeNull();
+
+    client.throwOnAdd = new NarratorrError(422, 'edition_rejected', 'nope');
+    await expect(svc.create(admin.id, body('B2'))).rejects.toBeInstanceOf(NarratorrError);
+    const [failed] = await db.select().from(requests).where(eq(requests.asin, 'B2'));
+    expect(svc.toDto(failed!, requester).failureReason).toBe("This edition is excluded by the library's filters.");
   });
 });
 
@@ -225,6 +300,21 @@ describe('applyBook (poller reconciliation)', () => {
     const { row: row2 } = await svc.create(user.id, body('B2'));
     const toFailed = await svc.applyBook(row2, mkBook('missing'));
     expect(toFailed).toBe('failed');
+  });
+
+  it('writes the friendly book-status reason when a polled book goes failed/missing', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    const svc = new RequestService(db, client, policy());
+
+    const { row: r1 } = await svc.create(user.id, body('B1'));
+    await svc.applyBook(r1, mkBook('failed'));
+    const [failed] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+    expect(failed?.failureReason).toBe('Download failed upstream.');
+
+    const { row: r2 } = await svc.create(user.id, body('B2'));
+    await svc.applyBook(r2, mkBook('missing'));
+    const [missing] = await db.select().from(requests).where(eq(requests.asin, 'B2'));
+    expect(missing?.failureReason).toBe('No source found upstream.');
   });
 
   it('leaves a `wanted` request acquiring indefinitely — no app-side timeout', async () => {

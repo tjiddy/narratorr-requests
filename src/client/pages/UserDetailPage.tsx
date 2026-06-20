@@ -7,6 +7,7 @@ import { Button } from '../components/Button';
 import { StatusBadge } from '../components/StatusBadge';
 import { EmptyState } from '../components/EmptyState';
 import { InboxIcon } from '../components/icons';
+import { requestFailureReason } from '../components/request-failure';
 
 export function UserDetailPage() {
   const { publicId } = useParams<{ publicId: string }>();
@@ -170,6 +171,12 @@ function UserDetail({ user }: { user: UserDto }) {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{r.title}</p>
                   {r.author && <p className="truncate text-xs text-muted-foreground">{r.author}</p>}
+                  {requestFailureReason(r) && (
+                    <p className="truncate text-xs text-destructive">
+                      <span className="text-destructive/70">Failed: </span>
+                      {requestFailureReason(r)}
+                    </p>
+                  )}
                 </div>
                 <span className="shrink-0 text-xs text-muted-foreground/70">
                   {new Date(r.requestedAt).toLocaleDateString()}

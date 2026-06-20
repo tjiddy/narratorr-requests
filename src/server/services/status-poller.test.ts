@@ -89,13 +89,14 @@ describe('StatusPoller.pollOnce', () => {
     expect(row?.status).toBe('acquiring');
   });
 
-  it('marks a request failed when its book 404s upstream', async () => {
+  it('marks a request failed with a friendly reason when its book 404s upstream', async () => {
     await seedAcquiring('A1');
     client.error = new NarratorrError(404, 'NOT_FOUND', 'gone');
     const summary = await poller.pollOnce();
     expect(summary.transitioned).toBe(1);
     const [row] = await db.select().from(requests).where(eq(requests.asin, 'A1'));
     expect(row?.status).toBe('failed');
+    expect(row?.failureReason).toBe('This book is no longer available upstream.');
   });
 
   it('recovers a stranded approved request (no book yet) via idempotent handoff', async () => {

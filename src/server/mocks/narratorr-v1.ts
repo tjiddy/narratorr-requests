@@ -1,6 +1,6 @@
 import { http, HttpResponse, type RequestHandler } from 'msw';
 import type { V1AudibleResult } from '../../shared/schemas/v1/metadata.js';
-import type { V1Book } from '../../shared/schemas/v1/books.js';
+import { ADD_BOOK_ERROR_CODES, type AddBookErrorCode, type V1Book } from '../../shared/schemas/v1/books.js';
 import type { BookStatus } from '../../shared/schemas/book.js';
 import { errorBody } from '../../shared/schemas/v1/common.js';
 import { publicId } from '../util/ids.js';
@@ -109,6 +109,15 @@ const CATALOG: V1AudibleResult[] = [
 
 const byAsin = new Map(CATALOG.map((f) => [f.asin, f]));
 
+// Marker ASINs that drive each as-shipped 422 add-error code (narratorr #1545), so every
+// handoff branch and friendly message is reachable from a fixture path. Any OTHER unknown
+// ASIN defaults to `asin_not_resolved` (the real-world "provider can't resolve it" case).
+const ADD_ERROR_MARKERS: Record<string, AddBookErrorCode> = {
+  B000EDITIONX: ADD_BOOK_ERROR_CODES.editionRejected,
+  B000INVALIDX: ADD_BOOK_ERROR_CODES.invalidRecord,
+  B000NORESOLV: ADD_BOOK_ERROR_CODES.asinNotResolved,
+};
+
 // ASINs that simulate books Narratorr has already imported (status is immediately
 // `imported`).
 const PRE_IMPORTED = new Set<string>(['B017V4IM1G', 'B075FYBP8H']);
@@ -213,9 +222,12 @@ export function narratorrV1Handlers(baseUrl: string = MOCK_BASE_URL): RequestHan
       if (typeof asin !== 'string' || !asin) {
         return HttpResponse.json(errorBody('BAD_REQUEST', 'asin is required'), { status: 400 });
       }
-      // Unhydratable ASIN (provider can't resolve it) → 422, no book created.
+      // Add rejected at the gate (narratorr #1545) → 422, no book created. The code is one
+      // of ADD_BOOK_ERROR_CODES; marker ASINs select a specific code, any other unknown
+      // ASIN defaults to `asin_not_resolved`.
       if (!byAsin.has(asin)) {
-        return HttpResponse.json(errorBody('not_found', `cannot hydrate asin ${asin}`), { status: 422 });
+        const code = ADD_ERROR_MARKERS[asin] ?? ADD_BOOK_ERROR_CODES.asinNotResolved;
+        return HttpResponse.json(errorBody(code, `cannot add asin ${asin} (${code})`), { status: 422 });
       }
 
       // Already in the library → 409 with the existing id (NOT a duplicate, no re-grab).

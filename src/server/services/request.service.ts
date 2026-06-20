@@ -9,7 +9,7 @@ import type {
 } from '../../shared/schemas/request.js';
 import { OPEN_REQUEST_STATUSES, ACTIVE_REQUEST_STATUSES } from '../../shared/schemas/request.js';
 import type { Role } from '../../shared/schemas/user.js';
-import type { V1Book } from '../../shared/schemas/v1/books.js';
+import { ADD_BOOK_ERROR_CODES, type V1Book } from '../../shared/schemas/v1/books.js';
 import type { INarratorrClient } from './narratorr-client.js';
 import { NarratorrError } from './narratorr-client.js';
 import { publicId } from '../util/ids.js';
@@ -85,6 +85,7 @@ export class RequestService {
       coverUrl: row.coverUrl,
       status: row.status,
       note: row.note,
+      failureReason: row.failureReason,
       requestedAt: row.requestedAt.toISOString(),
       decidedAt: row.decidedAt ? row.decidedAt.toISOString() : null,
       narratorrBookId: row.narratorrBookId,
@@ -258,14 +259,16 @@ export class RequestService {
         .set({
           narratorrBookId: book.id,
           status: next,
-          ...(next === 'failed' ? { userCausedFailure: false, failureReason: `book ${book.status}` } : {}),
+          ...(next === 'failed'
+            ? { userCausedFailure: false, failureReason: bookStatusFailureReason(book.status) }
+            : {}),
         })
         .where(eq(requests.id, row.id))
         .returning();
       return updated ?? row;
     } catch (err) {
       if (!isTerminalHandoffError(err)) throw err; // transient — stays `approved`, poller retries
-      const reason = err instanceof NarratorrError ? `${err.upstreamCode}: ${err.message}` : 'handoff failed';
+      const reason = handoffFailureReason(err);
       await this.db
         .update(requests)
         .set({ status: 'failed', userCausedFailure: false, failureReason: reason })
@@ -320,7 +323,9 @@ export class RequestService {
       .set({
         status: next,
         narratorrBookId: bookId,
-        ...(next === 'failed' ? { userCausedFailure: false, failureReason: `book ${book.status}` } : {}),
+        ...(next === 'failed'
+          ? { userCausedFailure: false, failureReason: bookStatusFailureReason(book.status) }
+          : {}),
       })
       .where(eq(requests.id, row.id));
     return next === row.status ? null : next;
@@ -356,6 +361,49 @@ function isTerminalHandoffError(err: unknown): boolean {
   if (!(err instanceof NarratorrError)) return true;
   // 400 malformed, 409 with no usable existingId, 422 unresolvable ASIN.
   return err.upstreamStatus === 400 || err.upstreamStatus === 409 || err.upstreamStatus === 422;
+}
+
+// --- Friendly failure reasons ------------------------------------------------
+// Once a `failureReason` is surfaced to users/admins it must read as plain English,
+// not a raw upstream code. These map every terminal failure cause to a friendly string.
+// Branch on the upstream CODE (narratorr #1545), never the human message text.
+
+/** Per-code friendly text for the add-handoff terminal errors. */
+const HANDOFF_FAILURE_REASONS: Record<string, string> = {
+  [ADD_BOOK_ERROR_CODES.editionRejected]: "This edition is excluded by the library's filters.",
+  [ADD_BOOK_ERROR_CODES.asinNotResolved]: "Couldn't find this book in the catalog.",
+  [ADD_BOOK_ERROR_CODES.invalidRecord]: 'Incomplete book data from the provider.',
+};
+
+/** "The book is gone upstream" reason — written by the poller's 404 path (status-poller). */
+export const BOOK_VANISHED_REASON = 'This book is no longer available upstream.';
+
+/**
+ * Friendly reason for a TERMINAL handoff error. A recognized `NarratorrError` code maps
+ * to its per-code message; an unknown terminal code falls back to the readable
+ * `${code}: ${message}` shape; a non-`NarratorrError` throw is a generic 'handoff failed'.
+ */
+export function handoffFailureReason(err: unknown): string {
+  if (err instanceof NarratorrError) {
+    return HANDOFF_FAILURE_REASONS[err.upstreamCode] ?? `${err.upstreamCode}: ${err.message}`;
+  }
+  return 'handoff failed';
+}
+
+/**
+ * Friendly reason for a book whose status maps to `failed` (`failed` / `missing`). Any
+ * other status shouldn't reach here (only `failed`/`missing` collapse to a failed request),
+ * but it degrades to a readable `book ${status}` string rather than throwing.
+ */
+export function bookStatusFailureReason(status: V1Book['status']): string {
+  switch (status) {
+    case 'failed':
+      return 'Download failed upstream.';
+    case 'missing':
+      return 'No source found upstream.';
+    default:
+      return `book ${status}`;
+  }
 }
 
 /** libSQL surfaces a unique-constraint breach with this SQLite message fragment. */
