@@ -14,6 +14,7 @@ import type { INarratorrClient } from './narratorr-client.js';
 import { NarratorrError } from './narratorr-client.js';
 import { publicId } from '../util/ids.js';
 import { conflict, notFound, tooManyRequests } from '../util/errors.js';
+import { isUniqueViolation } from '../util/db.js';
 
 /**
  * Quota / approval policy. Built from app_settings + config at boot and handed
@@ -421,11 +422,4 @@ export function bookStatusFailureReason(status: V1Book['status']): string {
     default:
       return `book ${status}`;
   }
-}
-
-/** libSQL surfaces a unique-constraint breach with this SQLite message fragment. */
-function isUniqueViolation(err: unknown): boolean {
-  if (err instanceof RangeError) return false;
-  const msg = err instanceof Error ? err.message : String(err);
-  return /UNIQUE constraint failed/i.test(msg) || /SQLITE_CONSTRAINT/i.test(msg);
 }
