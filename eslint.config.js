@@ -4,8 +4,9 @@ import reactHooks from 'eslint-plugin-react-hooks';
 import reactRefresh from 'eslint-plugin-react-refresh';
 import globals from 'globals';
 
-// Lean flat config — mirrors Narratorr's spirit (no-explicit-any, type-imports,
-// layering guards) without its type-checked rules or repo-local custom plugins.
+// Flat config — mirrors Narratorr's enforced bar: no-explicit-any, type-imports,
+// type-checked rules (return-await, no-floating-promises), complexity/size caps,
+// and layering guards. Repo-local custom plugins remain a separate item.
 export default tseslint.config(
   {
     ignores: [
@@ -16,6 +17,9 @@ export default tseslint.config(
       '**/drizzle/**',
       '**/coverage/**',
       '**/.reviews/**',
+      // Static browser bootstrap assets — served as-is, not part of the typed
+      // source graph (tsconfig doesn't include them, so type-checked parsing can't).
+      '**/src/client/public/**',
     ],
   },
 
@@ -33,6 +37,11 @@ export default tseslint.config(
       },
       parserOptions: {
         ecmaFeatures: { jsx: true },
+        // Type-checked parsing — prerequisite for `return-await` /
+        // `no-floating-promises`. Config files are ignored above, so no
+        // project-membership errors; tsconfig already covers src/** + scripts/**.
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
       },
     },
   },
@@ -79,6 +88,20 @@ export default tseslint.config(
     },
   },
 
+  // services is below routes — it must never reach up into the route layer.
+  // (narratorr also bans this for jobs/**; we have no jobs/ layer.)
+  {
+    files: ['**/src/server/services/**/*.ts'],
+    ignores: ['**/*.test.ts'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        patterns: [
+          { group: ['**/routes/**', '**/routes/*'], message: 'services is below routes — do not import the route layer.' },
+        ],
+      }],
+    },
+  },
+
   // Shared rules
   {
     rules: {
@@ -91,6 +114,13 @@ export default tseslint.config(
         'error',
         { prefer: 'type-imports', fixStyle: 'inline-type-imports' },
       ],
+      '@typescript-eslint/return-await': ['error', 'in-try-catch'],
+      // Fire-and-forget async (notifier dispatch, poller) must be marked `void`
+      // so an unhandled rejection is an explicit choice, not a silent drop.
+      '@typescript-eslint/no-floating-promises': 'error',
+      complexity: ['error', { max: 15 }],
+      'max-lines': ['error', { max: 400, skipBlankLines: true, skipComments: true }],
+      'max-lines-per-function': ['error', { max: 150, skipBlankLines: true, skipComments: true }],
       'prefer-const': 'error',
       'no-var': 'error',
       'no-useless-escape': 'error',
@@ -98,11 +128,20 @@ export default tseslint.config(
     },
   },
 
-  // Tests — relax noise
+  // Declarative Drizzle catalog — a flat table of column definitions, not logic.
+  {
+    files: ['**/src/db/schema.ts'],
+    rules: { 'max-lines': 'off' },
+  },
+
+  // Tests — relax noise. Test files legitimately run long and branch widely.
   {
     files: ['**/*.test.ts', '**/*.test.tsx'],
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
+      'max-lines': 'off',
+      'max-lines-per-function': 'off',
+      complexity: 'off',
     },
   },
 );
