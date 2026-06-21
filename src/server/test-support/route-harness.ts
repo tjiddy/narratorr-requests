@@ -30,9 +30,14 @@ export const TEST_ROLE_HEADER = 'x-test-role';
  * for routes that only gate on `request.user`'s role/status (e.g. admin-only settings), NOT for
  * routes that load the user by id (request create looks the user up in the DB). For DB-backed
  * flows, seed a real user with `insertUser()` and authenticate via `cookieFor()`.
+ *
+ * The ids are high sentinels, deliberately NOT 1/2: seeded DB users autoincrement from 1, so a
+ * low synthetic id would collide with a seeded owner and let an ownership match (`row.userId ===
+ * user.id`) mask whether a role bypass actually fired. A 9000-range id can't realistically clash,
+ * so a route that compares ids genuinely exercises the role override.
  */
-export const TEST_ADMIN: AuthUser = { id: 1, publicId: 'us_admin', username: 'admin', role: 'admin', status: 'active' };
-export const TEST_USER: AuthUser = { id: 2, publicId: 'us_user', username: 'user', role: 'user', status: 'active' };
+export const TEST_ADMIN: AuthUser = { id: 9001, publicId: 'us_admin', username: 'admin', role: 'admin', status: 'active' };
+export const TEST_USER: AuthUser = { id: 9002, publicId: 'us_user', username: 'user', role: 'user', status: 'active' };
 
 /**
  * A successful fake Narratorr client whose `addBook()` resolves — the inverse of the

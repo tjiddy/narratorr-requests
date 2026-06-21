@@ -184,9 +184,15 @@ describe('harness role-override (header shim)', () => {
     const { row } = await h.requests.create(owner.id, bodyFor('B01'));
     const url = `/api/requests/${row.publicId}`;
 
+    // Both synthetic ids must differ from the seeded owner, otherwise an ownership match
+    // (`row.userId === user.id`) — not the role override — would explain the 200/403 below.
+    expect(h.roleUsers.admin.id).not.toBe(owner.id);
+    expect(h.roleUsers.user.id).not.toBe(owner.id);
+
     // No header, no cookie → unauthenticated.
     expect((await h.app.inject({ method: 'GET', url })).statusCode).toBe(401);
-    // Synthetic admin bypasses ownership; synthetic non-owner user is forbidden.
+    // Synthetic admin is a NON-owner, so 200 here proves the admin-role ownership bypass;
+    // the synthetic (non-owner) user is forbidden.
     expect((await h.app.inject({ method: 'GET', url, headers: h.asRole('admin') })).statusCode).toBe(200);
     expect((await h.app.inject({ method: 'GET', url, headers: h.asRole('user') })).statusCode).toBe(403);
   });
