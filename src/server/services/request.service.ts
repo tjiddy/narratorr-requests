@@ -151,33 +151,59 @@ export class RequestService {
     if (!user) throw notFound('user not found');
 
     // De-dupe: an existing ACTIVE request for this (user, asin) is returned as-is.
-    const existing = await this.db.query.requests.findFirst({
-      where: and(
-        eq(requests.userId, userId),
-        eq(requests.asin, body.asin),
-        inArray(requests.status, [...ACTIVE_REQUEST_STATUSES]),
-      ),
-    });
+    const existing = await this.findActiveDuplicate(userId, body.asin);
     if (existing) return { row: existing, created: false };
 
-    // Quota applies to everyone with a limit (only admins are unlimited) — auto-approved
-    // users included. Auto-approve only decides pending-vs-approved, not the cap.
-    const limit = this.resolveLimit(user);
-    if (limit !== null) {
-      const usage = await this.quotaUsage(userId, limit);
-      if (usage.remaining !== null && usage.remaining <= 0) {
-        throw tooManyRequests(
-          'QUOTA_EXCEEDED',
-          `Request quota reached (${usage.used}/${usage.limit} in the last ${usage.windowDays} days).`,
-        );
-      }
-    }
+    await this.enforceQuota(user, userId);
 
     // Auto-approve when the role auto-approves (admin) OR the user is individually flagged.
     const autoApprove = this.isAutoApprove(user.role) || user.autoApprove;
 
+    const inserted = await this.insertRequest(userId, body, autoApprove);
+    if (!inserted.created) return inserted; // lost the unique-index race → existing row
+    const row = autoApprove ? await this.handoff(inserted.row) : inserted.row;
+    return { row, created: true };
+  }
+
+  /** An existing ACTIVE (pending/approved/acquiring/available) request for this (user, asin). */
+  private findActiveDuplicate(userId: number, asin: string): Promise<RequestRow | undefined> {
+    return this.db.query.requests.findFirst({
+      where: and(
+        eq(requests.userId, userId),
+        eq(requests.asin, asin),
+        inArray(requests.status, [...ACTIVE_REQUEST_STATUSES]),
+      ),
+    });
+  }
+
+  /**
+   * Throw `QUOTA_EXCEEDED` when the user has no remaining slot. Applies to everyone with a
+   * limit (only admins are unlimited) — auto-approved users included; auto-approve only
+   * decides pending-vs-approved, not the cap.
+   */
+  private async enforceQuota(user: { role: Role; requestQuota: number | null }, userId: number): Promise<void> {
+    const limit = this.resolveLimit(user);
+    if (limit === null) return;
+    const usage = await this.quotaUsage(userId, limit);
+    if (usage.remaining !== null && usage.remaining <= 0) {
+      throw tooManyRequests(
+        'QUOTA_EXCEEDED',
+        `Request quota reached (${usage.used}/${usage.limit} in the last ${usage.windowDays} days).`,
+      );
+    }
+  }
+
+  /**
+   * Insert the new request row. `created: false` means the partial unique index fired
+   * between the preflight de-dupe and this insert (a concurrent identical request), in
+   * which case the existing active row is returned instead.
+   */
+  private async insertRequest(
+    userId: number,
+    body: CreateRequestBody,
+    autoApprove: boolean,
+  ): Promise<{ row: RequestRow; created: boolean }> {
     const now = new Date();
-    let row: RequestRow;
     try {
       const [created] = await this.db
         .insert(requests)
@@ -195,24 +221,15 @@ export class RequestService {
         })
         .returning();
       if (!created) throw new Error('insert returned no row');
-      row = created;
+      return { row: created, created: true };
     } catch (err) {
       // Race: the partial unique index fired between our preflight and insert.
       if (isUniqueViolation(err)) {
-        const dupe = await this.db.query.requests.findFirst({
-          where: and(
-            eq(requests.userId, userId),
-            eq(requests.asin, body.asin),
-            inArray(requests.status, [...ACTIVE_REQUEST_STATUSES]),
-          ),
-        });
+        const dupe = await this.findActiveDuplicate(userId, body.asin);
         if (dupe) return { row: dupe, created: false };
       }
       throw err;
     }
-
-    if (autoApprove) row = await this.handoff(row);
-    return { row, created: true };
   }
 
   // --- admin decision --------------------------------------------------------

@@ -123,48 +123,12 @@ export class ConnectorSettingsService {
     const cur = await this.getStored();
     const next: StoredConnectors = { ...cur };
 
+    // Per connector: omitted (undefined) → keep; null → clear; object → resolve & set.
     if (body.publicUrl !== undefined) next.publicUrl = body.publicUrl;
-
-    if (body.narratorr !== undefined) {
-      if (body.narratorr === null) next.narratorr = null;
-      else {
-        const apiKey = this.resolveSecret(body.narratorr.apiKey, cur.narratorr?.apiKey);
-        if (!apiKey) throw badRequest('NARRATORR_KEY_REQUIRED', 'Narratorr requires an API key.');
-        next.narratorr = { url: body.narratorr.url, apiKey };
-      }
-    }
-
-    if (body.ntfy !== undefined) {
-      next.ntfy =
-        body.ntfy === null
-          ? null
-          : {
-              url: body.ntfy.url,
-              topic: body.ntfy.topic,
-              token: this.resolveSecret(body.ntfy.token, cur.ntfy?.token),
-              priority: body.ntfy.priority ?? null,
-            };
-    }
-
-    if (body.email !== undefined) {
-      next.email =
-        body.email === null
-          ? null
-          : {
-              host: body.email.host,
-              port: body.email.port ?? cur.email?.port ?? 587,
-              secure: body.email.secure ?? cur.email?.secure ?? false,
-              // undefined = keep (matches port/secure); null = clear; value = set.
-              user: body.email.user !== undefined ? body.email.user : (cur.email?.user ?? null),
-              pass: this.resolveSecret(body.email.pass, cur.email?.pass),
-              from: body.email.from,
-              to: body.email.to,
-            };
-    }
-
-    if (body.webhook !== undefined) {
-      next.webhook = body.webhook === null ? null : { url: body.webhook.url };
-    }
+    if (body.narratorr !== undefined) next.narratorr = this.resolveNarratorr(body.narratorr, cur.narratorr);
+    if (body.ntfy !== undefined) next.ntfy = this.resolveNtfy(body.ntfy, cur.ntfy);
+    if (body.email !== undefined) next.email = this.resolveEmail(body.email, cur.email);
+    if (body.webhook !== undefined) next.webhook = body.webhook === null ? null : { url: body.webhook.url };
 
     // Guard against a silent no-op: if the singleton row is missing, the UPDATE matches
     // zero rows and `next` would be a lie. SettingsService.ensure() creates it at boot,
@@ -189,5 +153,45 @@ export class ConnectorSettingsService {
     if (provided === undefined) return existing ?? null;
     if (provided === '') return null;
     return this.codec.encrypt(provided);
+  }
+
+  private resolveNarratorr(
+    body: NonNullable<UpdateConnectorSettingsBody['narratorr']> | null,
+    cur: StoredConnectors['narratorr'],
+  ): StoredConnectors['narratorr'] {
+    if (body === null) return null;
+    const apiKey = this.resolveSecret(body.apiKey, cur?.apiKey);
+    if (!apiKey) throw badRequest('NARRATORR_KEY_REQUIRED', 'Narratorr requires an API key.');
+    return { url: body.url, apiKey };
+  }
+
+  private resolveNtfy(
+    body: NonNullable<UpdateConnectorSettingsBody['ntfy']> | null,
+    cur: StoredConnectors['ntfy'],
+  ): StoredConnectors['ntfy'] {
+    if (body === null) return null;
+    return {
+      url: body.url,
+      topic: body.topic,
+      token: this.resolveSecret(body.token, cur?.token),
+      priority: body.priority ?? null,
+    };
+  }
+
+  private resolveEmail(
+    body: NonNullable<UpdateConnectorSettingsBody['email']> | null,
+    cur: StoredConnectors['email'],
+  ): StoredConnectors['email'] {
+    if (body === null) return null;
+    return {
+      host: body.host,
+      port: body.port ?? cur?.port ?? 587,
+      secure: body.secure ?? cur?.secure ?? false,
+      // undefined = keep (matches port/secure); null = clear; value = set.
+      user: body.user !== undefined ? body.user : (cur?.user ?? null),
+      pass: this.resolveSecret(body.pass, cur?.pass),
+      from: body.from,
+      to: body.to,
+    };
   }
 }
