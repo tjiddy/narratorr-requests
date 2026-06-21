@@ -64,13 +64,17 @@ describe('GET /api/search — query validation (fires before the auth gate)', ()
 });
 
 describe('GET /api/search — handler', () => {
-  it('active user, results → 200 with { data: [...] }', async () => {
+  it('active user, results → 200 and delegates with the authenticated user id + validated query', async () => {
     const user = await insertUser(h.db, { role: 'user', status: 'active' });
-    vi.spyOn(h.search, 'search').mockResolvedValue([sample]);
+    const searchSpy = vi.spyOn(h.search, 'search').mockResolvedValue([sample]);
 
     const res = await search('dune', h.cookieFor(user));
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ data: [sample] });
+    // Pin the delegation contract (search.ts:18): the handler must forward the AUTHENTICATED
+    // user's id and the validated `q`, not some other user or a stale/raw query value —
+    // a mock that returns the same data for any args would otherwise mask a wiring bug.
+    expect(searchSpy).toHaveBeenCalledWith(user.id, 'dune');
   });
 
   it('service throws SEARCH_THROTTLED → 429', async () => {
