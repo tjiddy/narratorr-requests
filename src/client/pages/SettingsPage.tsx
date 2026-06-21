@@ -7,6 +7,9 @@ import type { ConnectorChannel } from '../api';
 const inputCls =
   'w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50';
 
+const secretPlaceholder = (has: boolean, required = false) =>
+  has ? '•••••••• (unchanged)' : required ? 'required' : 'optional';
+
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <label className="flex flex-col gap-1">
@@ -87,67 +90,102 @@ export function SettingsPage() {
   );
 }
 
+// --- Per-channel form state -------------------------------------------------
+// Grouped per connector so the form composes from focused section components and
+// the `??`/`?.` defaulting lives in these init/build helpers, not the form body.
+
+type NarratorrState = { on: boolean; url: string; key: string; hasKey: boolean };
+type NtfyState = { on: boolean; url: string; topic: string; token: string; priority: string; hasToken: boolean };
+type EmailState = {
+  on: boolean;
+  host: string;
+  port: string;
+  secure: boolean;
+  user: string;
+  pass: string;
+  from: string;
+  to: string;
+  hasPass: boolean;
+};
+type WebhookState = { on: boolean; url: string };
+
+const initNarratorr = (c: ConnectorSettingsDto['narratorr']): NarratorrState => ({
+  on: c !== null,
+  url: c?.url ?? '',
+  key: '',
+  hasKey: c?.hasApiKey ?? false,
+});
+const initNtfy = (c: ConnectorSettingsDto['ntfy']): NtfyState => ({
+  on: c !== null,
+  url: c?.url ?? 'https://ntfy.sh',
+  topic: c?.topic ?? '',
+  token: '',
+  priority: c?.priority ?? '',
+  hasToken: c?.hasToken ?? false,
+});
+const initEmail = (c: ConnectorSettingsDto['email']): EmailState => ({
+  on: c !== null,
+  host: c?.host ?? '',
+  port: String(c?.port ?? 587),
+  secure: c?.secure ?? false,
+  user: c?.user ?? '',
+  pass: '',
+  from: c?.from ?? '',
+  to: c?.to ?? '',
+  hasPass: c?.hasPassword ?? false,
+});
+const initWebhook = (c: ConnectorSettingsDto['webhook']): WebhookState => ({ on: c !== null, url: c?.url ?? '' });
+
+const buildNarratorr = (s: NarratorrState): UpdateConnectorSettingsBody['narratorr'] =>
+  s.on ? { url: s.url.trim(), ...(s.key.trim() ? { apiKey: s.key.trim() } : {}) } : null;
+const buildNtfy = (s: NtfyState): UpdateConnectorSettingsBody['ntfy'] =>
+  s.on
+    ? {
+        url: s.url.trim(),
+        topic: s.topic.trim(),
+        ...(s.token.trim() ? { token: s.token.trim() } : {}),
+        priority: s.priority.trim() || null,
+      }
+    : null;
+const buildEmail = (s: EmailState): UpdateConnectorSettingsBody['email'] =>
+  s.on
+    ? {
+        host: s.host.trim(),
+        port: Number(s.port) || 587,
+        secure: s.secure,
+        user: s.user.trim() || null,
+        ...(s.pass ? { pass: s.pass } : {}),
+        from: s.from.trim(),
+        to: s.to.trim(),
+      }
+    : null;
+const buildWebhook = (s: WebhookState): UpdateConnectorSettingsBody['webhook'] =>
+  s.on ? { url: s.url.trim() } : null;
+
+type Patch<T> = (p: Partial<T>) => void;
+
 function SettingsForm({ initial }: { initial: ConnectorSettingsDto }) {
   const update = useUpdateConnectors();
 
   const [publicUrl, setPublicUrl] = useState(initial.publicUrl ?? '');
+  const [narr, setNarr] = useState(() => initNarratorr(initial.narratorr));
+  const [ntfy, setNtfy] = useState(() => initNtfy(initial.ntfy));
+  const [email, setEmail] = useState(() => initEmail(initial.email));
+  const [webhook, setWebhook] = useState(() => initWebhook(initial.webhook));
 
-  const [narrOn, setNarrOn] = useState(initial.narratorr !== null);
-  const [narrUrl, setNarrUrl] = useState(initial.narratorr?.url ?? '');
-  const [narrKey, setNarrKey] = useState('');
-  const narrHasKey = initial.narratorr?.hasApiKey ?? false;
-
-  const [ntfyOn, setNtfyOn] = useState(initial.ntfy !== null);
-  const [ntfyUrl, setNtfyUrl] = useState(initial.ntfy?.url ?? 'https://ntfy.sh');
-  const [ntfyTopic, setNtfyTopic] = useState(initial.ntfy?.topic ?? '');
-  const [ntfyToken, setNtfyToken] = useState('');
-  const [ntfyPriority, setNtfyPriority] = useState(initial.ntfy?.priority ?? '');
-  const ntfyHasToken = initial.ntfy?.hasToken ?? false;
-
-  const [emailOn, setEmailOn] = useState(initial.email !== null);
-  const [emailHost, setEmailHost] = useState(initial.email?.host ?? '');
-  const [emailPort, setEmailPort] = useState(String(initial.email?.port ?? 587));
-  const [emailSecure, setEmailSecure] = useState(initial.email?.secure ?? false);
-  const [emailUser, setEmailUser] = useState(initial.email?.user ?? '');
-  const [emailPass, setEmailPass] = useState('');
-  const [emailFrom, setEmailFrom] = useState(initial.email?.from ?? '');
-  const [emailTo, setEmailTo] = useState(initial.email?.to ?? '');
-  const emailHasPass = initial.email?.hasPassword ?? false;
-
-  const [webhookOn, setWebhookOn] = useState(initial.webhook !== null);
-  const [webhookUrl, setWebhookUrl] = useState(initial.webhook?.url ?? '');
-
-  const secretPlaceholder = (has: boolean, required = false) =>
-    has ? '•••••••• (unchanged)' : required ? 'required' : 'optional';
+  const patchNarr: Patch<NarratorrState> = (p) => setNarr((s) => ({ ...s, ...p }));
+  const patchNtfy: Patch<NtfyState> = (p) => setNtfy((s) => ({ ...s, ...p }));
+  const patchEmail: Patch<EmailState> = (p) => setEmail((s) => ({ ...s, ...p }));
+  const patchWebhook: Patch<WebhookState> = (p) => setWebhook((s) => ({ ...s, ...p }));
 
   function save() {
-    const body: UpdateConnectorSettingsBody = {
+    update.mutate({
       publicUrl: publicUrl.trim() || null,
-      narratorr: narrOn
-        ? { url: narrUrl.trim(), ...(narrKey.trim() ? { apiKey: narrKey.trim() } : {}) }
-        : null,
-      ntfy: ntfyOn
-        ? {
-            url: ntfyUrl.trim(),
-            topic: ntfyTopic.trim(),
-            ...(ntfyToken.trim() ? { token: ntfyToken.trim() } : {}),
-            priority: ntfyPriority.trim() || null,
-          }
-        : null,
-      email: emailOn
-        ? {
-            host: emailHost.trim(),
-            port: Number(emailPort) || 587,
-            secure: emailSecure,
-            user: emailUser.trim() || null,
-            ...(emailPass ? { pass: emailPass } : {}),
-            from: emailFrom.trim(),
-            to: emailTo.trim(),
-          }
-        : null,
-      webhook: webhookOn ? { url: webhookUrl.trim() } : null,
-    };
-    update.mutate(body);
+      narratorr: buildNarratorr(narr),
+      ntfy: buildNtfy(ntfy),
+      email: buildEmail(email),
+      webhook: buildWebhook(webhook),
+    });
   }
 
   return (
@@ -168,104 +206,10 @@ function SettingsForm({ initial }: { initial: ConnectorSettingsDto }) {
         </Field>
       </div>
 
-      {/* Narratorr */}
-      <Section
-        title="Narratorr connection"
-        subtitle="The library this app sends approved requests to. Required for search and requests to work."
-        enabled={narrOn}
-        onToggle={setNarrOn}
-        channel="narratorr"
-      >
-        <Field label="Narratorr URL" hint="Base URL of your narratorr instance.">
-          <input className={inputCls} value={narrUrl} onChange={(e) => setNarrUrl(e.target.value)} placeholder="https://narratorr.example.com" />
-        </Field>
-        <Field label="API key" hint={narrHasKey ? 'Leave blank to keep the current key.' : 'From narratorr → Settings → API.'}>
-          <input className={inputCls} type="password" autoComplete="off" value={narrKey} onChange={(e) => setNarrKey(e.target.value)} placeholder={secretPlaceholder(narrHasKey, true)} />
-        </Field>
-      </Section>
-
-      {/* ntfy */}
-      <Section
-        title="ntfy"
-        subtitle="Push notifications to your phone via ntfy.sh or a self-hosted server."
-        enabled={ntfyOn}
-        onToggle={setNtfyOn}
-        channel="ntfy"
-      >
-        <Field label="Server URL">
-          <input className={inputCls} value={ntfyUrl} onChange={(e) => setNtfyUrl(e.target.value)} placeholder="https://ntfy.sh" />
-        </Field>
-        <Field label="Topic">
-          <input className={inputCls} value={ntfyTopic} onChange={(e) => setNtfyTopic(e.target.value)} placeholder="my-narratorr-requests" />
-        </Field>
-        <Field label="Access token" hint={ntfyHasToken ? 'Leave blank to keep the current token.' : 'Only needed for protected topics.'}>
-          <input className={inputCls} type="password" autoComplete="off" value={ntfyToken} onChange={(e) => setNtfyToken(e.target.value)} placeholder={secretPlaceholder(ntfyHasToken)} />
-        </Field>
-        <Field label="Priority" hint="Optional: min, low, default, high, or max.">
-          <input className={inputCls} value={ntfyPriority} onChange={(e) => setNtfyPriority(e.target.value)} placeholder="default" />
-        </Field>
-      </Section>
-
-      {/* Email */}
-      <Section
-        title="Email (SMTP)"
-        subtitle="Send request notifications to an email address."
-        enabled={emailOn}
-        onToggle={setEmailOn}
-        channel="email"
-      >
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="SMTP host">
-            <input className={inputCls} value={emailHost} onChange={(e) => setEmailHost(e.target.value)} placeholder="smtp.example.com" />
-          </Field>
-          <Field label="Port">
-            <input className={inputCls} type="number" value={emailPort} onChange={(e) => setEmailPort(e.target.value)} placeholder="587" />
-          </Field>
-        </div>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            className="h-4 w-4 accent-primary"
-            checked={emailSecure}
-            onChange={(e) => {
-              const on = e.target.checked;
-              setEmailSecure(on);
-              // Keep the port consistent with the TLS mode unless a custom port is set.
-              setEmailPort((p) => (on && (p === '' || p === '587') ? '465' : !on && p === '465' ? '587' : p));
-            }}
-          />
-          <span>Implicit TLS (port 465) — leave off for STARTTLS (e.g. 587)</span>
-        </label>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Username" hint="Optional for open relays.">
-            <input className={inputCls} autoComplete="off" value={emailUser} onChange={(e) => setEmailUser(e.target.value)} placeholder="optional" />
-          </Field>
-          <Field label="Password" hint={emailHasPass ? 'Leave blank to keep.' : 'Optional.'}>
-            <input className={inputCls} type="password" autoComplete="off" value={emailPass} onChange={(e) => setEmailPass(e.target.value)} placeholder={secretPlaceholder(emailHasPass)} />
-          </Field>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="From">
-            <input className={inputCls} value={emailFrom} onChange={(e) => setEmailFrom(e.target.value)} placeholder="narratorr-request@example.com" />
-          </Field>
-          <Field label="To (admin)">
-            <input className={inputCls} value={emailTo} onChange={(e) => setEmailTo(e.target.value)} placeholder="you@example.com" />
-          </Field>
-        </div>
-      </Section>
-
-      {/* Webhook */}
-      <Section
-        title="Webhook / Discord"
-        subtitle="POST a JSON payload to any endpoint. Works as a Discord webhook URL out of the box."
-        enabled={webhookOn}
-        onToggle={setWebhookOn}
-        channel="webhook"
-      >
-        <Field label="Webhook URL">
-          <input className={inputCls} value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} placeholder="https://discord.com/api/webhooks/…" />
-        </Field>
-      </Section>
+      <NarratorrSection state={narr} patch={patchNarr} />
+      <NtfySection state={ntfy} patch={patchNtfy} />
+      <EmailSection state={email} patch={patchEmail} />
+      <WebhookSection state={webhook} patch={patchWebhook} />
 
       <div className="sticky bottom-4 flex justify-end">
         <Button variant="primary" loading={update.isPending} onClick={save}>
@@ -273,5 +217,116 @@ function SettingsForm({ initial }: { initial: ConnectorSettingsDto }) {
         </Button>
       </div>
     </div>
+  );
+}
+
+function NarratorrSection({ state, patch }: { state: NarratorrState; patch: Patch<NarratorrState> }) {
+  return (
+    <Section
+      title="Narratorr connection"
+      subtitle="The library this app sends approved requests to. Required for search and requests to work."
+      enabled={state.on}
+      onToggle={(v) => patch({ on: v })}
+      channel="narratorr"
+    >
+      <Field label="Narratorr URL" hint="Base URL of your narratorr instance.">
+        <input className={inputCls} value={state.url} onChange={(e) => patch({ url: e.target.value })} placeholder="https://narratorr.example.com" />
+      </Field>
+      <Field label="API key" hint={state.hasKey ? 'Leave blank to keep the current key.' : 'From narratorr → Settings → API.'}>
+        <input className={inputCls} type="password" autoComplete="off" value={state.key} onChange={(e) => patch({ key: e.target.value })} placeholder={secretPlaceholder(state.hasKey, true)} />
+      </Field>
+    </Section>
+  );
+}
+
+function NtfySection({ state, patch }: { state: NtfyState; patch: Patch<NtfyState> }) {
+  return (
+    <Section
+      title="ntfy"
+      subtitle="Push notifications to your phone via ntfy.sh or a self-hosted server."
+      enabled={state.on}
+      onToggle={(v) => patch({ on: v })}
+      channel="ntfy"
+    >
+      <Field label="Server URL">
+        <input className={inputCls} value={state.url} onChange={(e) => patch({ url: e.target.value })} placeholder="https://ntfy.sh" />
+      </Field>
+      <Field label="Topic">
+        <input className={inputCls} value={state.topic} onChange={(e) => patch({ topic: e.target.value })} placeholder="my-narratorr-requests" />
+      </Field>
+      <Field label="Access token" hint={state.hasToken ? 'Leave blank to keep the current token.' : 'Only needed for protected topics.'}>
+        <input className={inputCls} type="password" autoComplete="off" value={state.token} onChange={(e) => patch({ token: e.target.value })} placeholder={secretPlaceholder(state.hasToken)} />
+      </Field>
+      <Field label="Priority" hint="Optional: min, low, default, high, or max.">
+        <input className={inputCls} value={state.priority} onChange={(e) => patch({ priority: e.target.value })} placeholder="default" />
+      </Field>
+    </Section>
+  );
+}
+
+function EmailSection({ state, patch }: { state: EmailState; patch: Patch<EmailState> }) {
+  const onToggleSecure = (on: boolean) => {
+    // Keep the port consistent with the TLS mode unless a custom port is set.
+    const port = on && (state.port === '' || state.port === '587') ? '465' : !on && state.port === '465' ? '587' : state.port;
+    patch({ secure: on, port });
+  };
+  return (
+    <Section
+      title="Email (SMTP)"
+      subtitle="Send request notifications to an email address."
+      enabled={state.on}
+      onToggle={(v) => patch({ on: v })}
+      channel="email"
+    >
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="SMTP host">
+          <input className={inputCls} value={state.host} onChange={(e) => patch({ host: e.target.value })} placeholder="smtp.example.com" />
+        </Field>
+        <Field label="Port">
+          <input className={inputCls} type="number" value={state.port} onChange={(e) => patch({ port: e.target.value })} placeholder="587" />
+        </Field>
+      </div>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="h-4 w-4 accent-primary"
+          checked={state.secure}
+          onChange={(e) => onToggleSecure(e.target.checked)}
+        />
+        <span>Implicit TLS (port 465) — leave off for STARTTLS (e.g. 587)</span>
+      </label>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Username" hint="Optional for open relays.">
+          <input className={inputCls} autoComplete="off" value={state.user} onChange={(e) => patch({ user: e.target.value })} placeholder="optional" />
+        </Field>
+        <Field label="Password" hint={state.hasPass ? 'Leave blank to keep.' : 'Optional.'}>
+          <input className={inputCls} type="password" autoComplete="off" value={state.pass} onChange={(e) => patch({ pass: e.target.value })} placeholder={secretPlaceholder(state.hasPass)} />
+        </Field>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="From">
+          <input className={inputCls} value={state.from} onChange={(e) => patch({ from: e.target.value })} placeholder="narratorr-request@example.com" />
+        </Field>
+        <Field label="To (admin)">
+          <input className={inputCls} value={state.to} onChange={(e) => patch({ to: e.target.value })} placeholder="you@example.com" />
+        </Field>
+      </div>
+    </Section>
+  );
+}
+
+function WebhookSection({ state, patch }: { state: WebhookState; patch: Patch<WebhookState> }) {
+  return (
+    <Section
+      title="Webhook / Discord"
+      subtitle="POST a JSON payload to any endpoint. Works as a Discord webhook URL out of the box."
+      enabled={state.on}
+      onToggle={(v) => patch({ on: v })}
+      channel="webhook"
+    >
+      <Field label="Webhook URL">
+        <input className={inputCls} value={state.url} onChange={(e) => patch({ url: e.target.value })} placeholder="https://discord.com/api/webhooks/…" />
+      </Field>
+    </Section>
   );
 }
