@@ -46,9 +46,11 @@ describe('config — AUTH_BYPASS guardrails (CLAUDE.md security invariant)', () 
 
 describe('config — SESSION_SECRET', () => {
   it('requires SESSION_SECRET in production', async () => {
-    await expect(loadConfig({ NODE_ENV: 'production', SESSION_SECRET: '' })).rejects.toThrow(
-      /SESSION_SECRET is required in production/,
-    );
+    // AUTH_BYPASS is guarded before SESSION_SECRET and may be set ambiently (.env ships
+    // AUTH_BYPASS=1 as the dev default), so neutralize it to isolate the guard under test.
+    await expect(
+      loadConfig({ NODE_ENV: 'production', SESSION_SECRET: '', AUTH_BYPASS: '' }),
+    ).rejects.toThrow(/SESSION_SECRET is required in production/);
   });
 
   it('auto-generates an ephemeral SESSION_SECRET in dev', async () => {
