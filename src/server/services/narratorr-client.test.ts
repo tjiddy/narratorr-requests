@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { http, HttpResponse } from 'msw';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { http, HttpResponse, delay } from 'msw';
 import { setupServer } from 'msw/node';
 import { NarratorrClient, NarratorrError } from './narratorr-client.js';
+import { errorBody } from '../../shared/schemas/v1/common.js';
 import { narratorrV1Handlers, resetMockNarratorrState, MOCK_BASE_URL } from '../mocks/narratorr-v1.js';
 
 const server = setupServer(...narratorrV1Handlers());
@@ -92,5 +93,84 @@ describe('NarratorrClient error handling', () => {
     await expect(client.getBook('bk_doesnotexist')).rejects.toMatchObject({
       upstreamStatus: 404,
     });
+  });
+
+  it('maps a transport failure to upstreamStatus 0 / NETWORK', async () => {
+    server.use(http.get(`${MOCK_BASE_URL}/api/v1/metadata/search`, () => HttpResponse.error()));
+    await expect(client.searchMetadata('x')).rejects.toMatchObject({
+      statusCode: 502,
+      upstreamStatus: 0,
+      upstreamCode: 'NETWORK',
+    });
+  });
+
+  it('maps a request that exceeds the timeout to a NETWORK error ending in "timed out"', async () => {
+    server.use(
+      http.get(`${MOCK_BASE_URL}/api/v1/metadata/search`, async () => {
+        await delay(200);
+        return HttpResponse.json({ data: [], total: 0 });
+      }),
+    );
+    const slow = new NarratorrClient({ baseUrl: MOCK_BASE_URL, apiKey: 'test-key', timeoutMs: 10 });
+    const err = await slow.searchMetadata('x').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NarratorrError);
+    expect((err as NarratorrError).upstreamCode).toBe('NETWORK');
+    expect((err as NarratorrError).message).toMatch(/timed out$/);
+  });
+
+  it('rejects a 200 with a non-JSON body as NON_JSON', async () => {
+    server.use(
+      http.get(`${MOCK_BASE_URL}/api/v1/metadata/search`, () =>
+        HttpResponse.text('<html>not json</html>'),
+      ),
+    );
+    await expect(client.searchMetadata('x')).rejects.toMatchObject({ upstreamCode: 'NON_JSON' });
+  });
+
+  it('falls back to HTTP_<status> for a non-2xx body that is not the error envelope', async () => {
+    server.use(
+      http.get(`${MOCK_BASE_URL}/api/v1/metadata/search`, () =>
+        HttpResponse.json({ message: 'oops' }, { status: 500 }),
+      ),
+    );
+    await expect(client.searchMetadata('x')).rejects.toMatchObject({
+      upstreamStatus: 500,
+      upstreamCode: 'HTTP_500',
+    });
+  });
+
+  it('re-throws a 409 with no existingId and does NOT fetch a book', async () => {
+    server.use(
+      http.post(`${MOCK_BASE_URL}/api/v1/books`, () =>
+        HttpResponse.json(errorBody('book_exists', 'A book with this ASIN already exists.'), {
+          status: 409,
+        }),
+      ),
+    );
+    const getBookSpy = vi.spyOn(client, 'getBook');
+    await expect(client.addBook('B07KCQDQR9')).rejects.toMatchObject({ upstreamStatus: 409 });
+    expect(getBookSpy).not.toHaveBeenCalled();
+    getBookSpy.mockRestore();
+  });
+});
+
+describe('NarratorrClient.ping (Settings "Test" probe)', () => {
+  it('resolves when the probe book 404s (reachable + authenticated)', async () => {
+    // Default handlers 404 the bogus `__healthcheck__` id — that is the success signal.
+    await expect(client.ping()).resolves.toBeUndefined();
+  });
+
+  it('rejects when the probe is unauthorized (401)', async () => {
+    server.use(
+      http.get(`${MOCK_BASE_URL}/api/v1/books/:id`, () =>
+        HttpResponse.json(errorBody('UNAUTHORIZED', 'Missing X-Api-Key'), { status: 401 }),
+      ),
+    );
+    await expect(client.ping()).rejects.toMatchObject({ upstreamStatus: 401 });
+  });
+
+  it('rejects on a transport failure', async () => {
+    server.use(http.get(`${MOCK_BASE_URL}/api/v1/books/:id`, () => HttpResponse.error()));
+    await expect(client.ping()).rejects.toMatchObject({ upstreamCode: 'NETWORK' });
   });
 });
