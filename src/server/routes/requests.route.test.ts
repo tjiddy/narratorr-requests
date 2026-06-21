@@ -175,6 +175,23 @@ describe('GET /api/requests/:publicId — detail', () => {
   });
 });
 
+// The harness exposes two auth strategies; the cookie path is exercised throughout above.
+// This pins the header-shim role override (authz-only, no DB row / cookie) so follow-up
+// route tests can lean on it instead of re-rolling the settings.route.test.ts hook.
+describe('harness role-override (header shim)', () => {
+  it('injects a synthetic request.user by role and gates authz without a DB row or cookie', async () => {
+    const owner = await insertUser(h.db, { role: 'user', status: 'active', username: 'owner' });
+    const { row } = await h.requests.create(owner.id, bodyFor('B01'));
+    const url = `/api/requests/${row.publicId}`;
+
+    // No header, no cookie → unauthenticated.
+    expect((await h.app.inject({ method: 'GET', url })).statusCode).toBe(401);
+    // Synthetic admin bypasses ownership; synthetic non-owner user is forbidden.
+    expect((await h.app.inject({ method: 'GET', url, headers: h.asRole('admin') })).statusCode).toBe(200);
+    expect((await h.app.inject({ method: 'GET', url, headers: h.asRole('user') })).statusCode).toBe(403);
+  });
+});
+
 function bodyFor(asin: string) {
   return { asin, title: `Title ${asin}` };
 }

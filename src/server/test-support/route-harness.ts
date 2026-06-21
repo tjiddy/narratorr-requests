@@ -17,8 +17,22 @@ import type { AppDeps } from '../services/deps.js';
 import type { INarratorrClient } from '../services/narratorr-client.js';
 import type { V1Book } from '../../shared/schemas/v1/books.js';
 import type { BookStatus } from '../../shared/schemas/book.js';
+import type { AuthUser } from '../types.js';
 
 const SESSION_SECRET = 'route-test-secret';
+
+/** Header that selects a synthetic `request.user` on the role-override (header-shim) path. */
+export const TEST_ROLE_HEADER = 'x-test-role';
+
+/**
+ * Synthetic users for the header-shim authz-override path — lifted from `settings.route.test.ts`
+ * so authz-only route tests stop re-rolling that hook. These are NOT backed by DB rows: use them
+ * for routes that only gate on `request.user`'s role/status (e.g. admin-only settings), NOT for
+ * routes that load the user by id (request create looks the user up in the DB). For DB-backed
+ * flows, seed a real user with `insertUser()` and authenticate via `cookieFor()`.
+ */
+export const TEST_ADMIN: AuthUser = { id: 1, publicId: 'us_admin', username: 'admin', role: 'admin', status: 'active' };
+export const TEST_USER: AuthUser = { id: 2, publicId: 'us_user', username: 'user', role: 'user', status: 'active' };
 
 /**
  * A successful fake Narratorr client whose `addBook()` resolves — the inverse of the
@@ -57,12 +71,20 @@ export interface RouteHarness {
   narratorr: FakeNarratorrClient;
   config: AppConfig;
   /**
-   * Mint a real signed session cookie for an already-seeded user — the role-override path
-   * for authz assertions. Seed a user with any role/status via `insertUser()`, then become
-   * them. This goes through the real `authPlugin` (no header shim), so it exercises the
-   * genuine session → `request.user` boundary instead of a parallel fixture of it.
+   * Mint a real signed session cookie for an already-seeded user — the DB-backed auth path.
+   * Seed a user with any role/status via `insertUser()`, then become them. This goes through
+   * the real `authPlugin`, so it exercises the genuine session → `request.user` boundary
+   * instead of a parallel fixture of it.
    */
   cookieFor(user: { id: number; publicId: string }): Record<string, string>;
+  /**
+   * Header-shim role override for authz-only tests — selects a synthetic `request.user`
+   * (`TEST_ADMIN` / `TEST_USER`, or the `roleUsers` override) without a DB row or cookie.
+   * Use for routes that gate purely on role/status; pair with `cookieFor()` for DB-backed flows.
+   */
+  asRole(role: 'admin' | 'user'): Record<string, string>;
+  /** The synthetic users the header shim injects (the `roleUsers` override or the defaults). */
+  roleUsers: { admin: AuthUser; user: AuthUser };
 }
 
 export interface BuildRouteAppOpts {
@@ -73,6 +95,8 @@ export interface BuildRouteAppOpts {
   narratorr?: INarratorrClient;
   /** Override the default request policy (defaultQuota 10 / windowDays 30 / admin auto-approve). */
   policy?: Partial<RequestPolicy>;
+  /** Override the synthetic users the header-shim role override injects (default TEST_ADMIN / TEST_USER). */
+  roleUsers?: { admin?: AuthUser; user?: AuthUser };
 }
 
 /**
@@ -110,6 +134,11 @@ export async function buildRouteApp(opts: BuildRouteAppOpts): Promise<RouteHarne
     oidc: new Map(),
   } as unknown as AppDeps;
 
+  const roleUsers = {
+    admin: opts.roleUsers?.admin ?? TEST_ADMIN,
+    user: opts.roleUsers?.user ?? TEST_USER,
+  };
+
   const app = Fastify().withTypeProvider<ZodTypeProvider>();
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
@@ -117,6 +146,14 @@ export async function buildRouteApp(opts: BuildRouteAppOpts): Promise<RouteHarne
   await app.register(rateLimit, authRateLimitOptions);
   await app.register(errorHandlerPlugin);
   await app.register(authPlugin, deps);
+  // Header-shim role override (mirrors settings.route.test.ts). Runs AFTER authPlugin's
+  // onRequest hook so a test that sends the header wins; tests that send a real cookie and
+  // no header are untouched. Inert unless the header is present.
+  app.addHook('onRequest', async (req) => {
+    const role = req.headers[TEST_ROLE_HEADER];
+    if (role === 'admin') req.user = roleUsers.admin;
+    else if (role === 'user') req.user = roleUsers.user;
+  });
   opts.register(app, deps);
   await app.ready();
 
@@ -128,9 +165,11 @@ export async function buildRouteApp(opts: BuildRouteAppOpts): Promise<RouteHarne
     notify,
     narratorr: narratorr as FakeNarratorrClient,
     config,
+    roleUsers,
     cookieFor: (user) => ({
       [SESSION_COOKIE]: createSessionToken({ uid: user.id, pid: user.publicId }, SESSION_SECRET),
     }),
+    asRole: (role) => ({ [TEST_ROLE_HEADER]: role }),
   };
 }
 
