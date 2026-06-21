@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Hoisted so the mock factory can reference it (vi.mock is hoisted above imports).
-const { sendMail } = vi.hoisted(() => ({ sendMail: vi.fn() }));
+// Hoisted so the mock factory can reference them (vi.mock is hoisted above imports).
+const { sendMail, createTransport } = vi.hoisted(() => {
+  const sendMail = vi.fn();
+  return { sendMail, createTransport: vi.fn((_opts?: unknown) => ({ sendMail })) };
+});
 vi.mock('nodemailer', () => ({
-  default: { createTransport: vi.fn(() => ({ sendMail })) },
+  default: { createTransport },
 }));
 
 import { NtfyChannel } from './adapters/ntfy.js';
@@ -136,5 +139,53 @@ describe('EmailChannel', () => {
     expect(mail.subject).toBe('New audiobook request');
     expect(mail.text).toContain('https://req.example.com/admin');
     expect(mail.html).toContain('Open the request queue');
+  });
+
+  it('omits the link and uses the plain body as text when message.url is null', async () => {
+    const ch = new EmailChannel({
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      user: 'u',
+      pass: 'p',
+      from: 'bot@x',
+      to: 'admin@x',
+    });
+    await ch.send({ payload: ctx.payload, message: { ...ctx.message, url: null } });
+
+    const mail = sendMail.mock.calls[0]![0];
+    expect(mail.html).not.toContain('<a');
+    expect(mail.text).toBe(ctx.message.body);
+  });
+
+  it('propagates a sendMail rejection so the dispatcher can log it', async () => {
+    sendMail.mockRejectedValueOnce(new Error('smtp down'));
+    const ch = new EmailChannel({
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      user: 'u',
+      pass: 'p',
+      from: 'bot@x',
+      to: 'admin@x',
+    });
+    await expect(ch.send(ctx)).rejects.toThrow(/smtp down/);
+  });
+
+  it('builds the transport without an auth block when user/pass are absent', () => {
+    createTransport.mockClear();
+    new EmailChannel({
+      host: 'smtp.example.com',
+      port: 25,
+      secure: false,
+      user: null,
+      pass: null,
+      from: 'bot@x',
+      to: 'admin@x',
+    });
+
+    expect(createTransport).toHaveBeenCalledOnce();
+    const opts = createTransport.mock.calls[0]![0];
+    expect(opts).not.toHaveProperty('auth');
   });
 });
