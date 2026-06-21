@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { and, eq } from 'drizzle-orm';
 import { RequestService, type RequestPolicy } from './request.service.js';
 import { NarratorrError, type INarratorrClient } from './narratorr-client.js';
 import { createTestDb, insertUser } from '../test-support/db.js';
@@ -103,6 +103,66 @@ describe('RequestService.create', () => {
     const svc = new RequestService(db, client, policy({ defaultQuota: 1 }));
     await svc.create(user.id, body('B1'));
     await expect(svc.create(user.id, body('B2'))).rejects.toMatchObject({ code: 'QUOTA_EXCEEDED' });
+  });
+});
+
+describe('insert-time unique-violation race', () => {
+  // The preflight findActiveDuplicate() at create():154 returns before insertRequest(),
+  // so a pre-seeded duplicate alone only retests preflight dedupe and never reaches the
+  // catch at insertRequest():225-232. Simulate the race window explicitly: drive the DB
+  // read seam (db.query.requests.findFirst) so preflight MISSES and the catch re-query
+  // HITS, and make the insert throw the unique violation. (:memory: libSQL breaks across
+  // db.transaction() per CLAUDE.md, so a spy is preferred over real concurrency.)
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('resolves the race to the existing duplicate — no new row, no handoff', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    // Seed the active duplicate directly (an active status covered by the partial unique
+    // index — never `available`). Direct db.insert does not touch FakeClient.added.
+    const [seeded] = await db
+      .insert(requests)
+      .values({ publicId: 'rq_dupe', userId: user.id, asin: 'B1', title: 't', status: 'pending' })
+      .returning();
+
+    // Preflight (create():154) misses; catch re-query (insertRequest():228) hits the seed.
+    vi.spyOn(db.query.requests, 'findFirst')
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(seeded);
+    // The insert trips the partial unique index between preflight and write.
+    vi.spyOn(db, 'insert').mockImplementation(() => {
+      throw new Error('UNIQUE constraint failed: requests.user_id, requests.asin');
+    });
+
+    const svc = new RequestService(db, client, policy());
+    const { row, created } = await svc.create(user.id, body('B1'));
+
+    expect(created).toBe(false);
+    expect(row.publicId).toBe(seeded!.publicId); // returns the existing duplicate
+    expect(client.added).toHaveLength(0); // create() returns at :163 before handoff() — no double handoff / quota charge
+
+    // No second row was written for the (user, asin) pair.
+    vi.restoreAllMocks();
+    const rows = await db
+      .select()
+      .from(requests)
+      .where(and(eq(requests.userId, user.id), eq(requests.asin, 'B1')));
+    expect(rows).toHaveLength(1);
+  });
+
+  it('re-throws the original error when the catch re-query finds no duplicate (no silent null)', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    // Both preflight and catch re-query miss; the unique violation must surface unchanged.
+    vi.spyOn(db.query.requests, 'findFirst')
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
+    vi.spyOn(db, 'insert').mockImplementation(() => {
+      throw new Error('UNIQUE constraint failed: requests.user_id, requests.asin');
+    });
+
+    const svc = new RequestService(db, client, policy());
+    await expect(svc.create(user.id, body('B1'))).rejects.toThrow('UNIQUE constraint failed');
   });
 });
 

@@ -6,6 +6,7 @@ import type { AuthUser } from '../types.js';
 import type { OidcProfile } from './oidc.service.js';
 import { publicId } from '../util/ids.js';
 import { notFound } from '../util/errors.js';
+import { isUniqueViolation } from '../util/db.js';
 
 export const DEV_ADMIN_PROVIDER = 'local';
 export const DEV_ADMIN_SUBJECT = 'dev-admin';
@@ -249,10 +250,4 @@ export class UserService {
     if (!row) throw new Error('failed to ensure dev admin');
     return row;
   }
-}
-
-/** libSQL surfaces a unique-constraint breach with this SQLite message fragment. */
-function isUniqueViolation(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /UNIQUE constraint failed/i.test(msg) || /SQLITE_CONSTRAINT/i.test(msg);
 }
