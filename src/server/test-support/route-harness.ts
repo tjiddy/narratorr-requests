@@ -7,6 +7,8 @@ import { createTestDb } from './db.js';
 import { UserService } from '../services/user.service.js';
 import { SettingsService } from '../services/settings.service.js';
 import { RequestService, type RequestPolicy } from '../services/request.service.js';
+import { SearchService } from '../services/search.service.js';
+import { NarratorrClientHolder } from '../services/narratorr-client-holder.js';
 import { errorHandlerPlugin } from '../plugins/error-handler.js';
 import { authRateLimitOptions } from '../plugins/rate-limit.js';
 import { authPlugin, SESSION_COOKIE } from '../plugins/auth.js';
@@ -74,6 +76,15 @@ export interface RouteHarness {
   notify: ReturnType<typeof vi.fn>;
   /** The successful fake Narratorr client (mutate `.status`, inspect `.added`). */
   narratorr: FakeNarratorrClient;
+  /**
+   * The swappable holder wrapping {@link narratorr} — this is what `deps.narratorr` points at
+   * (the health route reads `deps.narratorr.configured`; only the holder exposes that getter).
+   * Call `.set(null)` to flip the app to the unconfigured state mid-test, or build the harness
+   * with `narratorrConfigured: false` to start unconfigured.
+   */
+  narratorrHolder: NarratorrClientHolder;
+  /** The real `SearchService` wired against {@link narratorrHolder} — spy on `.search` to force errors. */
+  search: SearchService;
   config: AppConfig;
   /**
    * Mint a real signed session cookie for an already-seeded user — the DB-backed auth path.
@@ -98,6 +109,11 @@ export interface BuildRouteAppOpts {
   config?: Partial<AppConfig>;
   /** Override the default successful fake Narratorr client. */
   narratorr?: INarratorrClient;
+  /**
+   * Start with narratorr unconfigured (holder wraps `null`) so `deps.narratorr.configured` is
+   * `false` and any search/handoff surfaces `NOT_CONFIGURED`. Defaults to `true` (configured).
+   */
+  narratorrConfigured?: boolean;
   /** Override the default request policy (defaultQuota 10 / windowDays 30 / admin auto-approve). */
   policy?: Partial<RequestPolicy>;
   /** Override the synthetic users the header-shim role override injects (default TEST_ADMIN / TEST_USER). */
@@ -115,12 +131,17 @@ export async function buildRouteApp(opts: BuildRouteAppOpts): Promise<RouteHarne
   await new SettingsService(db).ensure(10);
   const users = new UserService(db, {});
   const narratorr = opts.narratorr ?? new FakeNarratorrClient();
-  const requests = new RequestService(db, narratorr, {
+  // Mirror production wiring (src/server/index.ts): a single swappable holder is shared by
+  // RequestService and SearchService, so an unconfigured holder surfaces NOT_CONFIGURED
+  // through both paths, and the health route can read `deps.narratorr.configured`.
+  const narratorrHolder = new NarratorrClientHolder((opts.narratorrConfigured ?? true) ? narratorr : null);
+  const requests = new RequestService(db, narratorrHolder, {
     defaultQuota: 10,
     windowDays: 30,
     autoApproveRoles: ['admin'],
     ...opts.policy,
   });
+  const search = new SearchService(narratorrHolder);
   const notify = vi.fn().mockResolvedValue(undefined);
   const config = {
     authMode: 'standard',
@@ -135,6 +156,8 @@ export async function buildRouteApp(opts: BuildRouteAppOpts): Promise<RouteHarne
     db,
     users,
     requests,
+    search,
+    narratorr: narratorrHolder,
     notifier: { notify },
     oidc: new Map(),
   } as unknown as AppDeps;
@@ -169,6 +192,8 @@ export async function buildRouteApp(opts: BuildRouteAppOpts): Promise<RouteHarne
     requests,
     notify,
     narratorr: narratorr as FakeNarratorrClient,
+    narratorrHolder,
+    search,
     config,
     roleUsers,
     cookieFor: (user) => ({
