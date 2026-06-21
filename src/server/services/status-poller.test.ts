@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { StatusPoller } from './status-poller.js';
 import { RequestService } from './request.service.js';
@@ -26,10 +26,12 @@ const noopLogger = {
 class PollClient implements INarratorrClient {
   status: BookStatus = 'downloading';
   error: NarratorrError | null = null;
+  throwOnAdd: NarratorrError | null = null;
   async searchMetadata() {
     return [];
   }
   async addBook(_asin: string): Promise<V1Book> {
+    if (this.throwOnAdd) throw this.throwOnAdd;
     return { id: 'bk_1', title: 't', authors: [], narrators: [], status: this.status };
   }
   async getBook(id: string): Promise<V1Book> {
@@ -59,6 +61,16 @@ async function seedAcquiring(asin: string, bookId = 'bk_1') {
   return row!;
 }
 
+/** Seed a request stranded `approved` with no book yet (process died mid-handoff). */
+async function seedStranded(asin: string) {
+  const user = await insertUser(db);
+  const [row] = await db
+    .insert(requests)
+    .values({ publicId: `rq_${asin}`, userId: user.id, asin, title: 't', status: 'approved' })
+    .returning();
+  return row!;
+}
+
 beforeEach(async () => {
   db = await createTestDb();
   client = new PollClient();
@@ -68,6 +80,11 @@ beforeEach(async () => {
     autoApproveRoles: ['admin'],
   });
   poller = new StatusPoller({ requests: svc, client, logger: noopLogger, jitterMs: 0 });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe('StatusPoller.pollOnce', () => {
@@ -106,7 +123,7 @@ describe('StatusPoller.pollOnce', () => {
       .values({ publicId: 'rq_stranded', userId: user.id, asin: 'A9', title: 't', status: 'approved' });
     client.status = 'downloading';
     const summary = await poller.pollOnce();
-    expect(summary.transitioned).toBeGreaterThanOrEqual(1);
+    expect(summary).toMatchObject({ transitioned: 1, upstreamErrors: 0 });
     const [row] = await db.select().from(requests).where(eq(requests.asin, 'A9'));
     expect(row?.status).toBe('acquiring');
     expect(row?.narratorrBookId).toBe('bk_1');
@@ -119,5 +136,178 @@ describe('StatusPoller.pollOnce', () => {
     expect(summary).toMatchObject({ checked: 1, transitioned: 0, upstreamErrors: 1 });
     const [row] = await db.select().from(requests).where(eq(requests.asin, 'A1'));
     expect(row?.status).toBe('acquiring');
+  });
+});
+
+// The control loop is driven through the *real* Cron created by start(): croner
+// schedules via setTimeout and computes next-run off Date, both of which
+// vi.useFakeTimers() controls, so advancing the clock fires exactly one tick per
+// interval (verified: one fire per `intervalSeconds` advance). We assert observable
+// cadence via a spy on the public pollOnce() — a *skipped* tick never calls it — so
+// the private skipTicks/failureStreak fields are never read directly. Each poller here
+// uses intervalSeconds: 1 (one tick per 1000ms advance) and jitterMs: 0 (no sleep
+// inside pollOnce, so a clock-advance resolves a tick fully).
+describe('StatusPoller control loop (backoff state machine, fixed-clock)', () => {
+  function makePoller() {
+    return new StatusPoller({ requests: svc, client, logger: noopLogger, jitterMs: 0, intervalSeconds: 1 });
+  }
+  const oneTick = () => vi.advanceTimersByTimeAsync(1000);
+
+  it('AC#1a backs off (skips the next tick) when pollOnce reports upstream errors with no transitions', async () => {
+    await seedAcquiring('A1');
+    client.error = new NarratorrError(503, 'UPSTREAM', 'flaky'); // getBook throws → upstreamErrors, not a reject
+    vi.useFakeTimers({ now: 0 });
+    const p = makePoller();
+    const spy = vi.spyOn(p, 'pollOnce');
+    p.start();
+
+    await oneTick(); // tick 1: { checked:1, transitioned:0, upstreamErrors:1 } → backoff, skipTicks=1
+    expect(spy).toHaveBeenCalledTimes(1);
+    await oneTick(); // tick 2: skipTicks>0 → returns early, no poll
+    expect(spy).toHaveBeenCalledTimes(1);
+    await oneTick(); // tick 3: polls again
+    expect(spy).toHaveBeenCalledTimes(2);
+
+    p.stop();
+  });
+
+  it('AC#1b backs off when pollOnce itself rejects (catch branch)', async () => {
+    // The only uncaught seam in pollOnce is its two DB reads; mockRejectedValueOnce on
+    // the public method drives the catch path without depending on which read throws.
+    vi.useFakeTimers({ now: 0 });
+    const p = makePoller();
+    const spy = vi.spyOn(p, 'pollOnce').mockRejectedValueOnce(new Error('boom'));
+    p.start();
+
+    await oneTick(); // tick 1: pollOnce rejects → tick catch → backoff, skipTicks=1
+    expect(spy).toHaveBeenCalledTimes(1);
+    await oneTick(); // tick 2: skipped
+    expect(spy).toHaveBeenCalledTimes(1);
+    await oneTick(); // tick 3: polls (real impl now; no rows → harmless)
+    expect(spy).toHaveBeenCalledTimes(2);
+
+    p.stop();
+  });
+
+  it('AC#1 resets the failure streak after a successful tick (next failure skips only one tick again)', async () => {
+    await seedAcquiring('A1');
+    vi.useFakeTimers({ now: 0 });
+    const p = makePoller();
+    const spy = vi.spyOn(p, 'pollOnce');
+    p.start();
+
+    client.error = new NarratorrError(503, 'UPSTREAM', 'flaky');
+    await oneTick(); // tick 1: fail → streak 1, skipTicks 1   (poll #1)
+    await oneTick(); // tick 2: skipped
+    client.error = null;
+    await oneTick(); // tick 3: success → streak reset to 0      (poll #2)
+    client.error = new NarratorrError(503, 'UPSTREAM', 'flaky');
+    await oneTick(); // tick 4: fail → streak 1 again, skipTicks 1 (poll #3)
+    await oneTick(); // tick 5: skipped (only one — proves reset, not streak 2 → 2 skips)
+    await oneTick(); // tick 6: polls again                       (poll #4)
+
+    // Had the streak NOT reset, tick 4 would be streak 2 (skipTicks 2): ticks 5 AND 6
+    // skipped, leaving poll count at 3 here. 4 proves the reset.
+    expect(spy).toHaveBeenCalledTimes(4);
+
+    p.stop();
+  });
+
+  it('AC#1 grows the skip exponentially and caps at 8 under sustained failure', async () => {
+    await seedAcquiring('A1');
+    client.error = new NarratorrError(503, 'UPSTREAM', 'flaky'); // every poll fails
+    vi.useFakeTimers({ now: 0 });
+    const p = makePoller();
+    const spy = vi.spyOn(p, 'pollOnce');
+    p.start();
+
+    // Record the 1-based tick index at each tick where a poll actually happened.
+    const pollTicks: number[] = [];
+    let prev = 0;
+    for (let t = 1; t <= 29; t += 1) {
+      await oneTick();
+      if (spy.mock.calls.length > prev) {
+        pollTicks.push(t);
+        prev = spy.mock.calls.length;
+      }
+    }
+
+    // skipTicks = min(2^(streak-1), 8): streak 1→1, 2→2, 3→4, 4→8, 5→8(capped), 6→8.
+    // Polls therefore land at ticks 1,3,6,11,20,29 — the final two gaps both 9 (8 skips)
+    // prove the cap holds at 8 instead of growing to 16/32.
+    expect(pollTicks).toEqual([1, 3, 6, 11, 20, 29]);
+
+    p.stop();
+  });
+
+  it('does NOT back off when the only failure is a stranded handoff with zero acquiring rows (checked === 0 gate)', async () => {
+    await seedStranded('A9'); // no acquiring rows at all
+    client.throwOnAdd = new NarratorrError(503, 'UPSTREAM', 'flaky'); // handoff retry fails transiently
+    vi.useFakeTimers({ now: 0 });
+    const p = makePoller();
+    const spy = vi.spyOn(p, 'pollOnce');
+    p.start();
+
+    // pollOnce → { checked:0, transitioned:0, upstreamErrors:1 }: the backoff gate
+    // requires checked > 0, so the streak resets and the next tick is NOT skipped.
+    await oneTick();
+    expect(spy).toHaveBeenCalledTimes(1);
+    await oneTick();
+    expect(spy).toHaveBeenCalledTimes(2); // polled every tick — no backoff
+
+    p.stop();
+  });
+});
+
+describe('StatusPoller cron lifecycle (fixed-clock)', () => {
+  it('start() is idempotent and stop() halts ticking', async () => {
+    vi.useFakeTimers({ now: 0 });
+    const p = new StatusPoller({ requests: svc, client, logger: noopLogger, jitterMs: 0, intervalSeconds: 1 });
+    const spy = vi.spyOn(p, 'pollOnce');
+
+    p.start();
+    p.start(); // `if (this.job) return` guard — must not schedule a second job
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(spy).toHaveBeenCalledTimes(1); // single job → one tick, not two
+
+    p.stop();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(spy).toHaveBeenCalledTimes(1); // stopped → no further ticks
+  });
+});
+
+describe('StatusPoller.pollOnce reconciliation edges', () => {
+  it('AC#2 counts a transient stranded-handoff failure, leaves the row approved, and still checks the batch', async () => {
+    await seedStranded('A9'); // approved, no book
+    await seedAcquiring('A1'); // co-existing in-flight row
+    client.throwOnAdd = new NarratorrError(503, 'UPSTREAM', 'flaky'); // handoff rethrows (transient)
+    client.status = 'downloading'; // acquiring row stays acquiring when checked
+
+    const summary = await poller.pollOnce();
+
+    // Stranded handoff failed (counted, not transitioned); the acquiring row was still checked.
+    expect(summary).toMatchObject({ checked: 1, transitioned: 0, upstreamErrors: 1 });
+    const [stranded] = await db.select().from(requests).where(eq(requests.asin, 'A9'));
+    expect(stranded?.status).toBe('approved'); // unchanged — poller retries next pass
+    expect(stranded?.narratorrBookId).toBeNull();
+    const [acquiring] = await db.select().from(requests).where(eq(requests.asin, 'A1'));
+    expect(acquiring?.status).toBe('acquiring');
+  });
+
+  it('AC#3 exercises the jitter sleep path (Math.random-driven delay) before polling', async () => {
+    await seedAcquiring('A1');
+    client.status = 'downloading';
+    vi.useFakeTimers();
+    const rnd = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const jittered = new StatusPoller({ requests: svc, client, logger: noopLogger, jitterMs: 100 });
+
+    const pending = jittered.pollOnce(); // suspends on sleep(floor(0.5 * 100) = 50ms)
+    await vi.runAllTimersAsync(); // resolves the sleep timer (and interleaved DB microtasks)
+    const summary = await pending;
+
+    // Math.random is used ONLY by the jitterMs > 0 sleep at status-poller.ts:114, so a
+    // recorded call + a completed poll proves that guarded branch executed.
+    expect(rnd).toHaveBeenCalled();
+    expect(summary).toMatchObject({ checked: 1 });
   });
 });

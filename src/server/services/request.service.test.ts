@@ -395,4 +395,31 @@ describe('applyBook (poller reconciliation)', () => {
     const [fresh] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
     expect(fresh?.status).toBe('acquiring');
   });
+
+  it('persists a late-arriving book id while status stays acquiring — returns null but updates narratorrBookId', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    const svc = new RequestService(db, client, policy());
+    const [row] = await db
+      .insert(requests)
+      .values({
+        publicId: 'rq_late',
+        userId: user.id,
+        asin: 'L1',
+        title: 't',
+        status: 'acquiring',
+        narratorrBookId: 'bk_old',
+      })
+      .returning();
+
+    // `downloading` maps back to acquiring (status unchanged), but the book id differs:
+    // the bookId !== row.narratorrBookId branch falls through the early-return guard,
+    // persists the new id, then returns null because `next === row.status`.
+    const book: V1Book = { id: 'bk_new', title: 't', authors: [], narrators: [], status: 'downloading' };
+    const result = await svc.applyBook(row!, book);
+
+    expect(result).toBeNull(); // no transition — still acquiring
+    const [fresh] = await db.select().from(requests).where(eq(requests.id, row!.id));
+    expect(fresh?.status).toBe('acquiring');
+    expect(fresh?.narratorrBookId).toBe('bk_new'); // late id persisted despite the null return
+  });
 });
