@@ -118,12 +118,17 @@ describe('insert-time unique-violation race', () => {
   });
 
   it('resolves the race to the existing duplicate — no new row, no handoff', async () => {
-    const user = await insertUser(db, { role: 'user' });
-    // Seed the active duplicate directly (an active status covered by the partial unique
-    // index — never `available`). Direct db.insert does not touch FakeClient.added.
+    // Drive an AUTO-APPROVE caller (admin) against an `approved` duplicate so the
+    // no-handoff assertion is mutation-sensitive: create() returns at :163 (`!created`)
+    // BEFORE the auto-approve handoff at :164. handoff() only acts on an `approved` row,
+    // so if that early return were ever removed, handoff(dupe) would fire addBook here —
+    // a `pending` duplicate would no-op in handoff() and mask the regression. `approved`
+    // is an active status covered by the partial unique index.
+    const admin = await insertUser(db, { role: 'admin' });
+    // Seed the duplicate directly — direct db.insert does not touch FakeClient.added.
     const [seeded] = await db
       .insert(requests)
-      .values({ publicId: 'rq_dupe', userId: user.id, asin: 'B1', title: 't', status: 'pending' })
+      .values({ publicId: 'rq_dupe', userId: admin.id, asin: 'B1', title: 't', status: 'approved' })
       .returning();
 
     // Preflight (create():154) misses; catch re-query (insertRequest():228) hits the seed.
@@ -136,18 +141,20 @@ describe('insert-time unique-violation race', () => {
     });
 
     const svc = new RequestService(db, client, policy());
-    const { row, created } = await svc.create(user.id, body('B1'));
+    const { row, created } = await svc.create(admin.id, body('B1'));
 
     expect(created).toBe(false);
     expect(row.publicId).toBe(seeded!.publicId); // returns the existing duplicate
-    expect(client.added).toHaveLength(0); // create() returns at :163 before handoff() — no double handoff / quota charge
+    // No handoff for the raced call: an approved dupe handed to handoff() WOULD call
+    // addBook, so length 0 proves create() short-circuited before handoff / re-charge.
+    expect(client.added).toHaveLength(0);
 
     // No second row was written for the (user, asin) pair.
     vi.restoreAllMocks();
     const rows = await db
       .select()
       .from(requests)
-      .where(and(eq(requests.userId, user.id), eq(requests.asin, 'B1')));
+      .where(and(eq(requests.userId, admin.id), eq(requests.asin, 'B1')));
     expect(rows).toHaveLength(1);
   });
 
