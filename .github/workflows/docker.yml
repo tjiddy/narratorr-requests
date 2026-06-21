@@ -1,13 +1,14 @@
 name: Build & Push Docker Image
 run-name: Docker build for ${{ github.ref_name }}
 
-# Build/publish only — no deploy. Mirrors Narratorr's pipeline, adapted to this repo
-# (default branch `main`, no `develop`):
-#   - semver tag `vX.Y.Z` on main → :latest + :X.Y.Z + :X.Y on Docker Hub + GHCR, plus a GitHub Release
-#   - manual run (workflow_dispatch) → :edge (bleeding edge; pull manually)
-# Auto-build on every push is intentionally off — tag a release or dispatch manually.
+# Two channels, build/publish only — no deploy. Mirrors Narratorr's pipeline:
+#   - push to `develop`              → :develop on Docker Hub + GHCR (bleeding edge; pull manually)
+#   - semver tag `vX.Y.Z` on main    → :latest + :X.Y.Z + :X.Y on Docker Hub + GHCR, plus a GitHub Release
+#   - manual run (workflow_dispatch)  → :develop (same dev channel)
+# :latest only moves on a semver tag — a develop build never touches it and never deploys.
 on:
   push:
+    branches: [develop]
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
   workflow_dispatch: {}
 
@@ -71,11 +72,11 @@ jobs:
             ${{ env.IMAGE_NAME }}
             ghcr.io/${{ github.repository }}
           # Release (semver tag): :X.Y.Z + :X.Y, and :latest auto-added by flavor latest=auto.
-          # Manual dispatch (non-tag ref): :edge only.
+          # Dev (any non-tag ref, incl. develop push / manual dispatch): :develop only.
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=edge,enable=${{ github.ref_type != 'tag' }}
+            type=raw,value=develop,enable=${{ github.ref_type != 'tag' }}
 
       - name: Set up QEMU (for ARM64)
         uses: docker/setup-qemu-action@v4
