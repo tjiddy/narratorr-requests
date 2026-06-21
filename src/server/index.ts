@@ -168,7 +168,8 @@ async function main(): Promise<void> {
 
   const shutdown = () => {
     poller.stop();
-    app.close().finally(() => process.exit(0));
+    // Fire-and-forget: we're exiting regardless of how close() settles.
+    void app.close().finally(() => process.exit(0));
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

@@ -127,7 +127,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
       const result = await deps.users.upsertFromOidc(provider, profile);
       setSessionCookie(reply, deps.config, result.user);
       notifyIfPending(result);
-      return reply.redirect(postLoginRedirect);
+      return await reply.redirect(postLoginRedirect);
     } catch (err) {
       // This is a top-level browser navigation — a raw JSON error page is a dead end.
       // Log the detail and bounce back to the login screen with a generic error flag.
