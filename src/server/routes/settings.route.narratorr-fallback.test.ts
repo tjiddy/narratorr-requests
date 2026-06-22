@@ -1,0 +1,83 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fastify-type-provider-zod';
+
+// The narratorr probe builds a concrete `new NarratorrClient(...).ping()`, and a real
+// network reject is already mapped to NarratorrError(0, 'NETWORK', …) inside the client —
+// so the non-NarratorrError fallback in describeNarratorrError() (`settings.ts:28`) is
+// unreachable through a fetch stub. Module-mock the client so ping() throws a *plain*
+// Error, and keep the real NarratorrError so the `instanceof` check behaves as in prod.
+vi.mock('../services/narratorr-client.js', async (importActual) => {
+  const actual = await importActual<typeof import('../services/narratorr-client.js')>();
+  return {
+    ...actual,
+    NarratorrClient: class {
+      constructor(_opts: unknown) {}
+      async ping(): Promise<void> {
+        throw new Error('boom');
+      }
+    },
+  };
+});
+
+import { createTestDb } from '../test-support/db.js';
+import { SettingsService } from '../services/settings.service.js';
+import { ConnectorSettingsService } from '../services/connector-settings.service.js';
+import { SecretCodec, deriveSettingsKey } from '../util/secret-codec.js';
+import { NarratorrClientHolder } from '../services/narratorr-client-holder.js';
+import { Notifier } from '../services/notifications/index.js';
+import { errorHandlerPlugin } from '../plugins/error-handler.js';
+import { registerSettingsRoutes } from './settings.js';
+import type { AppDeps } from '../services/deps.js';
+import type { AuthUser } from '../types.js';
+
+const codec = new SecretCodec(deriveSettingsKey({ sessionSecret: 'route-test' }));
+const silentLog = { info() {}, warn() {}, error() {}, debug() {} };
+const ADMIN: AuthUser = { id: 1, publicId: 'us_admin', username: 'admin', role: 'admin', status: 'active' };
+
+let app: FastifyInstance;
+let connectorSettings: ConnectorSettingsService;
+
+async function buildApp(): Promise<FastifyInstance> {
+  const db = await createTestDb();
+  await new SettingsService(db).ensure(10);
+  connectorSettings = new ConnectorSettingsService(db, codec);
+  const deps = {
+    connectorSettings,
+    narratorr: new NarratorrClientHolder(null),
+    notifier: new Notifier([], null, silentLog),
+  } as unknown as AppDeps;
+
+  const f = Fastify().withTypeProvider<ZodTypeProvider>();
+  f.setValidatorCompiler(validatorCompiler);
+  f.setSerializerCompiler(serializerCompiler);
+  await f.register(errorHandlerPlugin);
+  f.addHook('onRequest', async (req) => {
+    if (req.headers['x-test-role'] === 'admin') req.user = ADMIN;
+  });
+  registerSettingsRoutes(f, deps);
+  await f.ready();
+  return f;
+}
+
+beforeEach(async () => {
+  app = await buildApp();
+});
+afterEach(async () => {
+  await app.close();
+  vi.restoreAllMocks();
+});
+
+describe('settings routes — narratorr generic (non-NarratorrError) fallback', () => {
+  it('falls through to err.message when ping() throws a plain Error', async () => {
+    await connectorSettings.update({ narratorr: { url: 'https://n.example.com', apiKey: 'k' } });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/settings/connectors/test',
+      headers: { 'x-test-role': 'admin' },
+      payload: { channel: 'narratorr' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ success: false, message: 'boom' });
+  });
+});
