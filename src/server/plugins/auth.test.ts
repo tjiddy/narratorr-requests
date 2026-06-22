@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import { buildRouteApp } from '../test-support/route-harness.js';
-import { insertUser } from '../test-support/db.js';
+import { insertUser, deleteUser } from '../test-support/db.js';
 import { requireActiveUser, SESSION_COOKIE } from './auth.js';
 import { registerAuthRoutes } from '../routes/auth.js';
 import { SESSION_TTL_MS } from '../util/session.js';
@@ -69,8 +69,9 @@ describe('auth plugin — route gate negatives', () => {
     // Sanity: the same cookie authenticates while the row exists.
     expect((await h.app.inject({ method: 'GET', url: '/test/active', cookies: cookie })).statusCode).toBe(200);
 
-    // The session lookup now misses (row deleted after issuance) → no request.user → 401.
-    vi.spyOn(h.users, 'getById').mockResolvedValue(undefined);
+    // Delete the real row (no spy) so the session lookup genuinely misses → no
+    // request.user → 401. Exercises the actual DB session-lookup boundary.
+    await deleteUser(h.db, user.id);
     const res = await h.app.inject({ method: 'GET', url: '/test/active', cookies: cookie });
     expect(res.statusCode).toBe(401);
   });
