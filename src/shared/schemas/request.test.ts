@@ -5,6 +5,16 @@ describe('createRequestBodySchema', () => {
   const valid = { asin: 'B08GB58KD5', title: 'Project Hail Mary' };
 
   describe('coverUrl — https + non-internal-host SSRF guard', () => {
+    // Security-sensitive rejects assert the offending path/code, not just `.success`,
+    // so a sibling-field regression (e.g. asin/title breaking) can't make a coverUrl
+    // negative test pass for the wrong reason. The guard is a .refine() → `custom` code.
+    const rejectsAt = (coverUrl: unknown) => {
+      const result = createRequestBodySchema.safeParse({ ...valid, coverUrl });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.path).toEqual(['coverUrl']);
+      expect(result.error?.issues[0]?.code).toBe('custom');
+    };
+
     it('accepts a normal public https url and round-trips the value', () => {
       const url = 'https://public.example.com/cover.jpg';
       const parsed = createRequestBodySchema.parse({ ...valid, coverUrl: url });
@@ -22,13 +32,13 @@ describe('createRequestBodySchema', () => {
         'javascript:alert(1)',
         'data:image/png;base64,AAAA',
       ]) {
-        expect(createRequestBodySchema.safeParse({ ...valid, coverUrl }).success).toBe(false);
+        rejectsAt(coverUrl);
       }
     });
 
     it('rejects after trim — surrounding whitespace cannot smuggle an http url past the guard', () => {
       // .trim() runs before the refine, so this trims to 'http://evil' and must fail on scheme.
-      expect(createRequestBodySchema.safeParse({ ...valid, coverUrl: '  http://evil  ' }).success).toBe(false);
+      rejectsAt('  http://evil  ');
     });
 
     it('rejects IPv4 loopback / private / link-local hosts', () => {
@@ -40,24 +50,24 @@ describe('createRequestBodySchema', () => {
         'https://192.168.0.22',
         'https://169.254.169.254', // cloud-metadata
       ]) {
-        expect(createRequestBodySchema.safeParse({ ...valid, coverUrl }).success).toBe(false);
+        rejectsAt(coverUrl);
       }
     });
 
     it('rejects an alternate IPv4 encoding the URL parser normalizes to 127.0.0.1', () => {
       // 2130706433 === 0x7f000001 === 127.0.0.1; new URL() canonicalizes .hostname.
-      expect(createRequestBodySchema.safeParse({ ...valid, coverUrl: 'https://2130706433/' }).success).toBe(false);
+      rejectsAt('https://2130706433/');
     });
 
     it('rejects the localhost name family (localhost, trailing dot, *.localhost)', () => {
       for (const coverUrl of ['https://localhost', 'https://localhost./', 'https://anything.localhost/']) {
-        expect(createRequestBodySchema.safeParse({ ...valid, coverUrl }).success).toBe(false);
+        rejectsAt(coverUrl);
       }
     });
 
     it('rejects IPv6 loopback / ULA / link-local (bracketed hostname normalization)', () => {
       for (const coverUrl of ['https://[::1]', 'https://[fd00::1]', 'https://[fe80::1]']) {
-        expect(createRequestBodySchema.safeParse({ ...valid, coverUrl }).success).toBe(false);
+        rejectsAt(coverUrl);
       }
     });
 
@@ -68,7 +78,7 @@ describe('createRequestBodySchema', () => {
         'https://[::ffff:169.254.169.254]/',
         'https://[::127.0.0.1]/', // deprecated IPv4-compatible → [::7f00:1]
       ]) {
-        expect(createRequestBodySchema.safeParse({ ...valid, coverUrl }).success).toBe(false);
+        rejectsAt(coverUrl);
       }
     });
 
@@ -77,7 +87,7 @@ describe('createRequestBodySchema', () => {
     });
 
     it('rejects a non-empty but unparseable url instead of throwing', () => {
-      expect(createRequestBodySchema.safeParse({ ...valid, coverUrl: 'https://' }).success).toBe(false);
+      rejectsAt('https://');
     });
 
     it('accepts null and absent (.nullish())', () => {
