@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { buildRouteApp, type RouteHarness } from '../test-support/route-harness.js';
+import { buildRouteApp, TEST_ROLE_HEADER, type RouteHarness } from '../test-support/route-harness.js';
 import { insertUser } from '../test-support/db.js';
 import { registerAdminRoutes } from './admin.js';
 
 let h: RouteHarness;
 beforeEach(async () => {
-  h = await buildRouteApp({ register: registerAdminRoutes });
+  h = await buildRouteApp({ register: registerAdminRoutes, enableTestRoleOverride: true });
 });
 afterEach(async () => {
   await h.app.close();
@@ -91,6 +91,26 @@ describe('admin routes — authz matrix (requireAdmin on every handler)', () => 
       expect([401, 403]).not.toContain(res.statusCode);
     });
   }
+});
+
+// The x-test-role header shim is opt-in (BuildRouteAppOpts.enableTestRoleOverride). A harness
+// built WITHOUT the opt-in must not install the hook, so the header can't bypass real authz —
+// an anonymous request carrying x-test-role: admin still hits the requireAdmin gate as anon.
+describe('x-test-role shim is opt-in (absent without enableTestRoleOverride)', () => {
+  it('ignores x-test-role when the harness did not opt in → 401 UNAUTHORIZED', async () => {
+    const noShim = await buildRouteApp({ register: registerAdminRoutes }); // no enableTestRoleOverride
+    try {
+      const res = await noShim.app.inject({
+        method: 'GET',
+        url: '/api/admin/users',
+        headers: { [TEST_ROLE_HEADER]: 'admin' },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(res.json().error.code).toBe('UNAUTHORIZED');
+    } finally {
+      await noShim.app.close();
+    }
+  });
 });
 
 // AC3 — Decision endpoint (admin.ts:35-48 glue + request.service.decide).
@@ -216,6 +236,23 @@ describe('GET /api/admin/users — no passwordHash leak', () => {
     // Belt-and-braces: the hash value never appears anywhere in the serialized payload.
     expect(JSON.stringify(body)).not.toContain('passwordHash');
     expect(res.payload).not.toContain('super-secret-hash');
+  });
+
+  // Sibling assertion that exercises the serializer directly: the response-body check above
+  // passes even if the route serializer were disabled, because toDto already drops passwordHash.
+  // Loading the full UserRow (passwordHash set) and asserting toDto() omits the key proves the
+  // DTO mapper itself — not just the HTTP serializer — is the credential-leak guard.
+  it("toDto() omits passwordHash even when the source UserRow carries one", async () => {
+    const seeded = await insertUser(h.db, {
+      role: 'user',
+      status: 'active',
+      passwordHash: 'scrypt$super-secret-hash',
+    });
+    const row = await h.users.getById(seeded.id);
+    expect(row).toBeDefined();
+    expect(row?.passwordHash).toBe('scrypt$super-secret-hash'); // the source genuinely has it
+    const dto = h.users.toDto(row!);
+    expect('passwordHash' in dto).toBe(false);
   });
 });
 

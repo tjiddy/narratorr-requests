@@ -116,6 +116,28 @@ describe('StatusPoller.pollOnce', () => {
     expect(row?.failureReason).toBe('This book is no longer available upstream.');
   });
 
+  it("drives an acquiring request to failed ('No source found upstream.') when the book is missing", async () => {
+    await seedAcquiring('A1');
+    client.status = 'missing'; // mapBookStatus collapses missing → failed (request.service.ts:360-370)
+    const summary = await poller.pollOnce();
+    expect(summary).toMatchObject({ checked: 1, transitioned: 1, upstreamErrors: 0 });
+    const [row] = await db.select().from(requests).where(eq(requests.asin, 'A1'));
+    expect(row?.status).toBe('failed');
+    // bookStatusFailureReason('missing') (request.service.ts:416-425), driven through pollOnce.
+    expect(row?.failureReason).toBe('No source found upstream.');
+  });
+
+  it("drives an acquiring request to failed ('Download failed upstream.') when the book status is failed", async () => {
+    await seedAcquiring('A1');
+    client.status = 'failed'; // mapBookStatus collapses failed → failed (request.service.ts:360-370)
+    const summary = await poller.pollOnce();
+    expect(summary).toMatchObject({ checked: 1, transitioned: 1, upstreamErrors: 0 });
+    const [row] = await db.select().from(requests).where(eq(requests.asin, 'A1'));
+    expect(row?.status).toBe('failed');
+    // bookStatusFailureReason('failed') (request.service.ts:416-425), driven through pollOnce.
+    expect(row?.failureReason).toBe('Download failed upstream.');
+  });
+
   it('recovers a stranded approved request (no book yet) via idempotent handoff', async () => {
     const user = await insertUser(db);
     await db
@@ -184,6 +206,27 @@ describe('StatusPoller control loop (backoff state machine, fixed-clock)', () =>
     await oneTick(); // tick 2: skipped
     expect(spy).toHaveBeenCalledTimes(1);
     await oneTick(); // tick 3: polls (real impl now; no rows → harmless)
+    expect(spy).toHaveBeenCalledTimes(2);
+
+    p.stop();
+  });
+
+  it('AC#1c backs off when a REAL DB read inside pollOnce rejects (catch branch, pollOnce unmocked)', async () => {
+    // Unlike AC#1b (which mocks pollOnce wholesale), this drives the genuine catch seam: the
+    // DB read at status-poller.ts:110 (`findAcquiring`) rejects, so the real pollOnce throws and
+    // tick()'s catch backs off. Same observable cadence as AC#1b → same skipTicks=1 gating.
+    await seedAcquiring('A1');
+    vi.useFakeTimers({ now: 0 });
+    const p = makePoller();
+    const spy = vi.spyOn(p, 'pollOnce'); // count calls only — NOT mocked
+    vi.spyOn(svc, 'findAcquiring').mockRejectedValueOnce(new Error('db read boom'));
+    p.start();
+
+    await oneTick(); // tick 1: real pollOnce → findAcquiring rejects → tick catch → backoff, skipTicks=1
+    expect(spy).toHaveBeenCalledTimes(1);
+    await oneTick(); // tick 2: skipTicks>0 → skipped, no poll
+    expect(spy).toHaveBeenCalledTimes(1);
+    await oneTick(); // tick 3: polls again (findAcquiring restored → real read, succeeds)
     expect(spy).toHaveBeenCalledTimes(2);
 
     p.stop();
@@ -294,20 +337,23 @@ describe('StatusPoller.pollOnce reconciliation edges', () => {
     expect(acquiring?.status).toBe('acquiring');
   });
 
-  it('AC#3 exercises the jitter sleep path (Math.random-driven delay) before polling', async () => {
+  it('AC#3 sleeps the EXACT computed jitter delay (Math.floor(random * jitterMs)) before polling', async () => {
     await seedAcquiring('A1');
     client.status = 'downloading';
     vi.useFakeTimers();
-    const rnd = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
     const jittered = new StatusPoller({ requests: svc, client, logger: noopLogger, jitterMs: 100 });
 
     const pending = jittered.pollOnce(); // suspends on sleep(floor(0.5 * 100) = 50ms)
     await vi.runAllTimersAsync(); // resolves the sleep timer (and interleaved DB microtasks)
     const summary = await pending;
 
-    // Math.random is used ONLY by the jitterMs > 0 sleep at status-poller.ts:114, so a
-    // recorded call + a completed poll proves that guarded branch executed.
-    expect(rnd).toHaveBeenCalled();
+    // The jitter sleep (status-poller.ts:114) is the only setTimeout pollOnce schedules, and its
+    // delay is Math.floor(Math.random() * jitterMs) = floor(0.5 * 100) = 50ms exactly — asserting
+    // the precise value (not just "was called") pins the formula, catching an off-by-one or a
+    // dropped Math.floor that toHaveBeenCalled() would miss.
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 50);
     expect(summary).toMatchObject({ checked: 1 });
   });
 });
