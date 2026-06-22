@@ -26,6 +26,15 @@ describe('createRequestBodySchema', () => {
       expect(parsed.coverUrl).toBe('https://public.example.com/cover.jpg');
     });
 
+    it('accepts a public IPv4 literal host (the non-internal-IPv4 branch)', () => {
+      // Every other IP case rejects; this pins the accept side. 8.8.8.8 is plainly public,
+      // and 172.15.0.1 / 172.32.0.1 sit just outside the 172.16.0.0/12 private range — so
+      // all three must pass (isInternalIpv4 → false) without over-blocking a legit public IP.
+      for (const url of ['https://8.8.8.8/cover.jpg', 'https://172.15.0.1/c.png', 'https://172.32.0.1/c.png']) {
+        expect(createRequestBodySchema.parse({ ...valid, coverUrl: url }).coverUrl).toBe(url);
+      }
+    });
+
     it('rejects non-https schemes (http, javascript, data)', () => {
       for (const coverUrl of [
         'http://public.example.com',
