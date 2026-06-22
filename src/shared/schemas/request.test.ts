@@ -54,9 +54,21 @@ describe('createRequestBodySchema', () => {
       }
     });
 
-    it('rejects an alternate IPv4 encoding the URL parser normalizes to 127.0.0.1', () => {
-      // 2130706433 === 0x7f000001 === 127.0.0.1; new URL() canonicalizes .hostname.
-      rejectsAt('https://2130706433/');
+    it('rejects alternate IPv4 encodings the URL parser normalizes to an internal host', () => {
+      // These pass because WHATWG `new URL()` canonicalizes each form to dotted-decimal
+      // before our code sees `.hostname`; `parseIpv4` has no fallback for these forms and
+      // would return null (→ treated as a *public* host). So a future host-parser regression
+      // that stopped normalizing them would flip these to *accept* and fail here — the
+      // intended tripwire for a reachable-internal SSRF bypass.
+      for (const coverUrl of [
+        'https://2130706433/', // decimal  → 127.0.0.1
+        'https://0x7f000001/', // hex      → 127.0.0.1
+        'https://0177.0.0.1/', // octal    → 127.0.0.1
+        'https://127.1/', // short    → 127.0.0.1
+        'https://10.0xff.0.1/', // mixed    → 10.255.0.1
+      ]) {
+        rejectsAt(coverUrl);
+      }
     });
 
     it('rejects the localhost name family (localhost, trailing dot, *.localhost)', () => {
