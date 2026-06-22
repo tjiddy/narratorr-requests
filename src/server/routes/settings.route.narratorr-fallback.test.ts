@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fastify-type-provider-zod';
+// Type-only namespace import (erased at runtime, so it doesn't fight the mock below) —
+// gives importActual its return type without an inline `import()` annotation.
+import type * as NarratorrClientModule from '../services/narratorr-client.js';
 
 // The narratorr probe builds a concrete `new NarratorrClient(...).ping()`, and a real
 // network reject is already mapped to NarratorrError(0, 'NETWORK', …) inside the client —
@@ -8,7 +11,7 @@ import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fas
 // unreachable through a fetch stub. Module-mock the client so ping() throws a *plain*
 // Error, and keep the real NarratorrError so the `instanceof` check behaves as in prod.
 vi.mock('../services/narratorr-client.js', async (importActual) => {
-  const actual = await importActual<typeof import('../services/narratorr-client.js')>();
+  const actual = await importActual<typeof NarratorrClientModule>();
   return {
     ...actual,
     NarratorrClient: class {
