@@ -75,17 +75,25 @@ const TEST_URL = '/api/admin/settings/connectors/test';
 describe('settings routes — auth gating', () => {
   // A valid (empty) body passes schema validation so the handler runs and we
   // exercise requireAdmin itself, not the body validator.
-  it('GET — 401 anonymous, 403 non-admin, 200 admin', async () => {
-    expect((await app.inject({ method: 'GET', url: CONNECTORS_URL })).statusCode).toBe(401);
-    expect((await app.inject({ method: 'GET', url: CONNECTORS_URL, headers: asUser })).statusCode).toBe(403);
+  it('GET — 401 anonymous, 403 non-admin, 200 admin (with error codes)', async () => {
+    const anon = await app.inject({ method: 'GET', url: CONNECTORS_URL });
+    expect(anon.statusCode).toBe(401);
+    expect(anon.json().error.code).toBe('UNAUTHORIZED');
+    const nonAdmin = await app.inject({ method: 'GET', url: CONNECTORS_URL, headers: asUser });
+    expect(nonAdmin.statusCode).toBe(403);
+    expect(nonAdmin.json().error.code).toBe('FORBIDDEN');
     expect((await app.inject({ method: 'GET', url: CONNECTORS_URL, headers: asAdmin })).statusCode).toBe(200);
   });
 
-  it('PUT — 401 anonymous, 403 non-admin, 200 admin', async () => {
+  it('PUT — 401 anonymous, 403 non-admin, 200 admin (with error codes)', async () => {
     const put = (headers?: Record<string, string>) =>
       app.inject({ method: 'PUT', url: CONNECTORS_URL, payload: {}, ...(headers && { headers }) });
-    expect((await put()).statusCode).toBe(401);
-    expect((await put(asUser)).statusCode).toBe(403);
+    const anon = await put();
+    expect(anon.statusCode).toBe(401);
+    expect(anon.json().error.code).toBe('UNAUTHORIZED');
+    const nonAdmin = await put(asUser);
+    expect(nonAdmin.statusCode).toBe(403);
+    expect(nonAdmin.json().error.code).toBe('FORBIDDEN');
     expect((await put(asAdmin)).statusCode).toBe(200);
   });
 
@@ -141,7 +149,7 @@ describe('settings routes — GET/PUT', () => {
     expect(narratorr.configured).toBe(true); // reconfigure() swapped the holder
   });
 
-  it('PUT rejects unknown keys (.strict) and non-http URLs', async () => {
+  it('PUT rejects unknown TOP-LEVEL keys (only the body is .strict) and non-http URLs', async () => {
     const unknown = await app.inject({
       method: 'PUT',
       url: CONNECTORS_URL,
@@ -157,6 +165,76 @@ describe('settings routes — GET/PUT', () => {
       payload: { narratorr: { url: 'ftp://nope', apiKey: 'k' } },
     });
     expect(badUrl.statusCode).toBe(400);
+  });
+
+  it('PUT tolerates unknown NESTED keys — only the top-level body is .strict, connector objects are lenient', async () => {
+    // The body schema is `.strict()` at the top level only; nested connector objects use
+    // Zod's default (strip-unknown). An extra key inside `narratorr` is dropped, not rejected.
+    const res = await app.inject({
+      method: 'PUT',
+      url: CONNECTORS_URL,
+      headers: asAdmin,
+      payload: { narratorr: { url: 'https://n.example.com', apiKey: 'k', futureField: 'ignored' } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().narratorr).toEqual({ url: 'https://n.example.com', hasApiKey: true });
+  });
+});
+
+describe('settings routes — secret persistence (keep/clear/replace + round-trip)', () => {
+  const NARRATORR_URL = 'https://n.example.com';
+  const putConnectors = (payload: Record<string, unknown>) =>
+    app.inject({ method: 'PUT', url: CONNECTORS_URL, headers: asAdmin, payload });
+
+  it('keeps narratorr.apiKey when the field is omitted on PUT', async () => {
+    // The UI sends masked/omitted secrets for unchanged fields. Omitted (undefined) must
+    // preserve the stored key — a regression that wiped it here would silently de-configure
+    // narratorr in production while changing an unrelated field.
+    await connectorSettings.update({ narratorr: { url: NARRATORR_URL, apiKey: 'orig' } });
+    const res = await putConnectors({ narratorr: { url: 'https://changed.example.com' } });
+    expect(res.statusCode).toBe(200);
+    expect(await connectorSettings.getNarratorrConfig()).toEqual({
+      url: 'https://changed.example.com',
+      apiKey: 'orig',
+    });
+  });
+
+  it('clears ntfy.token when the field is an empty string on PUT', async () => {
+    await connectorSettings.update({ ntfy: { url: 'https://ntfy.sh', topic: 'reqs', token: 'tok' } });
+    const res = await putConnectors({ ntfy: { url: 'https://ntfy.sh', topic: 'reqs', token: '' } });
+    expect(res.statusCode).toBe(200);
+    expect((await connectorSettings.getNotificationsConfig()).ntfy?.token).toBeNull();
+  });
+
+  it('round-trips narratorr.apiKey — the stored secret decrypts back to the original plaintext', async () => {
+    // Not just `hasApiKey: true` (truthy for ANY blob) — a garbage-but-valid-looking
+    // ciphertext would pass that. Only decrypt-to-original proves the round-trip.
+    const res = await putConnectors({ narratorr: { url: NARRATORR_URL, apiKey: 'secret123' } });
+    expect(res.statusCode).toBe(200);
+    expect((await connectorSettings.getNarratorrConfig())?.apiKey).toBe('secret123');
+  });
+
+  it('replaces narratorr.apiKey when a new non-empty value is provided', async () => {
+    await connectorSettings.update({ narratorr: { url: NARRATORR_URL, apiKey: 'old' } });
+    const res = await putConnectors({ narratorr: { url: NARRATORR_URL, apiKey: 'new' } });
+    expect(res.statusCode).toBe(200);
+    expect((await connectorSettings.getNarratorrConfig())?.apiKey).toBe('new');
+  });
+
+  it('round-trips email.pass — a second secret field through a distinct sub-resolver', async () => {
+    const res = await putConnectors({
+      email: { host: 'smtp.example.com', from: 'a@b.c', to: 'd@e.f', pass: 'smtp-pwd' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect((await connectorSettings.getNotificationsConfig()).email?.pass).toBe('smtp-pwd');
+  });
+
+  it('treats a whitespace-only apiKey as a clear (trim → "") — 400 when no prior key exists', async () => {
+    // Zod `.trim()` collapses '   ' to '', which resolveSecret reads as "clear". With no
+    // existing key to fall back on, resolveNarratorr rejects with NARRATORR_KEY_REQUIRED.
+    const res = await putConnectors({ narratorr: { url: NARRATORR_URL, apiKey: '   ' } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('NARRATORR_KEY_REQUIRED');
   });
 });
 
@@ -259,7 +337,11 @@ describe('settings routes — test endpoint (notification channels)', () => {
     await connectorSettings.update({ email: { host: 'smtp.example.com', from: 'a@b.c', to: 'd@e.f' } });
     const res = await postChannel('email');
     expect(res.json()).toMatchObject({ success: true });
-    expect(sendMail).toHaveBeenCalledOnce();
+    // Assert the actual message payload the handler builds (from/to from config,
+    // subject from the rendered `request.created` notification), not merely that it fired.
+    expect(sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({ from: 'a@b.c', to: 'd@e.f', subject: 'New audiobook request' }),
+    );
   });
 
   it('email — an Error throw surfaces the error message (settings.ts:98)', async () => {
