@@ -72,10 +72,12 @@ describe('POST /api/requests — validation', () => {
     expect((await post(cookie, { asin: 'B01', title: '   ' })).statusCode).toBe(400);
   });
 
-  it('coverUrl: only https is accepted (SSRF guard)', async () => {
+  it('coverUrl: only public https is accepted (SSRF guard)', async () => {
     const base = { asin: 'B01', title: 'A Book' };
     expect((await post(cookie, { ...base, coverUrl: 'http://example.com/c.jpg' })).statusCode).toBe(400);
     expect((await post(cookie, { ...base, coverUrl: 'javascript:alert(1)' })).statusCode).toBe(400);
+    // Internal host: passes the scheme check but must be rejected by the host guard.
+    expect((await post(cookie, { ...base, coverUrl: 'https://169.254.169.254' })).statusCode).toBe(400);
     expect((await post(cookie, { ...base, coverUrl: 'https://example.com/c.jpg' })).statusCode).toBe(201);
   });
 
