@@ -6,9 +6,13 @@ import { vi } from 'vitest';
 import { createTestDb } from './db.js';
 import { UserService } from '../services/user.service.js';
 import { SettingsService } from '../services/settings.service.js';
+import { ConnectorSettingsService } from '../services/connector-settings.service.js';
 import { RequestService, type RequestPolicy } from '../services/request.service.js';
 import { SearchService } from '../services/search.service.js';
 import { NarratorrClientHolder } from '../services/narratorr-client-holder.js';
+import { Notifier } from '../services/notifications/notifier.service.js';
+import type { NotifierLogger } from '../services/notifications/types.js';
+import { SecretCodec, deriveSettingsKey } from '../util/secret-codec.js';
 import { errorHandlerPlugin } from '../plugins/error-handler.js';
 import { authRateLimitOptions } from '../plugins/rate-limit.js';
 import { authPlugin, SESSION_COOKIE } from '../plugins/auth.js';
@@ -118,6 +122,13 @@ export interface BuildRouteAppOpts {
   policy?: Partial<RequestPolicy>;
   /** Override the synthetic users the header-shim role override injects (default TEST_ADMIN / TEST_USER). */
   roleUsers?: { admin?: AuthUser; user?: AuthUser };
+  /**
+   * Install the test-only `x-test-role` header-shim authz override (the {@link asRole} path).
+   * Off by default so the shim is obviously test-scoped and absent unless a test asks for it —
+   * a route test that never opts in cannot use the header to bypass real authz. Tests that drive
+   * authz via {@link asRole} must set this to `true`.
+   */
+  enableTestRoleOverride?: boolean;
 }
 
 /**
@@ -128,7 +139,10 @@ export interface BuildRouteAppOpts {
  */
 export async function buildRouteApp(opts: BuildRouteAppOpts): Promise<RouteHarness> {
   const db = await createTestDb();
-  await new SettingsService(db).ensure(10);
+  const settings = new SettingsService(db);
+  await settings.ensure(10);
+  const codec = new SecretCodec(deriveSettingsKey({ sessionSecret: SESSION_SECRET }));
+  const connectorSettings = new ConnectorSettingsService(db, codec);
   const users = new UserService(db, {});
   const narratorr = opts.narratorr ?? new FakeNarratorrClient();
   // Mirror production wiring (src/server/index.ts): a single swappable holder is shared by
@@ -142,25 +156,45 @@ export async function buildRouteApp(opts: BuildRouteAppOpts): Promise<RouteHarne
     ...opts.policy,
   });
   const search = new SearchService(narratorrHolder);
+  // A real Notifier (no channels → inert) with its `notify` swapped for a spy, so route tests
+  // can assert dispatch without a structural cast. Building the genuine type means a new required
+  // AppDeps field surfaces as a compile error here instead of a silent runtime `undefined`.
   const notify = vi.fn().mockResolvedValue(undefined);
-  const config = {
-    authMode: 'standard',
-    sessionSecret: SESSION_SECRET,
+  const notifierLog: NotifierLogger = { info() {}, warn() {}, error() {}, debug() {} };
+  const notifier = new Notifier([], null, notifierLog);
+  notifier.notify = notify;
+  // Full AppConfig (not a partial cast): adding a required config field fails to compile here.
+  const config: AppConfig = {
+    port: 3000,
+    bindHost: '127.0.0.1',
+    isDev: true,
     isProd: false,
     corsOrigin: 'http://localhost',
+    databasePath: ':memory:',
+    sessionSecret: SESSION_SECRET,
+    settingsKey: undefined,
+    trustProxy: false,
+    authMode: 'standard',
     localAuth: true,
+    oidcProviders: [],
+    bootstrapAdmin: null,
+    defaultRequestQuota: 10,
+    quotaWindowDays: 30,
     ...opts.config,
-  } as unknown as AppConfig;
-  const deps = {
+  };
+  // Genuinely-typed AppDeps: a new required dep field is a compile error here, not a runtime hole.
+  const deps: AppDeps = {
     config,
     db,
     users,
+    settings,
     requests,
     search,
+    connectorSettings,
     narratorr: narratorrHolder,
-    notifier: { notify },
+    notifier,
     oidc: new Map(),
-  } as unknown as AppDeps;
+  };
 
   const roleUsers = {
     admin: opts.roleUsers?.admin ?? TEST_ADMIN,
@@ -174,14 +208,17 @@ export async function buildRouteApp(opts: BuildRouteAppOpts): Promise<RouteHarne
   await app.register(rateLimit, authRateLimitOptions);
   await app.register(errorHandlerPlugin);
   await app.register(authPlugin, deps);
-  // Header-shim role override (mirrors settings.route.test.ts). Runs AFTER authPlugin's
-  // onRequest hook so a test that sends the header wins; tests that send a real cookie and
-  // no header are untouched. Inert unless the header is present.
-  app.addHook('onRequest', async (req) => {
-    const role = req.headers[TEST_ROLE_HEADER];
-    if (role === 'admin') req.user = roleUsers.admin;
-    else if (role === 'user') req.user = roleUsers.user;
-  });
+  // Header-shim role override (mirrors settings.route.test.ts), opt-in only. Runs AFTER
+  // authPlugin's onRequest hook so a test that sends the header wins; tests that send a real
+  // cookie and no header are untouched. Inert unless the header is present — and absent entirely
+  // unless the test opts in, so the shim can't silently bypass authz in tests that don't ask.
+  if (opts.enableTestRoleOverride) {
+    app.addHook('onRequest', async (req) => {
+      const role = req.headers[TEST_ROLE_HEADER];
+      if (role === 'admin') req.user = roleUsers.admin;
+      else if (role === 'user') req.user = roleUsers.user;
+    });
+  }
   opts.register(app, deps);
   await app.ready();
 

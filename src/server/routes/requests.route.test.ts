@@ -5,7 +5,7 @@ import { registerRequestRoutes } from './requests.js';
 
 let h: RouteHarness;
 beforeEach(async () => {
-  h = await buildRouteApp({ register: registerRequestRoutes });
+  h = await buildRouteApp({ register: registerRequestRoutes, enableTestRoleOverride: true });
 });
 afterEach(async () => {
   await h.app.close();
