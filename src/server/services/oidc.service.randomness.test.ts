@@ -70,12 +70,14 @@ describe('OidcService.buildAuthUrl randomness source (AC1)', () => {
       expect(nonce).toBeTruthy();
       expect(challenge).toBeTruthy();
 
-      // Plausible crypto-strong base64url shape/length (32 random bytes → 43 chars). The
-      // code_challenge is the S256 digest of the (never-surfaced) PKCE verifier, so its
-      // uniqueness below implies the verifier itself is unique per call.
+      // Exactly 43 base64url chars (32 random bytes / the S256 digest). Pinned to `toBe(43)`
+      // rather than a `>=` floor so a long-but-weak source (e.g. concatenated Math.random hex,
+      // which also matches BASE64URL) is caught structurally, not just by the uniqueness check
+      // below. The code_challenge is the S256 digest of the (never-surfaced) PKCE verifier, so
+      // its uniqueness below implies the verifier itself is unique per call.
       for (const v of [state, nonce, challenge]) {
         expect(v).toMatch(BASE64URL);
-        expect(v!.length).toBeGreaterThanOrEqual(43);
+        expect(v!.length).toBe(43);
       }
 
       // S256 only — the verifier path is exercised through this derived challenge.

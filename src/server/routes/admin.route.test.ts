@@ -238,7 +238,7 @@ describe('GET /api/admin/users — no passwordHash leak', () => {
     expect(res.payload).not.toContain('super-secret-hash');
   });
 
-  // Sibling assertion that exercises the serializer directly: the response-body check above
+  // Sibling assertion that exercises the DTO mapper directly: the response-body check above
   // passes even if the route serializer were disabled, because toDto already drops passwordHash.
   // Loading the full UserRow (passwordHash set) and asserting toDto() omits the key proves the
   // DTO mapper itself — not just the HTTP serializer — is the credential-leak guard.
