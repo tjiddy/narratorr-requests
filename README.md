@@ -1,7 +1,7 @@
 # narratorr-request
 
 An [Overseerr](https://overseerr.dev/)-style request manager for
-[Narratorr](https://github.com/) (Sonarr/Radarr for audiobooks). Family and friends sign in
+[Narratorr](https://github.com/tjiddy/narratorr) (Sonarr/Radarr for audiobooks). Family and friends sign in
 (local email/password or any OIDC provider — Plex bridge, Authelia, Authentik, Google, …),
 search/browse audiobooks, and request them. New users land in an **approval queue** until an
 admin lets them in; an admin then approves each request; approved requests are handed to
@@ -117,9 +117,9 @@ misconfigured deployment fails fast rather than exposing an open admin. The buil
 CI (`.github/workflows/docker.yml`) builds a multi-arch (amd64/arm64) image and pushes to
 **Docker Hub `narratorr/narratorr-request`** and **GHCR `ghcr.io/tjiddy/narratorr-request`**:
 
-- **Release** — push a semver tag (`git tag v0.1.0 && git push origin v0.1.0`) → `:latest`, `:0.1.0`,
-  `:0.1` + a GitHub Release.
-- **Bleeding edge** — run the workflow manually (Actions → *Build & Push Docker Image* → Run) → `:edge`.
+- **Release** — push a semver tag on `main` (`git tag v1.0.0 && git push origin v1.0.0`) → `:latest`,
+  `:1.0.0`, `:1.0` + a GitHub Release.
+- **Bleeding edge** — every push to `develop` (or a manual workflow run) → `:develop`.
 
 Quality gates (lint/typecheck/test/build) run first, and the pushed image is smoke-tested before
 the job succeeds. Requires repo secrets **`DOCKERHUB_USERNAME`** and **`DOCKERHUB_TOKEN`**.
@@ -129,3 +129,13 @@ the job succeeds. Requires repo secrets **`DOCKERHUB_USERNAME`** and **`DOCKERHU
 ```bash
 pnpm verify   # lint + test + typecheck + build
 ```
+
+## Contributing
+
+Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) (branch off `develop`) and the
+[Code of Conduct](CODE_OF_CONDUCT.md). Found a security issue? See [SECURITY.md](SECURITY.md) —
+please report privately, not as a public issue.
+
+## License
+
+[GPL-3.0](LICENSE) © Todd Johnson
