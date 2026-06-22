@@ -58,6 +58,21 @@ describe('config — SESSION_SECRET', () => {
     expect(typeof mod.config.sessionSecret).toBe('string');
     expect(mod.config.sessionSecret.length).toBeGreaterThan(0);
   });
+
+  it('boots a fully specified prod env without throwing (guards an over-eager future regression)', async () => {
+    // The positive counterpart to the rejection cases: a legitimate prod boot must not throw.
+    // AUTH_BYPASS / OIDC_PROVIDERS are explicitly neutralized (not omitted) — .env ships
+    // AUTH_BYPASS=1 and loadConfig() only stubs supplied keys, so an ambient bypass would trip
+    // the prod guard before this assertion is reached (mirrors the AUTH_BYPASS:'' pattern above).
+    const mod = await loadConfig({
+      NODE_ENV: 'production',
+      SESSION_SECRET: 'a-prod-session-secret',
+      LOCAL_AUTH: '1',
+      AUTH_BYPASS: '',
+      OIDC_PROVIDERS: '',
+    });
+    expect(mod.config.isProd).toBe(true);
+  });
 });
 
 describe('config — auth method requirement (standard mode)', () => {

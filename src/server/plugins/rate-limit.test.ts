@@ -7,6 +7,16 @@ import { authRateLimitOptions } from './rate-limit.js';
 const keyFor = (ip: string, body?: unknown) =>
   authRateLimitOptions.keyGenerator({ ip, body } as unknown as FastifyRequest);
 
+describe('authRateLimitOptions registration flags', () => {
+  it('is opt-in (global: false) so the polling endpoints are never throttled', () => {
+    expect(authRateLimitOptions.global).toBe(false);
+  });
+
+  it('runs on the preHandler hook so the parsed body (email) is available to the keyGenerator', () => {
+    expect(authRateLimitOptions.hook).toBe('preHandler');
+  });
+});
+
 describe('authRateLimitOptions.keyGenerator', () => {
   it('keys two emails from the same IP into separate buckets', () => {
     const a = keyFor('1.2.3.4', { email: 'alice@example.com' });

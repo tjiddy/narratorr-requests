@@ -1,6 +1,7 @@
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
+import { eq } from 'drizzle-orm';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as schema from '../../db/schema.js';
@@ -50,4 +51,9 @@ export async function insertUser(
     .returning();
   if (!row) throw new Error('failed to insert test user');
   return { id: row.id, publicId: row.publicId, role: row.role, status: row.status };
+}
+
+/** Delete a user row by id — exercises the real session-lookup-miss boundary in tests. */
+export async function deleteUser(db: Db, id: number): Promise<void> {
+  await db.delete(users).where(eq(users.id, id));
 }
