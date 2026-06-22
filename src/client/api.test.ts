@@ -39,6 +39,13 @@ describe('parse (via getMe wrapper)', () => {
     expect(err).toMatchObject({ status: 500, code: 'HTTP_500', message: 'broke' });
   });
 
+  it('keeps the envelope code but falls back the message when only the code is present', async () => {
+    stubFetch(new Response(JSON.stringify({ error: { code: 'X' } }), { status: 418 }));
+    const err = await getMe().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 418, code: 'X', message: 'Request failed (418)' });
+  });
+
   it('falls back both code and message for an empty error object', async () => {
     stubFetch(new Response(JSON.stringify({ error: {} }), { status: 502 }));
     const err = await getMe().catch((e: unknown) => e);

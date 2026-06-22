@@ -1,22 +1,64 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { RequestDto } from '@shared/schemas/request';
 import type { UserDto } from '@shared/schemas/user';
 import type { ConnectorSettingsDto, TestConnectorResult } from '@shared/schemas/connectors';
+// Type-only namespace imports (erased at runtime, so they don't fight the mocks below) —
+// give importActual its return type without an inline `import()` annotation.
+import type * as ApiModule from './api';
+import type * as ReactModule from 'react';
 
 // Node-only hook testing — no render harness. We mock @tanstack/react-query so
-// `useMutation` returns the options object passed to it (so the hook hands us its
-// onSuccess/onError callbacks directly) and `useQueryClient` returns a fake client
-// of spies. `sonner`'s toast is spied so we can assert the surfaced text.
+// `useMutation` and `useQuery` each return the options object passed to them (so
+// the hook hands us its onSuccess/onError callbacks and derived query options
+// directly) and `useQueryClient` returns a fake client of spies. `sonner`'s toast
+// is spied so we can assert the surfaced text.
 const hoisted = vi.hoisted(() => ({
   qc: { invalidateQueries: vi.fn(), setQueryData: vi.fn() },
+  // Spies for the local-auth boundary functions; the rest of `./api` is preserved
+  // (importActual) so `ApiError` and unrelated exports stay real.
+  api: { localLogin: vi.fn(), localSignup: vi.fn() },
+  // A module-scoped slot backing the test-only `react` useState mock so a re-invoked
+  // `useTheme()` observes the value a prior `toggleTheme()` wrote.
+  react: { slot: undefined as unknown, initialized: false },
 }));
 
 vi.mock('@tanstack/react-query', () => ({
   useMutation: (options: unknown) => options,
-  useQuery: () => ({}),
+  useQuery: (options: unknown) => options,
   useQueryClient: () => hoisted.qc,
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+// Preserve every real `./api` export (notably `ApiError`, used below) and replace
+// only the two local-auth boundary functions with spies.
+vi.mock('./api', async (importActual) => {
+  const actual = await importActual<typeof ApiModule>();
+  return { ...actual, localLogin: hoisted.api.localLogin, localSignup: hoisted.api.localSignup };
+});
+
+// Test-only `react` mock: minimal stateful useState/useEffect so `useTheme()` runs
+// as a plain function under the node harness — no jsdom, no render dispatcher. Only
+// `useTheme` touches React directly; the TanStack hooks are mocked separately.
+vi.mock('react', async (importActual) => {
+  const actual = await importActual<typeof ReactModule>();
+  return {
+    ...actual,
+    useState: (init: unknown) => {
+      if (!hoisted.react.initialized) {
+        hoisted.react.slot = typeof init === 'function' ? (init as () => unknown)() : init;
+        hoisted.react.initialized = true;
+      }
+      const setter = (next: unknown) => {
+        hoisted.react.slot =
+          typeof next === 'function' ? (next as (prev: unknown) => unknown)(hoisted.react.slot) : next;
+      };
+      return [hoisted.react.slot, setter];
+    },
+    useEffect: (fn: () => void | (() => void)) => {
+      fn();
+    },
+  };
+});
 
 import { toast } from 'sonner';
 import {
@@ -26,6 +68,9 @@ import {
   useDecide,
   useUpdateConnectors,
   useTestConnector,
+  useSearch,
+  useLocalAuth,
+  useTheme,
 } from './hooks';
 import { ApiError } from './api';
 
@@ -40,10 +85,32 @@ interface Callbacks {
 }
 const cb = (hook: unknown): Callbacks => hook as Callbacks;
 
+// `useMutation` returns the raw options; for the auth hook we drive its mutationFn.
+interface MutationOptions {
+  mutationFn: (vars: { email: string; password: string }) => unknown;
+  onSuccess: () => unknown;
+}
+const mut = (hook: unknown): MutationOptions => hook as MutationOptions;
+
+// `useQuery` now returns the raw options too — read the derived enabled/queryKey.
+interface QueryOptions {
+  enabled: boolean;
+  queryKey: unknown;
+}
+const query = (hook: unknown): QueryOptions => hook as QueryOptions;
+
 // Minimal cast helpers — the callbacks only read the few fields we set.
 const req = (over: Partial<RequestDto>): RequestDto => ({ title: 'Dune', status: 'pending', ...over } as RequestDto);
 
 beforeEach(() => vi.clearAllMocks());
+afterEach(() => {
+  // Restore ambient globals stubbed by the useTheme cases and reset the React state
+  // slot so each invocation re-runs the useState initializer. Harmless to tests that
+  // stub nothing.
+  vi.unstubAllGlobals();
+  hoisted.react.slot = undefined;
+  hoisted.react.initialized = false;
+});
 
 describe('qk query-key builders', () => {
   it('builds the static and parameterized keys', () => {
@@ -158,5 +225,106 @@ describe('useTestConnector', () => {
     expect(error).toHaveBeenCalledWith('upstream down');
     h.onError(new Error('x'));
     expect(error).toHaveBeenCalledWith('Test failed');
+  });
+});
+
+describe('useSearch enabled predicate + query key', () => {
+  it('disables the query for an empty or whitespace-only input', () => {
+    expect(query(useSearch('')).enabled).toBe(false);
+    expect(query(useSearch('   ')).enabled).toBe(false);
+    expect(query(useSearch('\t\n')).enabled).toBe(false);
+  });
+
+  it('enables the query once there is a non-whitespace character (raw or padded)', () => {
+    expect(query(useSearch('a')).enabled).toBe(true);
+    expect(query(useSearch('  a  ')).enabled).toBe(true);
+  });
+
+  it('keys the query by the raw (un-trimmed) input via qk.search', () => {
+    expect(query(useSearch('  a  ')).queryKey).toEqual(qk.search('  a  '));
+    expect(query(useSearch('a')).queryKey).toEqual(['search', 'a']);
+  });
+});
+
+describe('useLocalAuth', () => {
+  it('dispatches localLogin (not localSignup) with the exact credentials for mode=login', () => {
+    mut(useLocalAuth('login')).mutationFn({ email: 'a@b.c', password: 'pw' });
+    expect(hoisted.api.localLogin).toHaveBeenCalledWith('a@b.c', 'pw');
+    expect(hoisted.api.localSignup).not.toHaveBeenCalled();
+  });
+
+  it('dispatches localSignup (not localLogin) with the exact credentials for mode=signup', () => {
+    mut(useLocalAuth('signup')).mutationFn({ email: 'x@y.z', password: 'pw2' });
+    expect(hoisted.api.localSignup).toHaveBeenCalledWith('x@y.z', 'pw2');
+    expect(hoisted.api.localLogin).not.toHaveBeenCalled();
+  });
+
+  it('invalidates the me query on success (exact ["me"] key)', () => {
+    mut(useLocalAuth('login')).onSuccess();
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: qk.me });
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['me'] });
+  });
+});
+
+describe('useTheme', () => {
+  // Stub the ambient inputs useTheme reads: localStorage (get/set), window.matchMedia,
+  // and document.documentElement.classList (add/remove). Returns the spies to assert on.
+  function setupTheme(opts: { stored: string | null; prefersDark?: boolean }) {
+    const getItem = vi.fn((): string | null => opts.stored);
+    const setItem = vi.fn();
+    const matchMedia = vi.fn(() => ({ matches: opts.prefersDark ?? false }));
+    const add = vi.fn();
+    const remove = vi.fn();
+    vi.stubGlobal('localStorage', { getItem, setItem });
+    vi.stubGlobal('window', { matchMedia });
+    vi.stubGlobal('document', { documentElement: { classList: { add, remove } } });
+    return { getItem, setItem, matchMedia, add, remove };
+  }
+
+  it('initializes from a persisted "dark" theme and reflects it onto the dom + storage', () => {
+    const m = setupTheme({ stored: 'dark' });
+    const { theme } = useTheme();
+    expect(theme).toBe('dark');
+    // Lock the read contract: the persisted value comes from the exact 'theme' key.
+    expect(m.getItem).toHaveBeenCalledWith('theme');
+    expect(m.add).toHaveBeenCalledWith('dark');
+    expect(m.remove).not.toHaveBeenCalled();
+    expect(m.setItem).toHaveBeenCalledWith('theme', 'dark');
+  });
+
+  it('initializes from a persisted "light" theme and removes the dark class', () => {
+    const m = setupTheme({ stored: 'light' });
+    const { theme } = useTheme();
+    expect(theme).toBe('light');
+    expect(m.getItem).toHaveBeenCalledWith('theme');
+    expect(m.remove).toHaveBeenCalledWith('dark');
+    expect(m.add).not.toHaveBeenCalled();
+    expect(m.setItem).toHaveBeenCalledWith('theme', 'light');
+  });
+
+  it('falls back to matchMedia (prefers dark) when no theme is persisted', () => {
+    const m = setupTheme({ stored: null, prefersDark: true });
+    expect(useTheme().theme).toBe('dark');
+    // Lock the fallback contract: the OS preference is read via the exact dark-scheme query.
+    expect(m.getItem).toHaveBeenCalledWith('theme');
+    expect(m.matchMedia).toHaveBeenCalledWith('(prefers-color-scheme: dark)');
+  });
+
+  it('falls back to matchMedia (prefers light) when no theme is persisted', () => {
+    const m = setupTheme({ stored: null, prefersDark: false });
+    expect(useTheme().theme).toBe('light');
+    expect(m.matchMedia).toHaveBeenCalledWith('(prefers-color-scheme: dark)');
+  });
+
+  it('toggleTheme flips the theme and persists + reflects the new value on re-invoke', () => {
+    const m = setupTheme({ stored: 'light' });
+    const first = useTheme();
+    expect(first.theme).toBe('light');
+    first.toggleTheme();
+    // Re-invoke: the mocked useState reads the slot the toggle wrote (no re-init).
+    const second = useTheme();
+    expect(second.theme).toBe('dark');
+    expect(m.setItem).toHaveBeenLastCalledWith('theme', 'dark');
+    expect(m.add).toHaveBeenLastCalledWith('dark');
   });
 });
