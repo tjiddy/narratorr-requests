@@ -13,7 +13,7 @@ import { OidcService, makeOidcMapper, type OidcServiceConfig } from './oidc.serv
 // (regresses state/nonce/PKCE-verifier to a constant or Math.random()), the per-value
 // uniqueness/shape assertions break. Testing the generators in isolation would not.
 vi.mock('openid-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('openid-client')>();
+  const actual = await importOriginal<typeof oidc>();
   return {
     ...actual,
     discovery: vi.fn(),
