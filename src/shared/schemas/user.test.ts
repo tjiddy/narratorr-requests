@@ -65,6 +65,14 @@ describe('localCredentialsSchema', () => {
       expect(localCredentialsSchema.safeParse({ email: 'notanemail', password: pw }).success).toBe(false);
     });
 
+    it('rejects a whitespace-only email — .trim() empties it before z.email() (path points at email)', () => {
+      // The .trim() before the z.email() pipe is load-bearing: '   ' trims to '' which
+      // is not a valid email. Asserting the path catches a regression that drops the trim.
+      const result = localCredentialsSchema.safeParse({ email: '   ', password: pw });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.path).toEqual(['email']);
+    });
+
     it('trims and lowercases the email (the normalized value is the subject key)', () => {
       const parsed = localCredentialsSchema.parse({ email: '  USER@EXAMPLE.COM ', password: pw });
       expect(parsed.email).toBe('user@example.com');
