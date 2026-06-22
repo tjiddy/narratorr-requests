@@ -285,6 +285,8 @@ describe('useTheme', () => {
     const m = setupTheme({ stored: 'dark' });
     const { theme } = useTheme();
     expect(theme).toBe('dark');
+    // Lock the read contract: the persisted value comes from the exact 'theme' key.
+    expect(m.getItem).toHaveBeenCalledWith('theme');
     expect(m.add).toHaveBeenCalledWith('dark');
     expect(m.remove).not.toHaveBeenCalled();
     expect(m.setItem).toHaveBeenCalledWith('theme', 'dark');
@@ -294,19 +296,24 @@ describe('useTheme', () => {
     const m = setupTheme({ stored: 'light' });
     const { theme } = useTheme();
     expect(theme).toBe('light');
+    expect(m.getItem).toHaveBeenCalledWith('theme');
     expect(m.remove).toHaveBeenCalledWith('dark');
     expect(m.add).not.toHaveBeenCalled();
     expect(m.setItem).toHaveBeenCalledWith('theme', 'light');
   });
 
   it('falls back to matchMedia (prefers dark) when no theme is persisted', () => {
-    setupTheme({ stored: null, prefersDark: true });
+    const m = setupTheme({ stored: null, prefersDark: true });
     expect(useTheme().theme).toBe('dark');
+    // Lock the fallback contract: the OS preference is read via the exact dark-scheme query.
+    expect(m.getItem).toHaveBeenCalledWith('theme');
+    expect(m.matchMedia).toHaveBeenCalledWith('(prefers-color-scheme: dark)');
   });
 
   it('falls back to matchMedia (prefers light) when no theme is persisted', () => {
-    setupTheme({ stored: null, prefersDark: false });
+    const m = setupTheme({ stored: null, prefersDark: false });
     expect(useTheme().theme).toBe('light');
+    expect(m.matchMedia).toHaveBeenCalledWith('(prefers-color-scheme: dark)');
   });
 
   it('toggleTheme flips the theme and persists + reflects the new value on re-invoke', () => {
