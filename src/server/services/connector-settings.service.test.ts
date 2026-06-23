@@ -48,6 +48,47 @@ describe('ConnectorSettingsService', () => {
     expect((await svc.getNarratorrConfig())?.url).toBe('https://books.example.com:443/lib');
   });
 
+  it('brackets a bare IPv6 host so the composed URL is parseable (host:port form is not bracketed)', async () => {
+    // A bare IPv6 literal in Host composes to `http://::1:3000` without brackets, which
+    // `new URL()` rejects. Bracketing is a URL-assembly concern, not the admin's job.
+    const cases: { host: string; port: number; useSsl?: boolean; urlBase?: string; url: string }[] = [
+      { host: '::1', port: 3000, url: 'http://[::1]:3000' }, // loopback
+      { host: 'fd00::1', port: 3000, url: 'http://[fd00::1]:3000' }, // ULA
+      { host: '2001:db8::1', port: 443, useSsl: true, urlBase: '/lib', url: 'https://[2001:db8::1]:443/lib' }, // compressed public
+      {
+        // full/uncompressed 8-group — guards against handling only `::` compression or dotted tails.
+        host: '2001:0db8:0000:0000:0000:ff00:0042:8329',
+        port: 3000,
+        url: 'http://[2001:0db8:0000:0000:0000:ff00:0042:8329]:3000',
+      },
+      { host: '::ffff:192.168.1.1', port: 3000, url: 'http://[::ffff:192.168.1.1]:3000' }, // IPv4-mapped
+      { host: '[::1]', port: 3000, url: 'http://[::1]:3000' }, // already bracketed → idempotent
+    ];
+    for (const c of cases) {
+      await svc.update({
+        narratorr: { host: c.host, port: c.port, useSsl: c.useSsl ?? false, ...(c.urlBase && { urlBase: c.urlBase }), apiKey: 'k' },
+      });
+      const url = (await svc.getNarratorrConfig())?.url;
+      expect(url).toBe(c.url);
+      expect(() => new URL(url!)).not.toThrow(); // sanity: parseable
+    }
+  });
+
+  it('leaves IPv4, hostnames, and the single-colon host:port form unbracketed (regression guard)', async () => {
+    // IPv4 and hostnames have <2 colons and must compose unchanged. The single-colon
+    // `host:port` typo (Port is its own field) is also left alone — it is not IPv6.
+    const cases: { host: string; port: number; url: string }[] = [
+      { host: '192.168.1.10', port: 8080, url: 'http://192.168.1.10:8080' },
+      { host: 'narratorr', port: 3000, url: 'http://narratorr:3000' },
+      { host: 'books.example.com', port: 443, url: 'http://books.example.com:443' },
+      { host: 'narratorr:3000', port: 3000, url: 'http://narratorr:3000:3000' }, // single-colon typo — not bracketed
+    ];
+    for (const c of cases) {
+      await svc.update({ narratorr: { host: c.host, port: c.port, useSsl: false, apiKey: 'k' } });
+      expect((await svc.getNarratorrConfig())?.url).toBe(c.url);
+    }
+  });
+
   it('masks secrets in the DTO', async () => {
     await svc.update({
       narratorr: { host: 'n', port: 3000, useSsl: false, apiKey: 'abc' },
