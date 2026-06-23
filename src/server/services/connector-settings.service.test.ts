@@ -6,7 +6,7 @@ import { ConnectorSettingsService } from './connector-settings.service.js';
 import { SecretCodec, deriveSettingsKey } from '../util/secret-codec.js';
 import { appSettings } from '../../db/schema.js';
 import type { Db } from '../../db/client.js';
-import type { CreateNotifierBody, KnownNotifierDto } from '../../shared/schemas/connectors.js';
+import type { CreateNotifierBody, KnownNotifierDto, StoredConnectors } from '../../shared/schemas/connectors.js';
 
 const codec = new SecretCodec(deriveSettingsKey({ sessionSecret: 'test' }));
 let db: Db;
@@ -170,6 +170,51 @@ describe('ConnectorSettingsService — never-brick (undecryptable) + unknown typ
     expect(config).toEqual({ hasUrl: true, urlHint: 'configured' });
   });
 
+  // Directly seed an arbitrary stored notifier list (type-lenient persistence) so a row can be
+  // malformed in ways the write path would normally reject — the GET must survive it.
+  async function seedNotifiers(notifiers: unknown[]): Promise<void> {
+    // Type-lenient persistence: cast to bypass the StoredNotifier shape so a row can be malformed
+    // in ways the write path would reject (bad events/config) — exactly what the GET must survive.
+    const connectors = { publicUrl: null, narratorr: null, notifiers } as unknown as StoredConnectors;
+    await db.update(appSettings).set({ connectors }).where(eq(appSettings.id, 1));
+  }
+
+  it('a known notifier with a malformed config degrades to a disabled, deletable unknown DTO (GET never throws, warns)', async () => {
+    // ntfy row missing its required `url`/`priority` → masked config fails the schema.
+    await seedNotifiers([{ id: 'nf_bad', name: 'Broken', type: 'ntfy', enabled: true, events: ['request.created'], config: { topic: 'x' } }]);
+    const warn = vi.fn();
+    const logged = new ConnectorSettingsService(db, codec, { warn });
+
+    const dto = await logged.getDto(); // must not throw
+    expect(dto.notifiers[0]).toEqual({ id: 'nf_bad', name: 'Broken', type: 'ntfy', enabled: false, events: ['request.created'], unknown: true });
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ notifier: 'nf_bad' }), expect.any(String));
+  });
+
+  it('a known notifier with malformed events degrades to events: [] (GET returns, warns; valid events preserved)', async () => {
+    await seedNotifiers([
+      { id: 'nf_evt', name: 'BadEvents', type: 'ntfy', enabled: true, events: ['nope.invalid'], config: { url: 'https://ntfy.sh', topic: 't', priority: null } },
+    ]);
+    const warn = vi.fn();
+    const logged = new ConnectorSettingsService(db, codec, { warn });
+
+    const dto = await logged.getDto(); // must not throw
+    const row = dto.notifiers[0] as KnownNotifierDto;
+    expect(row).toMatchObject({ id: 'nf_evt', type: 'ntfy', events: [] }); // bad events degraded, config still masked
+    expect(row.config).toMatchObject({ hasToken: false, topic: 't' });
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ notifier: 'nf_evt' }), expect.any(String));
+  });
+
+  it('a well-formed notifier alongside a broken one still returns its normal masked DTO with events intact', async () => {
+    await seedNotifiers([
+      { id: 'nf_bad', name: 'Broken', type: 'ntfy', enabled: true, events: ['request.created'], config: { topic: 'x' } },
+      { id: 'nf_ok', name: 'Good', type: 'ntfy', enabled: true, events: ['request.created'], config: { url: 'https://ntfy.sh', topic: 'ok', priority: null } },
+    ]);
+    const dto = await new ConnectorSettingsService(db, codec, { warn() {} }).getDto();
+    expect(dto.notifiers[0]).toMatchObject({ id: 'nf_bad', unknown: true });
+    const ok = dto.notifiers[1] as KnownNotifierDto;
+    expect(ok).toMatchObject({ id: 'nf_ok', type: 'ntfy', enabled: true, events: ['request.created'], config: { hasToken: false, topic: 'ok' } });
+  });
+
   it('a stored notifier whose type is not in the registry is preserved as a disabled, deletable UnknownNotifierDto', async () => {
     // Inject a stored row directly with an out-of-registry type (type-lenient persistence).
     await db
@@ -189,6 +234,47 @@ describe('ConnectorSettingsService — never-brick (undecryptable) + unknown typ
     // It can still be deleted (delete works from stored metadata, no decrypt needed).
     await svc.deleteNotifier('nf_legacy');
     expect((await svc.getStored()).notifiers).toHaveLength(0);
+  });
+});
+
+describe('ConnectorSettingsService — updateNotifier type change', () => {
+  it('rejects changing the type AWAY from an unknown (out-of-registry) stored type; row left untouched', async () => {
+    const before = { id: 'nf_legacy', name: 'Legacy', type: 'telegram', enabled: true, events: ['user.pending'], config: { token: 'enc:v1:x' } };
+    const connectors = { publicUrl: null, narratorr: null, notifiers: [before] } as unknown as StoredConnectors;
+    await db.update(appSettings).set({ connectors }).where(eq(appSettings.id, 1));
+
+    await expect(
+      svc.updateNotifier('nf_legacy', ntfyBody({ name: 'Hijacked' })),
+    ).rejects.toMatchObject({ statusCode: 400, code: 'NOTIFIER_TYPE_LOCKED' });
+
+    // No .set() side effect — the stored row is byte-for-byte unchanged.
+    expect((await svc.getStored()).notifiers).toEqual([before]);
+  });
+
+  it('known→known type change re-requires the new type’s required secret (omit webhook url → 400)', async () => {
+    const nf = await svc.createNotifier(ntfyBody());
+    await expect(
+      svc.updateNotifier(nf.id, { name: nf.name, type: 'webhook', enabled: true, events: ['request.created'], config: {} }),
+    ).rejects.toMatchObject({ statusCode: 400, code: 'NOTIFIER_SECRET_REQUIRED' });
+  });
+
+  it('known→known type change persists when the new required secret is supplied', async () => {
+    const nf = await svc.createNotifier(ntfyBody());
+    const updated = await svc.updateNotifier(nf.id, {
+      name: nf.name,
+      type: 'webhook',
+      enabled: true,
+      events: ['request.created'],
+      config: { url: 'https://discord.com/api/webhooks/1/abc' },
+    });
+    expect(updated.type).toBe('webhook');
+    const stored = (await svc.getStored()).notifiers[0]!;
+    expect(stored.type).toBe('webhook');
+    expect(codec.isEncrypted(stored.config.url as string)).toBe(true);
+    // The new config is live (decrypts to the supplied URL); no ntfy keys linger.
+    const runtime = (await svc.getNotificationsConfig()).notifiers[0]!;
+    expect(runtime.config.url).toBe('https://discord.com/api/webhooks/1/abc');
+    expect(runtime.config.topic).toBeUndefined();
   });
 });
 

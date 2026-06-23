@@ -197,12 +197,18 @@ export type TestConnectorResult = z.infer<typeof testConnectorResultSchema>;
 // The envelope is validated here (name/type/enabled/events); the type-specific `config`
 // is validated server-side against the registry's per-type `configSchema` (the type is
 // only known at runtime). `config` stays opaque at this layer.
+// Bounds are proportionate (admin-only, single JSON row): a sane `name` ceiling and a
+// soft cap on the event list keep a fat-fingered/abusive body from bloating the blob. The
+// open `config` record stays unbounded here — each type's `configSchema` constrains it
+// downstream (see CLAUDE.md: don't over-engineer the opaque config layer).
+const NOTIFIER_NAME_MAX = 100;
+const NOTIFIER_EVENTS_MAX = 20;
 const notifierWriteBodySchema = z
   .object({
-    name: z.string().trim().min(1),
+    name: z.string().trim().min(1).max(NOTIFIER_NAME_MAX),
     type: z.enum(NOTIFIER_TYPES),
     enabled: z.boolean(),
-    events: z.array(notificationEventSchema).min(1),
+    events: z.array(notificationEventSchema).min(1).max(NOTIFIER_EVENTS_MAX),
     config: z.record(z.string(), z.unknown()),
   })
   .strict();
