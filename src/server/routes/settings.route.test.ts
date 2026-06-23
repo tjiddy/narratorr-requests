@@ -203,6 +203,42 @@ describe('settings routes — notifier test (always 200)', () => {
     expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ from: 'a@b.c', to: 'd@e.f', subject: 'New audiobook request' }));
   });
 
+  it('event-aware test: a user.pending event renders the user.pending message, not the request one', async () => {
+    sendMail.mockResolvedValue({ messageId: 'x' });
+    const res = await test({
+      type: 'email',
+      config: { host: 'smtp.example.com', from: 'a@b.c', to: 'd@e.f' },
+      publicUrl: 'https://app.example.com',
+      event: 'user.pending',
+    });
+    expect(res.json()).toMatchObject({ success: true });
+    // Assert on the RENDERED message (subject/text/url), not the email adapter's static link
+    // label (which is pre-existing debt — see the spec's Out of Scope).
+    expect(sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subject: 'New user awaiting approval',
+        text: expect.stringContaining('https://app.example.com/users'),
+      }),
+    );
+  });
+
+  it('event-aware test: request.created renders the request sample (today’s behavior preserved)', async () => {
+    sendMail.mockResolvedValue({ messageId: 'x' });
+    const res = await test({
+      type: 'email',
+      config: { host: 'smtp.example.com', from: 'a@b.c', to: 'd@e.f' },
+      publicUrl: 'https://app.example.com',
+      event: 'request.created',
+    });
+    expect(res.json()).toMatchObject({ success: true });
+    expect(sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subject: 'New audiobook request',
+        text: expect.stringContaining('https://app.example.com/admin'),
+      }),
+    );
+  });
+
   it('edit-by-id reuses the STORED secret (omit-to-keep) in the probe', async () => {
     const created = (await createNotifier(ntfyCreate({ config: { url: 'https://ntfy.sh', topic: 'reqs', token: 'stored-token' } }))).json();
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));

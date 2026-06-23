@@ -5,6 +5,7 @@ import type {
 } from '@shared/schemas/connectors';
 import {
   NOTIFIER_REGISTRY,
+  type NotifierField,
   type NotifierType,
   type NotifierTypeDef,
 } from '@shared/notifier-registry';
@@ -29,6 +30,12 @@ export interface NotifierFormState {
   fields: Record<string, string | boolean>;
   /** `has<Secret>` flags from the DTO (a stored secret exists) — false for a new notifier. */
   has: Record<string, boolean>;
+  /**
+   * Per-field "clear the stored value" flags, keyed by field key. Only meaningful for an
+   * already-saved OPTIONAL secret (the UI exposes the affordance only then). A non-empty
+   * input always wins over this flag (see `buildConfigPayload`).
+   */
+  clear: Record<string, boolean>;
 }
 
 const ALL_EVENT_KEYS = NOTIFICATION_EVENTS.map((e) => e.key);
@@ -43,7 +50,7 @@ function blankFields(def: NotifierTypeDef): Record<string, string | boolean> {
 /** A fresh form for adding a notifier of `type` (defaults to all events selected). */
 export function newNotifierForm(type: NotifierType): NotifierFormState {
   const def = NOTIFIER_REGISTRY[type];
-  return { id: null, name: '', type, enabled: true, events: [...ALL_EVENT_KEYS], fields: blankFields(def), has: {} };
+  return { id: null, name: '', type, enabled: true, events: [...ALL_EVENT_KEYS], fields: blankFields(def), has: {}, clear: {} };
 }
 
 /** An edit form seeded from a known notifier DTO — secrets blank (omit-to-keep), `has*` carried. */
@@ -64,7 +71,7 @@ export function formFromDto(dto: KnownNotifierDto): NotifierFormState {
       fields[f.key] = config[f.key] == null ? '' : String(config[f.key]);
     }
   }
-  return { id: dto.id, name: dto.name, type: dto.type as NotifierType, enabled: dto.enabled, events: [...dto.events], fields, has };
+  return { id: dto.id, name: dto.name, type: dto.type as NotifierType, enabled: dto.enabled, events: [...dto.events], fields, has, clear: {} };
 }
 
 /** Toggle one event key in the form's `events` list (preserving registry order). */
@@ -77,10 +84,14 @@ export function toggleEvent(events: NotificationEvent[], key: NotificationEvent)
 const str = (v: string | boolean | undefined): string => (typeof v === 'string' ? v : '');
 
 /**
- * Build the type-specific `config` to send. Secrets are omit-to-keep: a blank input is
- * omitted (the server keeps the stored value); a typed one is included. Optional
- * non-secret text fields collapse blank → null; numbers blank → omitted (server default);
- * checkboxes go through as booleans.
+ * Build the type-specific `config` to send. Secrets follow a single deterministic
+ * precedence ladder (first match wins), applied per secret field:
+ *   1. Input non-empty → send the typed value (replacement; the clear flag is ignored).
+ *   2. Input blank AND clear selected (optional secret only) → emit `''` (server's clear
+ *      sentinel — a REQUIRED secret never reaches here, so it can't be cleared).
+ *   3. Input blank, clear not selected → omit the field (server keeps the stored value).
+ * Optional non-secret text fields collapse blank → null; numbers blank → omitted (server
+ * default); checkboxes go through as booleans.
  */
 export function buildConfigPayload(def: NotifierTypeDef, state: NotifierFormState): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -93,7 +104,12 @@ export function buildConfigPayload(def: NotifierTypeDef, state: NotifierFormStat
     if (f.secret) {
       // password kept verbatim (may contain spaces); other secrets (URLs) trimmed.
       const v = f.kind === 'password' ? raw : raw.trim();
-      if (v !== '') out[f.key] = v;
+      if (v !== '') {
+        out[f.key] = v; // rung 1: replacement wins
+      } else if (!f.required && state.clear[f.key]) {
+        out[f.key] = ''; // rung 2: clear sentinel (optional secrets only)
+      }
+      // rung 3: blank + no clear → omit (keep stored)
       continue;
     }
     if (f.kind === 'number') {
@@ -119,15 +135,44 @@ export function buildNotifierBody(state: NotifierFormState): CreateNotifierBody 
   };
 }
 
-/** The candidate test body — same config as a save, plus `id` (edit) + the form's publicUrl. */
-export function buildNotifierTestBody(state: NotifierFormState, publicUrl: string | null): NotifierTestBody {
+/**
+ * The candidate test body — same config as a save, plus the `event` to sample, `id` (edit)
+ * and the form's publicUrl. `event` defaults to the first selected event so Test exercises
+ * what the notifier actually fires on. Returns `null` when no event is selected (a
+ * leniently-stored zero-event notifier): the caller hides/disables Test rather than send.
+ */
+export function buildNotifierTestBody(state: NotifierFormState, publicUrl: string | null): NotifierTestBody | null {
+  const event = state.events[0];
+  if (event === undefined) return null;
   const def = NOTIFIER_REGISTRY[state.type];
   return {
     type: state.type,
+    event,
     config: buildConfigPayload(def, state),
     ...(state.id ? { id: state.id } : {}),
     ...(publicUrl !== null ? { publicUrl } : {}),
   };
+}
+
+/**
+ * Whether to render the "clear stored value" affordance for a field: an already-saved
+ * (`has[key]`) OPTIONAL secret only — never a required secret, never an unsaved one.
+ */
+export function showClearAffordance(field: NotifierField, state: NotifierFormState): boolean {
+  return field.secret && !field.required && Boolean(state.has[field.key]);
+}
+
+/**
+ * The hint text under a notifier field input. Secret-aware: a stored optional secret
+ * advertises replace-or-clear; a stored required secret advertises keep-on-blank; an
+ * unsaved secret (and any non-secret) falls back to the field's own hint.
+ */
+export function secretFieldHint(field: NotifierField, state: NotifierFormState): string | undefined {
+  if (!field.secret) return field.hint;
+  if (!state.has[field.key]) return field.hint;
+  return field.required
+    ? 'Leave blank to keep the current value.'
+    : 'Type a new value to replace it, or use “Clear stored value” to remove it.';
 }
 
 /**
