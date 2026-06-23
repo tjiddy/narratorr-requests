@@ -70,7 +70,7 @@ The admin **Settings** page configures, and stores encrypted at rest:
 - **Notifications** — ntfy, email (SMTP), and a generic/Discord webhook; each with a **Test** button.
 - **Public URL** — used to deep-link notifications back to the request queue.
 
-Secrets are never returned to the browser (the form shows `•••• unchanged`). The at-rest key
+Secrets are never returned to the browser (the form shows `•••••••• (unchanged)`). The at-rest key
 comes from `SETTINGS_KEY`, or is derived from `SESSION_SECRET` when that's unset — see the
 caveat in [`.env.docker.example`](.env.docker.example).
 
@@ -106,11 +106,9 @@ misconfigured deployment fails fast rather than exposing an open admin. The buil
 `narratorr-request-data` volume (`/data`).
 
 > **Upgrading:** migrations apply automatically on boot and are **forward-only** (no
-> down-migrations). The v0.8.0 auth migration (`0003`) rebuilds the `users` table in place —
-> it's atomic and preserves existing users + request history, but it is **irreversible**.
-> Before upgrading a populated instance, **snapshot the `narratorr-request-data` volume**;
-> to roll back, restore that snapshot and redeploy the previous image (the old image can't
-> run against the new schema).
+> down-migrations). Before upgrading a populated instance, **snapshot the
+> `narratorr-request-data` volume**; to roll back, restore that snapshot and redeploy the
+> previous image (an older image can't run against a newer schema).
 
 ### Published images
 

@@ -36,7 +36,7 @@ What actually happened. Include error messages, screenshots, or log output if av
 <summary>Relevant log output</summary>
 
 ```
-Paste server log output here. Set LOG_LEVEL=debug for more detail.
+Paste server log output here. (Non-production runs log at `info`; production at `warn`.)
 ```
 
 </details>

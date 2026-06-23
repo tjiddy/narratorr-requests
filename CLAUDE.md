@@ -87,7 +87,7 @@ up yet. narratorr is exercised via the MSW fixture.
 - **Branches:** `main` = trunk (released/deployed, default branch) · `develop` = active dev. Work on
   `develop`, merge to `main` at milestones, **tag on `main`**.
 - **Tags are the version of record** (`package.json` stays `0.1.0`). CI publishes `:latest` + the
-  semver tag on tag push → leia (Portainer git-backed stack) pulls `:latest` and migrations apply on
+  semver tag on tag push → the deployment pulls `:latest` and migrations apply on
   boot. **So tagging effectively deploys** — only tag a green `pnpm verify`.
 - **Commits:** imperative mood; **no `Co-Authored-By` lines**.
 
