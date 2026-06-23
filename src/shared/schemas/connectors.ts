@@ -94,51 +94,66 @@ export const connectorSettingsDtoSchema = z.object({
 });
 export type ConnectorSettingsDto = z.infer<typeof connectorSettingsDtoSchema>;
 
+// ---- Per-connector candidate shapes -----------------------------------------
+// Shared by the PUT body and the Test body so the candidate sent to Test mirrors a
+// save exactly (secrets optional; omit-to-keep). Each is the connector's own object,
+// non-`.strict()` per CLAUDE.md (tolerate provider/UI drift on unused nested keys) —
+// the .strict() guard lives on the top-level bodies only.
+const narratorrConnectorSchema = z.object({
+  host: narratorrHost,
+  port: z.coerce.number().int().min(1).max(65535),
+  useSsl: z.boolean(),
+  urlBase: urlBase.nullable().optional(),
+  apiKey: z.string().trim().optional(),
+});
+const ntfyConnectorSchema = z.object({
+  url: httpUrl,
+  topic: z.string().trim().min(1),
+  token: z.string().trim().optional(),
+  priority: ntfyPriority.nullable().optional(),
+});
+const emailConnectorSchema = z.object({
+  host: z.string().trim().min(1),
+  port: z.coerce.number().int().min(1).max(65535).optional(),
+  secure: z.boolean().optional(),
+  user: z.string().trim().nullable().optional(),
+  pass: z.string().trim().optional(),
+  from: z.string().trim().min(1),
+  to: z.string().trim().min(1),
+});
+const webhookConnectorSchema = z.object({ url: httpUrl });
+
 // ---- Update body (PUT) ------------------------------------------------------
 // Per connector: omitted (undefined) → leave unchanged; null → disable/clear; object → set.
 // Secret fields inside: omitted → keep existing secret; '' → clear it; non-empty → replace.
 export const updateConnectorSettingsBodySchema = z
   .object({
     publicUrl: httpUrl.nullable().optional(),
-    narratorr: z
-      .object({
-        host: narratorrHost,
-        port: z.coerce.number().int().min(1).max(65535),
-        useSsl: z.boolean(),
-        urlBase: urlBase.nullable().optional(),
-        apiKey: z.string().trim().optional(),
-      })
-      .nullable()
-      .optional(),
-    ntfy: z
-      .object({
-        url: httpUrl,
-        topic: z.string().trim().min(1),
-        token: z.string().trim().optional(),
-        priority: ntfyPriority.nullable().optional(),
-      })
-      .nullable()
-      .optional(),
-    email: z
-      .object({
-        host: z.string().trim().min(1),
-        port: z.coerce.number().int().min(1).max(65535).optional(),
-        secure: z.boolean().optional(),
-        user: z.string().trim().nullable().optional(),
-        pass: z.string().trim().optional(),
-        from: z.string().trim().min(1),
-        to: z.string().trim().min(1),
-      })
-      .nullable()
-      .optional(),
-    webhook: z.object({ url: httpUrl }).nullable().optional(),
+    narratorr: narratorrConnectorSchema.nullable().optional(),
+    ntfy: ntfyConnectorSchema.nullable().optional(),
+    email: emailConnectorSchema.nullable().optional(),
+    webhook: webhookConnectorSchema.nullable().optional(),
   })
   .strict();
 export type UpdateConnectorSettingsBody = z.infer<typeof updateConnectorSettingsBodySchema>;
 
 // ---- Test a connector -------------------------------------------------------
+// The Test body carries the same candidate connector fields as a PUT plus a top-level
+// `publicUrl`, so Test validates the CURRENT (unsaved) form values without persisting.
+// Secrets stay optional (omit-to-keep → falls back to the stored secret server-side);
+// `publicUrl` is not a secret, so an omitted value falls back to the stored one while an
+// explicit value (including null) is used as given. Top-level stays `.strict()`.
 export const CONNECTOR_KEYS = ['narratorr', 'ntfy', 'email', 'webhook'] as const;
-export const testConnectorBodySchema = z.object({ channel: z.enum(CONNECTOR_KEYS) }).strict();
+export const testConnectorBodySchema = z
+  .object({
+    channel: z.enum(CONNECTOR_KEYS),
+    publicUrl: httpUrl.nullable().optional(),
+    narratorr: narratorrConnectorSchema.nullable().optional(),
+    ntfy: ntfyConnectorSchema.nullable().optional(),
+    email: emailConnectorSchema.nullable().optional(),
+    webhook: webhookConnectorSchema.nullable().optional(),
+  })
+  .strict();
 export type TestConnectorBody = z.infer<typeof testConnectorBodySchema>;
 
 export const testConnectorResultSchema = z.object({

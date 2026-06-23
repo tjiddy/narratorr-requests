@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import type { V1AudibleResult } from '@shared/schemas/v1/metadata';
 import type { RequestStatus } from '@shared/schemas/request';
 import type { UpdateUserBody } from '@shared/schemas/user';
-import type { UpdateConnectorSettingsBody } from '@shared/schemas/connectors';
+import type { UpdateConnectorSettingsBody, TestConnectorBody } from '@shared/schemas/connectors';
 import {
   getMe,
   searchCatalog,
@@ -21,7 +21,6 @@ import {
   getAuthProviders,
   localLogin,
   localSignup,
-  type ConnectorChannel,
   ApiError,
 } from './api';
 
@@ -118,7 +117,7 @@ export function useUpdateConnectors() {
 
 export function useTestConnector() {
   return useMutation({
-    mutationFn: (channel: ConnectorChannel) => testConnector(channel),
+    mutationFn: (body: TestConnectorBody) => testConnector(body),
     onSuccess: (res) => (res.success ? toast.success(res.message) : toast.error(res.message)),
     onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Test failed'),
   });

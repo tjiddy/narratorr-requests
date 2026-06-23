@@ -5,6 +5,7 @@ import type {
   StoredConnectors,
   ConnectorSettingsDto,
   UpdateConnectorSettingsBody,
+  TestConnectorBody,
 } from '../../shared/schemas/connectors.js';
 import type { NotificationsConfig } from './notifications/index.js';
 import type { SecretCodec } from '../util/secret-codec.js';
@@ -25,7 +26,7 @@ const EMPTY: StoredConnectors = {
  * `${scheme}://${host}:${port}${urlBase}` — a valid http(s) URL with no trailing
  * slash. e.g. {host:'narratorr',port:3000,useSsl:false,urlBase:null} → http://narratorr:3000.
  */
-function composeNarratorrUrl(n: NonNullable<StoredConnectors['narratorr']>): string {
+function composeNarratorrUrl(n: { host: string; port: number; useSsl: boolean; urlBase: string | null }): string {
   return `${n.useSsl ? 'https' : 'http'}://${n.host}:${n.port}${n.urlBase ?? ''}`;
 }
 
@@ -104,6 +105,95 @@ export class ConnectorSettingsService {
         : null,
       webhook: c.webhook ? { url: c.webhook.url } : null,
     };
+  }
+
+  /**
+   * Build a narratorr runtime config from an UNSAVED candidate (the Settings "Test"
+   * path), resolving an omitted/unchanged apiKey against the stored, decrypted secret.
+   * Mirrors getNarratorrConfig() but reads the candidate's discrete fields instead of the
+   * stored ones. NEVER writes — the stored secret is only decrypted in-memory. Returns null
+   * when the candidate is absent/blank or no usable key resolves (→ clean "not configured").
+   */
+  async buildCandidateNarratorrConfig(
+    candidate: TestConnectorBody['narratorr'],
+  ): Promise<{ url: string; apiKey: string } | null> {
+    if (!candidate) return null;
+    const stored = await this.getStored();
+    const apiKey = this.resolveCandidateSecret(candidate.apiKey, stored.narratorr?.apiKey, 'narratorr.apiKey');
+    if (!apiKey) return null;
+    return {
+      url: composeNarratorrUrl({
+        host: candidate.host,
+        port: candidate.port,
+        useSsl: candidate.useSsl,
+        urlBase: candidate.urlBase ?? null,
+      }),
+      apiKey,
+    };
+  }
+
+  /**
+   * Build a notifications config from an UNSAVED candidate (the Settings "Test" path) in
+   * the shape buildChannel expects. Secrets resolve omit-to-keep against the stored,
+   * decrypted values; `publicUrl` resolves plain omit-to-keep (omitted → stored, explicit
+   * value/null → used as given) so a test notification renders with the unsaved Public URL.
+   * NEVER writes — stored secrets are only decrypted in-memory.
+   */
+  async buildCandidateNotificationsConfig(
+    candidate: Pick<TestConnectorBody, 'publicUrl' | 'ntfy' | 'email' | 'webhook'>,
+  ): Promise<NotificationsConfig> {
+    const stored = await this.getStored();
+    return {
+      publicUrl: candidate.publicUrl !== undefined ? candidate.publicUrl : stored.publicUrl,
+      ntfy: this.candidateNtfy(candidate.ntfy, stored.ntfy),
+      email: this.candidateEmail(candidate.email, stored.email),
+      webhook: candidate.webhook ? { url: candidate.webhook.url } : null,
+    };
+  }
+
+  private candidateNtfy(
+    candidate: TestConnectorBody['ntfy'],
+    stored: StoredConnectors['ntfy'],
+  ): NotificationsConfig['ntfy'] {
+    if (!candidate) return null;
+    return {
+      url: candidate.url,
+      topic: candidate.topic,
+      token: this.resolveCandidateSecret(candidate.token, stored?.token, 'ntfy.token'),
+      priority: candidate.priority ?? null,
+    };
+  }
+
+  private candidateEmail(
+    candidate: TestConnectorBody['email'],
+    stored: StoredConnectors['email'],
+  ): NotificationsConfig['email'] {
+    if (!candidate) return null;
+    return {
+      host: candidate.host,
+      port: candidate.port ?? stored?.port ?? 587,
+      secure: candidate.secure ?? stored?.secure ?? false,
+      user: candidate.user !== undefined ? candidate.user : (stored?.user ?? null),
+      pass: this.resolveCandidateSecret(candidate.pass, stored?.pass, 'email.pass'),
+      from: candidate.from,
+      to: candidate.to,
+    };
+  }
+
+  /**
+   * Resolve a candidate secret for the read-only Test path → PLAINTEXT for runtime use:
+   * `undefined` (unchanged) → the stored secret, decrypted in-memory; `''` → none; a typed
+   * value → used as-is. Distinct from resolveSecret() (the persistence path, which ENCRYPTS):
+   * this never touches the DB and yields plaintext a live probe can use immediately.
+   */
+  private resolveCandidateSecret(
+    provided: string | undefined,
+    storedEncrypted: string | null | undefined,
+    field: string,
+  ): string | null {
+    if (provided === undefined) return this.reveal(storedEncrypted ?? null, field);
+    if (provided === '') return null;
+    return provided;
   }
 
   /** Masked view for the Settings page — secrets become has* booleans, never values. */

@@ -78,7 +78,9 @@ describe('settings routes — narratorr generic (non-NarratorrError) fallback', 
       method: 'POST',
       url: '/api/admin/settings/connectors/test',
       headers: { 'x-test-role': 'admin' },
-      payload: { channel: 'narratorr' },
+      // Candidate mirrors the stored connection (key omitted → resolves to the stored one),
+      // so buildCandidateNarratorrConfig yields a config and the mocked ping() runs.
+      payload: { channel: 'narratorr', narratorr: { host: 'n.example.com', port: 443, useSsl: true } },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ success: false, message: 'boom' });
