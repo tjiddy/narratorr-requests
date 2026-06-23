@@ -1,9 +1,11 @@
 import type { RequestDto } from '@shared/schemas/request';
-import { useMyRequests } from '../hooks';
+import { useMe, useMyRequests } from '../hooks';
+import { Badge } from '../components/Badge';
 import { StatusBadge } from '../components/StatusBadge';
 import { EmptyState } from '../components/EmptyState';
 import { InboxIcon } from '../components/icons';
 import { requestFailureReason } from '../components/request-failure';
+import { formatQuota } from './quota-display';
 
 function RequestRow({ r }: { r: RequestDto }) {
   const failureReason = requestFailureReason(r);
@@ -38,12 +40,35 @@ function RequestRow({ r }: { r: RequestDto }) {
   );
 }
 
+function QuotaMeter() {
+  const { data: me } = useMe();
+  if (!me) return null;
+  const q = formatQuota(me.quota);
+
+  if (q.unlimited) {
+    return (
+      <Badge variant="info" className="text-xs">
+        {q.label}
+      </Badge>
+    );
+  }
+
+  return (
+    <Badge variant={q.variant} className="text-xs">
+      {q.label}
+    </Badge>
+  );
+}
+
 export function MyRequestsPage() {
   const { data, isLoading, error } = useMyRequests();
 
   return (
     <div>
-      <h1 className="mb-6 font-display text-2xl font-semibold tracking-tight sm:text-3xl">My requests</h1>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">My requests</h1>
+        <QuotaMeter />
+      </div>
       {isLoading && <p className="text-sm text-muted-foreground/70">Loading…</p>}
       {error && <p className="text-sm text-destructive">Could not load your requests.</p>}
       {data && data.data.length === 0 && (
