@@ -3,22 +3,32 @@ import type { Db } from '../../db/client.js';
 import { appSettings } from '../../db/schema.js';
 import type {
   StoredConnectors,
+  StoredNotifier,
   ConnectorSettingsDto,
+  NotifierDto,
   UpdateConnectorSettingsBody,
   TestConnectorBody,
+  CreateNotifierBody,
+  UpdateNotifierBody,
+  NotifierTestBody,
 } from '../../shared/schemas/connectors.js';
-import type { NotificationsConfig } from './notifications/index.js';
+import {
+  NOTIFIER_REGISTRY,
+  isKnownNotifierType,
+  type NotifierType,
+  type NotifierTypeDef,
+} from '../../shared/notifier-registry.js';
+import type { NotificationsConfig, RuntimeNotifier } from './notifications/index.js';
 import type { SecretCodec } from '../util/secret-codec.js';
-import { badRequest } from '../util/errors.js';
+import { publicId } from '../util/ids.js';
+import { badRequest, notFound } from '../util/errors.js';
 
 const SINGLETON_ID = 1;
 
 const EMPTY: StoredConnectors = {
   publicUrl: null,
   narratorr: null,
-  ntfy: null,
-  email: null,
-  webhook: null,
+  notifiers: [],
 };
 
 /**
@@ -50,10 +60,12 @@ interface SettingsLogger {
 const NOOP_LOGGER: SettingsLogger = { warn() {} };
 
 /**
- * Reads/writes the connector config (narratorr connection + notification channels)
- * persisted in `app_settings.connectors`. Secrets are encrypted at rest; this service
- * is the single place that decrypts (for runtime use) or masks (for the API). There is
- * NO env seeding — a fresh install starts empty and is configured in the Settings UI.
+ * Reads/writes the connector config (narratorr connection + the notifier list) persisted
+ * in `app_settings.connectors`. Secrets are encrypted at rest; this service is the single
+ * place that decrypts (for runtime use) or masks (for the API). Notifier secret handling
+ * is registry-driven: the generic helpers walk each type's `secretFields` (mask / reveal /
+ * resolve), so a new type needs no bespoke code here. There is NO env seeding — a fresh
+ * install starts empty and is configured in the Settings UI.
  */
 export class ConnectorSettingsService {
   constructor(
@@ -100,24 +112,7 @@ export class ConnectorSettingsService {
   /** Notifications config (decrypted) in the shape buildNotifier expects. */
   async getNotificationsConfig(): Promise<NotificationsConfig> {
     const c = await this.getStored();
-    return {
-      publicUrl: c.publicUrl,
-      ntfy: c.ntfy
-        ? { url: c.ntfy.url, topic: c.ntfy.topic, token: this.reveal(c.ntfy.token, 'ntfy.token'), priority: c.ntfy.priority }
-        : null,
-      email: c.email
-        ? {
-            host: c.email.host,
-            port: c.email.port,
-            secure: c.email.secure,
-            user: c.email.user,
-            pass: this.reveal(c.email.pass, 'email.pass'),
-            from: c.email.from,
-            to: c.email.to,
-          }
-        : null,
-      webhook: c.webhook ? { url: c.webhook.url } : null,
-    };
+    return { publicUrl: c.publicUrl, notifiers: c.notifiers.map((n) => this.toRuntimeNotifier(n)) };
   }
 
   /**
@@ -146,54 +141,6 @@ export class ConnectorSettingsService {
   }
 
   /**
-   * Build a notifications config from an UNSAVED candidate (the Settings "Test" path) in
-   * the shape buildChannel expects. Secrets resolve omit-to-keep against the stored,
-   * decrypted values; `publicUrl` resolves plain omit-to-keep (omitted → stored, explicit
-   * value/null → used as given) so a test notification renders with the unsaved Public URL.
-   * NEVER writes — stored secrets are only decrypted in-memory.
-   */
-  async buildCandidateNotificationsConfig(
-    candidate: Pick<TestConnectorBody, 'publicUrl' | 'ntfy' | 'email' | 'webhook'>,
-  ): Promise<NotificationsConfig> {
-    const stored = await this.getStored();
-    return {
-      publicUrl: candidate.publicUrl !== undefined ? candidate.publicUrl : stored.publicUrl,
-      ntfy: this.candidateNtfy(candidate.ntfy, stored.ntfy),
-      email: this.candidateEmail(candidate.email, stored.email),
-      webhook: candidate.webhook ? { url: candidate.webhook.url } : null,
-    };
-  }
-
-  private candidateNtfy(
-    candidate: TestConnectorBody['ntfy'],
-    stored: StoredConnectors['ntfy'],
-  ): NotificationsConfig['ntfy'] {
-    if (!candidate) return null;
-    return {
-      url: candidate.url,
-      topic: candidate.topic,
-      token: this.resolveCandidateSecret(candidate.token, stored?.token, 'ntfy.token'),
-      priority: candidate.priority ?? null,
-    };
-  }
-
-  private candidateEmail(
-    candidate: TestConnectorBody['email'],
-    stored: StoredConnectors['email'],
-  ): NotificationsConfig['email'] {
-    if (!candidate) return null;
-    return {
-      host: candidate.host,
-      port: candidate.port ?? stored?.port ?? 587,
-      secure: candidate.secure ?? stored?.secure ?? false,
-      user: candidate.user !== undefined ? candidate.user : (stored?.user ?? null),
-      pass: this.resolveCandidateSecret(candidate.pass, stored?.pass, 'email.pass'),
-      from: candidate.from,
-      to: candidate.to,
-    };
-  }
-
-  /**
    * Resolve a candidate secret for the read-only Test path → PLAINTEXT for runtime use:
    * `undefined` (unchanged) → the stored secret, decrypted in-memory; `''` → none; a typed
    * value → used as-is. Distinct from resolveSecret() (the persistence path, which ENCRYPTS):
@@ -209,7 +156,7 @@ export class ConnectorSettingsService {
     return provided;
   }
 
-  /** Masked view for the Settings page — secrets become has* booleans, never values. */
+  /** Masked view for the Settings page — secrets become has* booleans / host hints. */
   async getDto(): Promise<ConnectorSettingsDto> {
     const c = await this.getStored();
     return {
@@ -223,21 +170,7 @@ export class ConnectorSettingsService {
             hasApiKey: Boolean(c.narratorr.apiKey),
           }
         : null,
-      ntfy: c.ntfy
-        ? { url: c.ntfy.url, topic: c.ntfy.topic, hasToken: Boolean(c.ntfy.token), priority: c.ntfy.priority }
-        : null,
-      email: c.email
-        ? {
-            host: c.email.host,
-            port: c.email.port,
-            secure: c.email.secure,
-            user: c.email.user,
-            from: c.email.from,
-            to: c.email.to,
-            hasPassword: Boolean(c.email.pass),
-          }
-        : null,
-      webhook: c.webhook ? { url: c.webhook.url } : null,
+      notifiers: c.notifiers.map((n) => this.toNotifierDto(n)),
     };
   }
 
@@ -245,23 +178,198 @@ export class ConnectorSettingsService {
     const cur = await this.getStored();
     const next: StoredConnectors = { ...cur };
 
-    // Per connector: omitted (undefined) → keep; null → clear; object → resolve & set.
+    // publicUrl: omitted → keep; null → clear; value → set. narratorr: omitted → keep;
+    // null → clear; object → resolve & set. The notifier list is untouched by this body.
     if (body.publicUrl !== undefined) next.publicUrl = body.publicUrl;
     if (body.narratorr !== undefined) next.narratorr = this.resolveNarratorr(body.narratorr, cur.narratorr);
-    if (body.ntfy !== undefined) next.ntfy = this.resolveNtfy(body.ntfy, cur.ntfy);
-    if (body.email !== undefined) next.email = this.resolveEmail(body.email, cur.email);
-    if (body.webhook !== undefined) next.webhook = body.webhook === null ? null : { url: body.webhook.url };
 
-    // Guard against a silent no-op: if the singleton row is missing, the UPDATE matches
-    // zero rows and `next` would be a lie. SettingsService.ensure() creates it at boot,
-    // so this should never fire — but assert it rather than return an unpersisted value.
-    const [row] = await this.db
-      .update(appSettings)
-      .set({ connectors: next, updatedAt: new Date() })
-      .where(eq(appSettings.id, SINGLETON_ID))
-      .returning();
-    if (!row) throw new Error('app_settings singleton missing — connector update did not persist');
+    await this.persist(next);
     return next;
+  }
+
+  // ---- Notifier CRUD --------------------------------------------------------
+
+  /** Create a notifier (required secrets enforced — no stored value to fall back to). */
+  async createNotifier(body: CreateNotifierBody): Promise<StoredNotifier> {
+    const def = NOTIFIER_REGISTRY[body.type];
+    const config = this.resolveNotifierConfig(def, this.parseConfig(def, body.config), undefined, true);
+    const notifier: StoredNotifier = {
+      id: publicId('nf'),
+      name: body.name,
+      type: body.type,
+      enabled: body.enabled,
+      events: body.events,
+      config,
+    };
+    const cur = await this.getStored();
+    await this.persist({ ...cur, notifiers: [...cur.notifiers, notifier] });
+    return notifier;
+  }
+
+  /** Edit a notifier by id — secrets are omit-to-keep against the stored config (by id). */
+  async updateNotifier(id: string, body: UpdateNotifierBody): Promise<StoredNotifier> {
+    const cur = await this.getStored();
+    const idx = cur.notifiers.findIndex((n) => n.id === id);
+    if (idx === -1) throw notFound('Notifier not found.');
+    const existing = cur.notifiers[idx]!;
+    const def = NOTIFIER_REGISTRY[body.type];
+    // If the type changed, the stored secret has a different shape → no omit-to-keep base,
+    // so required secrets must be present (treated like a create).
+    const existingConfig = existing.type === body.type ? existing.config : undefined;
+    const config = this.resolveNotifierConfig(
+      def,
+      this.parseConfig(def, body.config),
+      existingConfig,
+      existingConfig === undefined,
+    );
+    const updated: StoredNotifier = {
+      id,
+      name: body.name,
+      type: body.type,
+      enabled: body.enabled,
+      events: body.events,
+      config,
+    };
+    const notifiers = [...cur.notifiers];
+    notifiers[idx] = updated;
+    await this.persist({ ...cur, notifiers });
+    return updated;
+  }
+
+  async deleteNotifier(id: string): Promise<void> {
+    const cur = await this.getStored();
+    const notifiers = cur.notifiers.filter((n) => n.id !== id);
+    if (notifiers.length === cur.notifiers.length) throw notFound('Notifier not found.');
+    await this.persist({ ...cur, notifiers });
+  }
+
+  /**
+   * Build a runtime (plaintext) notifier config from an UNSAVED candidate (the notifier
+   * "Test" path). `id` present (edit) → omit-to-keep secrets against the stored notifier;
+   * absent (create) → secrets must be provided. NEVER writes.
+   */
+  async buildCandidateNotifier(body: NotifierTestBody): Promise<{ type: NotifierType; config: Record<string, unknown> }> {
+    const def = NOTIFIER_REGISTRY[body.type];
+    const parsed = this.parseConfig(def, body.config);
+    const stored = body.id ? (await this.getStored()).notifiers.find((n) => n.id === body.id) : undefined;
+    const existing = stored && stored.type === body.type ? stored.config : undefined;
+    return { type: body.type, config: this.buildCandidateNotifierConfig(def, parsed, existing) };
+  }
+
+  // ---- Generic, registry-driven notifier helpers ----------------------------
+
+  /** Reveal a stored notifier into the runtime shape (secrets decrypted; unknown type passes opaque). */
+  private toRuntimeNotifier(n: StoredNotifier): RuntimeNotifier {
+    if (!isKnownNotifierType(n.type)) return { ...n, config: n.config };
+    return { ...n, config: this.revealNotifierConfig(NOTIFIER_REGISTRY[n.type], n.config) };
+  }
+
+  /** Mask a stored notifier into its DTO — known → masked config; unknown → disabled+deletable. */
+  private toNotifierDto(n: StoredNotifier): NotifierDto {
+    if (!isKnownNotifierType(n.type)) {
+      return { id: n.id, name: n.name, type: n.type, enabled: false, events: n.events, unknown: true };
+    }
+    return {
+      id: n.id,
+      name: n.name,
+      type: n.type,
+      enabled: n.enabled,
+      events: n.events,
+      config: this.maskNotifierConfig(NOTIFIER_REGISTRY[n.type], n.config),
+    };
+  }
+
+  /** Decrypt each secret field; copy non-secrets through. */
+  private revealNotifierConfig(def: NotifierTypeDef, stored: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const f of def.fields) {
+      const sf = def.secretFields.find((s) => s.field === f.key);
+      out[f.key] = sf ? this.reveal((stored[f.key] as string | null) ?? null, `${def.type}.${f.key}`) : stored[f.key];
+    }
+    return out;
+  }
+
+  /** Drop secret values → has* booleans (+ host hint for capability URLs); copy non-secrets. */
+  private maskNotifierConfig(def: NotifierTypeDef, stored: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const f of def.fields) {
+      const sf = def.secretFields.find((s) => s.field === f.key);
+      if (sf) {
+        out[sf.maskedField] = Boolean(stored[f.key]);
+        if (sf.hintField) out[sf.hintField] = this.hostHint(stored[f.key]);
+      } else {
+        out[f.key] = stored[f.key];
+      }
+    }
+    return def.maskedConfigSchema.parse(out) as Record<string, unknown>;
+  }
+
+  /**
+   * Host hint for a capability-URL secret — `hooks.slack.com/…`, never the full URL.
+   * Decrypts to read the host (GET never throws: reveal returns null + warns on failure),
+   * falling back to "configured" when the value is present but can't be parsed/decrypted.
+   */
+  private hostHint(value: unknown): string | null {
+    if (typeof value !== 'string' || !value) return null;
+    const plain = this.reveal(value, 'notifier.capabilityUrl');
+    if (!plain) return 'configured';
+    try {
+      return `${new URL(plain).host}/…`;
+    } catch {
+      return 'configured';
+    }
+  }
+
+  /** Build the stored config: encrypt secrets (enforce required on create); store non-secrets. */
+  private resolveNotifierConfig(
+    def: NotifierTypeDef,
+    parsed: Record<string, unknown>,
+    existing: Record<string, unknown> | undefined,
+    isCreate: boolean,
+  ): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const f of def.fields) {
+      const sf = def.secretFields.find((s) => s.field === f.key);
+      if (sf) {
+        const resolved = this.resolveSecret(parsed[f.key] as string | undefined, existing?.[f.key] as string | null | undefined);
+        if (isCreate && sf.required && !resolved) {
+          throw badRequest('NOTIFIER_SECRET_REQUIRED', `${def.label} requires ${f.label}.`);
+        }
+        out[f.key] = resolved;
+      } else {
+        out[f.key] = parsed[f.key] ?? null;
+      }
+    }
+    return out;
+  }
+
+  /** Build a runtime (plaintext) config from a candidate — secrets omit-to-keep by id. */
+  private buildCandidateNotifierConfig(
+    def: NotifierTypeDef,
+    parsed: Record<string, unknown>,
+    existing: Record<string, unknown> | undefined,
+  ): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const f of def.fields) {
+      const sf = def.secretFields.find((s) => s.field === f.key);
+      out[f.key] = sf
+        ? this.resolveCandidateSecret(parsed[f.key] as string | undefined, existing?.[f.key] as string | null | undefined, `${def.type}.${f.key}`)
+        : (parsed[f.key] ?? null);
+    }
+    return out;
+  }
+
+  /** Validate the type-specific config against the registry schema → 400 on failure. */
+  private parseConfig(def: NotifierTypeDef, raw: unknown): Record<string, unknown> {
+    const result = def.configSchema.safeParse(raw);
+    if (!result.success) {
+      const first = result.error.issues[0];
+      throw badRequest(
+        'NOTIFIER_CONFIG_INVALID',
+        first ? `${first.path.join('.') || 'config'}: ${first.message}` : 'Invalid notifier config.',
+      );
+    }
+    return result.data as Record<string, unknown>;
   }
 
   /**
@@ -287,33 +395,17 @@ export class ConnectorSettingsService {
     return { host: body.host, port: body.port, useSsl: body.useSsl, urlBase: body.urlBase ?? null, apiKey };
   }
 
-  private resolveNtfy(
-    body: NonNullable<UpdateConnectorSettingsBody['ntfy']> | null,
-    cur: StoredConnectors['ntfy'],
-  ): StoredConnectors['ntfy'] {
-    if (body === null) return null;
-    return {
-      url: body.url,
-      topic: body.topic,
-      token: this.resolveSecret(body.token, cur?.token),
-      priority: body.priority ?? null,
-    };
-  }
-
-  private resolveEmail(
-    body: NonNullable<UpdateConnectorSettingsBody['email']> | null,
-    cur: StoredConnectors['email'],
-  ): StoredConnectors['email'] {
-    if (body === null) return null;
-    return {
-      host: body.host,
-      port: body.port ?? cur?.port ?? 587,
-      secure: body.secure ?? cur?.secure ?? false,
-      // undefined = keep (matches port/secure); null = clear; value = set.
-      user: body.user !== undefined ? body.user : (cur?.user ?? null),
-      pass: this.resolveSecret(body.pass, cur?.pass),
-      from: body.from,
-      to: body.to,
-    };
+  /**
+   * Persist the whole connector blob. Guard against a silent no-op: if the singleton row
+   * is missing, the UPDATE matches zero rows and `next` would be a lie. SettingsService
+   * .ensure() creates it at boot, so this should never fire — but assert it.
+   */
+  private async persist(next: StoredConnectors): Promise<void> {
+    const [row] = await this.db
+      .update(appSettings)
+      .set({ connectors: next, updatedAt: new Date() })
+      .where(eq(appSettings.id, SINGLETON_ID))
+      .returning();
+    if (!row) throw new Error('app_settings singleton missing — connector update did not persist');
   }
 }

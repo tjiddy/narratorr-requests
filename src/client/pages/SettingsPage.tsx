@@ -1,20 +1,27 @@
 import { useState, type ReactNode } from 'react';
-import type { ConnectorSettingsDto, TestConnectorBody } from '@shared/schemas/connectors';
-import { useConnectorSettings, useUpdateConnectors, useTestConnector } from '../hooks';
+import type { ConnectorSettingsDto, NotifierDto, KnownNotifierDto, TestConnectorBody } from '@shared/schemas/connectors';
+import { NOTIFIER_REGISTRY, NOTIFIER_TYPES, type NotifierType, type NotifierField } from '@shared/notifier-registry';
+import { NOTIFICATION_EVENTS } from '@shared/notification-events';
+import {
+  useConnectorSettings,
+  useUpdateConnectors,
+  useTestConnector,
+  useCreateNotifier,
+  useUpdateNotifier,
+  useDeleteNotifier,
+  useTestNotifier,
+} from '../hooks';
 import { Button } from '../components/Button';
 import { initNarratorr, buildNarratorr, type NarratorrState } from './settings-narratorr';
 import {
-  initNtfy,
-  initEmail,
-  initWebhook,
-  buildNtfy,
-  buildEmail,
-  buildWebhook,
-  buildTestBody,
-  type NtfyState,
-  type EmailState,
-  type WebhookState,
-} from './settings-channels';
+  newNotifierForm,
+  formFromDto,
+  toggleEvent,
+  buildNotifierBody,
+  buildNotifierTestBody,
+  validateNotifierForm,
+  type NotifierFormState,
+} from './settings-notifiers';
 
 const inputCls =
   'w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50';
@@ -22,73 +29,23 @@ const inputCls =
 const secretPlaceholder = (has: boolean, required = false) =>
   has ? '•••••••• (unchanged)' : required ? 'required' : 'optional';
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+function Field({ label, hint, error, children }: { label: string; hint?: string | undefined; error?: string | undefined; children: ReactNode }) {
   return (
     <label className="flex flex-col gap-1">
       <span className="text-sm font-medium">{label}</span>
       {children}
-      {hint && <span className="text-xs text-muted-foreground/70">{hint}</span>}
+      {error ? (
+        <span className="text-xs text-destructive">{error}</span>
+      ) : (
+        hint && <span className="text-xs text-muted-foreground/70">{hint}</span>
+      )}
     </label>
   );
 }
 
-function Section({
-  title,
-  subtitle,
-  enabled,
-  onToggle,
-  testBody,
-  children,
-}: {
-  title: string;
-  subtitle: string;
-  // Toggle is optional: omit both to render a non-toggling, always-expanded card.
-  // The narratorr connection has no enable/disable concept (it's the app's lifeline),
-  // so it renders without a toggle; ntfy/email/webhook keep theirs.
-  enabled?: boolean;
-  onToggle?: (v: boolean) => void;
-  // The Test request body built from the section's CURRENT form values. Computed by the
-  // parent so the per-section state and the top-level Public URL are both in scope.
-  testBody?: TestConnectorBody;
-  children: ReactNode;
-}) {
-  const test = useTestConnector();
-  const expanded = onToggle ? Boolean(enabled) : true;
-  return (
-    <div className="glass-card flex flex-col gap-4 rounded-xl p-4">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="font-medium">{title}</p>
-          <p className="text-xs text-muted-foreground/70">{subtitle}</p>
-        </div>
-        {onToggle && (
-          <label className="flex shrink-0 items-center gap-2 text-sm">
-            <span className="text-muted-foreground">Enabled</span>
-            <input
-              type="checkbox"
-              className="h-4 w-4 accent-primary"
-              checked={Boolean(enabled)}
-              onChange={(e) => onToggle(e.target.checked)}
-            />
-          </label>
-        )}
-      </div>
-      {expanded && <div className="flex flex-col gap-3 border-t border-border/50 pt-4">{children}</div>}
-      {expanded && testBody && (
-        <div className="flex items-center gap-2 border-t border-border/50 pt-3">
-          <Button
-            variant="secondary"
-            size="sm"
-            loading={test.isPending && test.variables?.channel === testBody.channel}
-            onClick={() => test.mutate(testBody)}
-          >
-            Test
-          </Button>
-          <span className="text-xs text-muted-foreground/70">Tests the current values above — no save required.</span>
-        </div>
-      )}
-    </div>
-  );
+/** Discriminate the masked notifier DTO: a known type carries `config`; unknown carries `unknown`. */
+function isKnownNotifier(n: NotifierDto): n is KnownNotifierDto {
+  return !('unknown' in n && n.unknown);
 }
 
 export function SettingsPage() {
@@ -99,7 +56,7 @@ export function SettingsPage() {
       <div className="mb-6">
         <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Connect to narratorr and configure how you’re notified about new requests.
+          Connect to narratorr and configure how you’re notified about new requests and signups.
         </p>
       </div>
       {isLoading && <p className="text-sm text-muted-foreground/70">Loading…</p>}
@@ -110,11 +67,6 @@ export function SettingsPage() {
   );
 }
 
-// --- Per-channel form state -------------------------------------------------
-// State types + init/build helpers live in ./settings-channels (ntfy/email/webhook) and
-// ./settings-narratorr — pure logic, unit-tested without a DOM. The form composes from
-// focused section components; the Test body for each is built from current state here.
-
 type Patch<T> = (p: Partial<T>) => void;
 
 function SettingsForm({ initial }: { initial: ConnectorSettingsDto }) {
@@ -122,27 +74,13 @@ function SettingsForm({ initial }: { initial: ConnectorSettingsDto }) {
 
   const [publicUrl, setPublicUrl] = useState(initial.publicUrl ?? '');
   const [narr, setNarr] = useState(() => initNarratorr(initial.narratorr));
-  const [ntfy, setNtfy] = useState(() => initNtfy(initial.ntfy));
-  const [email, setEmail] = useState(() => initEmail(initial.email));
-  const [webhook, setWebhook] = useState(() => initWebhook(initial.webhook));
-
   const patchNarr: Patch<NarratorrState> = (p) => setNarr((s) => ({ ...s, ...p }));
-  const patchNtfy: Patch<NtfyState> = (p) => setNtfy((s) => ({ ...s, ...p }));
-  const patchEmail: Patch<EmailState> = (p) => setEmail((s) => ({ ...s, ...p }));
-  const patchWebhook: Patch<WebhookState> = (p) => setWebhook((s) => ({ ...s, ...p }));
 
-  // The candidate connector payloads for the CURRENT form values — shared by save (PUT)
-  // and Test, so a Test runs against exactly what a save would persist (no save required).
   const candidatePublicUrl = publicUrl.trim() || null;
-  const candidates = {
-    narratorr: buildNarratorr(narr),
-    ntfy: buildNtfy(ntfy),
-    email: buildEmail(email),
-    webhook: buildWebhook(webhook),
-  };
+  const narratorrTestBody: TestConnectorBody = { channel: 'narratorr', narratorr: buildNarratorr(narr) };
 
   function save() {
-    update.mutate({ publicUrl: candidatePublicUrl, ...candidates });
+    update.mutate({ publicUrl: candidatePublicUrl, narratorr: buildNarratorr(narr) });
   }
 
   return (
@@ -163,16 +101,15 @@ function SettingsForm({ initial }: { initial: ConnectorSettingsDto }) {
         </Field>
       </div>
 
-      <NarratorrSection state={narr} patch={patchNarr} testBody={buildTestBody('narratorr', candidates, candidatePublicUrl)} />
-      <NtfySection state={ntfy} patch={patchNtfy} testBody={buildTestBody('ntfy', candidates, candidatePublicUrl)} />
-      <EmailSection state={email} patch={patchEmail} testBody={buildTestBody('email', candidates, candidatePublicUrl)} />
-      <WebhookSection state={webhook} patch={patchWebhook} testBody={buildTestBody('webhook', candidates, candidatePublicUrl)} />
+      <NarratorrSection state={narr} patch={patchNarr} testBody={narratorrTestBody} />
 
       <div className="sticky bottom-4 flex justify-end">
         <Button variant="primary" loading={update.isPending} onClick={save}>
-          Save settings
+          Save connection
         </Button>
       </div>
+
+      <NotifiersSection notifiers={initial.notifiers} publicUrl={candidatePublicUrl} />
     </div>
   );
 }
@@ -186,151 +123,293 @@ function NarratorrSection({
   patch: Patch<NarratorrState>;
   testBody: TestConnectorBody;
 }) {
+  const test = useTestConnector();
   return (
-    <Section
-      title="Narratorr connection"
-      subtitle="The library this app sends approved requests to. Required for search and requests to work — blank the Host and save to disconnect."
-      testBody={testBody}
-    >
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Host" hint="Hostname or IP, no protocol (e.g. narratorr or 192.168.1.10).">
-          <input className={inputCls} value={state.host} onChange={(e) => patch({ host: e.target.value })} placeholder="narratorr" />
+    <div className="glass-card flex flex-col gap-4 rounded-xl p-4">
+      <div>
+        <p className="font-medium">Narratorr connection</p>
+        <p className="text-xs text-muted-foreground/70">
+          The library this app sends approved requests to. Required for search and requests to work — blank the Host and
+          save to disconnect.
+        </p>
+      </div>
+      <div className="flex flex-col gap-3 border-t border-border/50 pt-4">
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Host" hint="Hostname or IP, no protocol (e.g. narratorr or 192.168.1.10).">
+            <input className={inputCls} value={state.host} onChange={(e) => patch({ host: e.target.value })} placeholder="narratorr" />
+          </Field>
+          <Field label="Port">
+            <input className={inputCls} type="number" value={state.port} onChange={(e) => patch({ port: e.target.value })} placeholder="3000" />
+          </Field>
+        </div>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" className="h-4 w-4 accent-primary" checked={state.useSsl} onChange={(e) => patch({ useSsl: e.target.checked })} />
+          <span>Use SSL (https)</span>
+        </label>
+        <Field label="URL Base" hint="Optional — only if narratorr is behind a reverse-proxy subpath (e.g. /lib).">
+          <input className={inputCls} value={state.urlBase} onChange={(e) => patch({ urlBase: e.target.value })} placeholder="/lib" />
         </Field>
-        <Field label="Port">
-          <input className={inputCls} type="number" value={state.port} onChange={(e) => patch({ port: e.target.value })} placeholder="3000" />
+        <Field label="API key" hint={state.hasKey ? 'Leave blank to keep the current key.' : 'From narratorr → Settings → API.'}>
+          <input className={inputCls} type="password" autoComplete="off" value={state.key} onChange={(e) => patch({ key: e.target.value })} placeholder={secretPlaceholder(state.hasKey, true)} />
         </Field>
       </div>
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          className="h-4 w-4 accent-primary"
-          checked={state.useSsl}
-          onChange={(e) => patch({ useSsl: e.target.checked })}
+      <div className="flex items-center gap-2 border-t border-border/50 pt-3">
+        <Button variant="secondary" size="sm" loading={test.isPending} onClick={() => test.mutate(testBody)}>
+          Test
+        </Button>
+        <span className="text-xs text-muted-foreground/70">Tests the current values above — no save required.</span>
+      </div>
+    </div>
+  );
+}
+
+// --- Notifiers ---------------------------------------------------------------
+
+function NotifiersSection({ notifiers, publicUrl }: { notifiers: NotifierDto[]; publicUrl: string | null }) {
+  const [editing, setEditing] = useState<NotifierFormState | null>(null);
+  const del = useDeleteNotifier();
+
+  return (
+    <div className="glass-card flex flex-col gap-4 rounded-xl p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="font-medium">Notifiers</p>
+          <p className="text-xs text-muted-foreground/70">
+            Add as many destinations as you like — each fires on the events you choose (new requests, new signups).
+          </p>
+        </div>
+        <Button variant="secondary" size="sm" onClick={() => setEditing(newNotifierForm(NOTIFIER_TYPES[0]))}>
+          Add notifier
+        </Button>
+      </div>
+
+      {notifiers.length === 0 && (
+        <p className="border-t border-border/50 pt-4 text-sm text-muted-foreground/70">No notifiers yet.</p>
+      )}
+
+      <div className="flex flex-col gap-2">
+        {notifiers.map((n) => (
+          <NotifierCard
+            key={n.id}
+            notifier={n}
+            {...(isKnownNotifier(n) && { onEdit: () => setEditing(formFromDto(n)) })}
+            onDelete={() => del.mutate(n.id)}
+            deleting={del.isPending && del.variables === n.id}
+          />
+        ))}
+      </div>
+
+      {editing && (
+        <NotifierModal
+          form={editing}
+          setForm={setEditing}
+          publicUrl={publicUrl}
+          onClose={() => setEditing(null)}
         />
-        <span>Use SSL (https)</span>
-      </label>
-      <Field label="URL Base" hint="Optional — only if narratorr is behind a reverse-proxy subpath (e.g. /lib).">
-        <input className={inputCls} value={state.urlBase} onChange={(e) => patch({ urlBase: e.target.value })} placeholder="/lib" />
-      </Field>
-      <Field label="API key" hint={state.hasKey ? 'Leave blank to keep the current key.' : 'From narratorr → Settings → API.'}>
-        <input className={inputCls} type="password" autoComplete="off" value={state.key} onChange={(e) => patch({ key: e.target.value })} placeholder={secretPlaceholder(state.hasKey, true)} />
-      </Field>
-    </Section>
+      )}
+    </div>
   );
 }
 
-function NtfySection({
-  state,
-  patch,
-  testBody,
+function NotifierCard({
+  notifier,
+  onEdit,
+  onDelete,
+  deleting,
 }: {
-  state: NtfyState;
-  patch: Patch<NtfyState>;
-  testBody: TestConnectorBody;
+  notifier: NotifierDto;
+  onEdit?: () => void;
+  onDelete: () => void;
+  deleting: boolean;
 }) {
-  return (
-    <Section
-      title="ntfy"
-      subtitle="Push notifications to your phone via ntfy.sh or a self-hosted server."
-      enabled={state.on}
-      onToggle={(v) => patch({ on: v })}
-      testBody={testBody}
-    >
-      <Field label="Server URL">
-        <input className={inputCls} value={state.url} onChange={(e) => patch({ url: e.target.value })} placeholder="https://ntfy.sh" />
-      </Field>
-      <Field label="Topic">
-        <input className={inputCls} value={state.topic} onChange={(e) => patch({ topic: e.target.value })} placeholder="my-narratorr-requests" />
-      </Field>
-      <Field label="Access token" hint={state.hasToken ? 'Leave blank to keep the current token.' : 'Only needed for protected topics.'}>
-        <input className={inputCls} type="password" autoComplete="off" value={state.token} onChange={(e) => patch({ token: e.target.value })} placeholder={secretPlaceholder(state.hasToken)} />
-      </Field>
-      <Field label="Priority" hint="Optional: min, low, default, high, or max.">
-        <input className={inputCls} value={state.priority} onChange={(e) => patch({ priority: e.target.value })} placeholder="default" />
-      </Field>
-    </Section>
-  );
-}
+  const known = isKnownNotifier(notifier);
+  const typeLabel = known ? NOTIFIER_REGISTRY[notifier.type as NotifierType].label : notifier.type;
+  const eventLabels = notifier.events
+    .map((e) => NOTIFICATION_EVENTS.find((ev) => ev.key === e)?.label ?? e)
+    .join(', ');
 
-function EmailSection({
-  state,
-  patch,
-  testBody,
-}: {
-  state: EmailState;
-  patch: Patch<EmailState>;
-  testBody: TestConnectorBody;
-}) {
-  const onToggleSecure = (on: boolean) => {
-    // Keep the port consistent with the TLS mode unless a custom port is set.
-    const port = on && (state.port === '' || state.port === '587') ? '465' : !on && state.port === '465' ? '587' : state.port;
-    patch({ secure: on, port });
-  };
   return (
-    <Section
-      title="Email (SMTP)"
-      subtitle="Send request notifications to an email address."
-      enabled={state.on}
-      onToggle={(v) => patch({ on: v })}
-      testBody={testBody}
-    >
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="SMTP host">
-          <input className={inputCls} value={state.host} onChange={(e) => patch({ host: e.target.value })} placeholder="smtp.example.com" />
-        </Field>
-        <Field label="Port">
-          <input className={inputCls} type="number" value={state.port} onChange={(e) => patch({ port: e.target.value })} placeholder="587" />
-        </Field>
-      </div>
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          className="h-4 w-4 accent-primary"
-          checked={state.secure}
-          onChange={(e) => onToggleSecure(e.target.checked)}
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-card/50 px-3 py-2">
+      <div className="flex items-center gap-3 min-w-0">
+        <span
+          className={`h-2.5 w-2.5 shrink-0 rounded-full ${notifier.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/40'}`}
+          title={notifier.enabled ? 'Enabled' : 'Disabled'}
         />
-        <span>Implicit TLS (port 465) — leave off for STARTTLS (e.g. 587)</span>
-      </label>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Username" hint="Optional for open relays.">
-          <input className={inputCls} autoComplete="off" value={state.user} onChange={(e) => patch({ user: e.target.value })} placeholder="optional" />
-        </Field>
-        <Field label="Password" hint={state.hasPass ? 'Leave blank to keep.' : 'Optional.'}>
-          <input className={inputCls} type="password" autoComplete="off" value={state.pass} onChange={(e) => patch({ pass: e.target.value })} placeholder={secretPlaceholder(state.hasPass)} />
-        </Field>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium">
+            {notifier.name} <span className="text-xs font-normal text-muted-foreground/70">· {typeLabel}</span>
+          </p>
+          <p className="truncate text-xs text-muted-foreground/70">
+            {known ? eventLabels || 'No events' : 'Unknown type — disabled. Delete to remove.'}
+          </p>
+        </div>
       </div>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="From">
-          <input className={inputCls} value={state.from} onChange={(e) => patch({ from: e.target.value })} placeholder="narratorr-request@example.com" />
-        </Field>
-        <Field label="To (admin)">
-          <input className={inputCls} value={state.to} onChange={(e) => patch({ to: e.target.value })} placeholder="you@example.com" />
-        </Field>
+      <div className="flex shrink-0 items-center gap-2">
+        {onEdit && (
+          <Button variant="ghost" size="sm" onClick={onEdit}>
+            Edit
+          </Button>
+        )}
+        <Button variant="ghost" size="sm" loading={deleting} onClick={onDelete}>
+          Delete
+        </Button>
       </div>
-    </Section>
+    </div>
   );
 }
 
-function WebhookSection({
-  state,
-  patch,
-  testBody,
+function NotifierModal({
+  form,
+  setForm,
+  publicUrl,
+  onClose,
 }: {
-  state: WebhookState;
-  patch: Patch<WebhookState>;
-  testBody: TestConnectorBody;
+  form: NotifierFormState;
+  setForm: (f: NotifierFormState) => void;
+  publicUrl: string | null;
+  onClose: () => void;
 }) {
+  const create = useCreateNotifier();
+  const edit = useUpdateNotifier();
+  const test = useTestNotifier();
+  const [submitted, setSubmitted] = useState(false);
+
+  const def = NOTIFIER_REGISTRY[form.type];
+  const errors = validateNotifierForm(form);
+  const isValid = Object.keys(errors).length === 0;
+  const showError = (k: string) => (submitted ? errors[k] : undefined);
+
+  const setField = (key: string, value: string | boolean) =>
+    setForm({ ...form, fields: { ...form.fields, [key]: value } });
+
+  function save() {
+    setSubmitted(true);
+    if (!isValid) return;
+    const body = buildNotifierBody(form);
+    if (form.id) {
+      edit.mutate({ id: form.id, body }, { onSuccess: onClose });
+    } else {
+      create.mutate(body, { onSuccess: onClose });
+    }
+  }
+
+  function runTest() {
+    setSubmitted(true);
+    if (!isValid) return;
+    test.mutate(buildNotifierTestBody(form, publicUrl));
+  }
+
   return (
-    <Section
-      title="Webhook / Discord"
-      subtitle="POST a JSON payload to any endpoint. Works as a Discord webhook URL out of the box."
-      enabled={state.on}
-      onToggle={(v) => patch({ on: v })}
-      testBody={testBody}
-    >
-      <Field label="Webhook URL">
-        <input className={inputCls} value={state.url} onChange={(e) => patch({ url: e.target.value })} placeholder="https://discord.com/api/webhooks/…" />
-      </Field>
-    </Section>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div
+        className="glass-card flex max-h-[85vh] w-full max-w-lg flex-col gap-4 overflow-y-auto rounded-xl p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p className="font-medium">{form.id ? 'Edit notifier' : 'Add notifier'}</p>
+
+        <Field label="Name" error={showError('name')}>
+          <input className={inputCls} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. My phone" />
+        </Field>
+
+        <Field label="Type">
+          <select
+            className={inputCls}
+            value={form.type}
+            disabled={form.id !== null}
+            onChange={(e) => setForm(newNotifierForm(e.target.value as NotifierType))}
+          >
+            {NOTIFIER_TYPES.map((t) => (
+              <option key={t} value={t}>
+                {NOTIFIER_REGISTRY[t].label}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field label="Events" error={showError('events')} hint="Which events this notifier fires on.">
+          <div className="flex flex-col gap-1.5">
+            {NOTIFICATION_EVENTS.map((ev) => (
+              <label key={ev.key} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-primary"
+                  checked={form.events.includes(ev.key)}
+                  onChange={() => setForm({ ...form, events: toggleEvent(form.events, ev.key) })}
+                />
+                <span>{ev.label}</span>
+              </label>
+            ))}
+          </div>
+        </Field>
+
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" className="h-4 w-4 accent-primary" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />
+          <span>Enabled</span>
+        </label>
+
+        <div className="flex flex-col gap-3 border-t border-border/50 pt-4">
+          {def.fields.map((f) => (
+            <NotifierFieldInput key={f.key} field={f} form={form} setField={setField} error={showError(f.key)} />
+          ))}
+        </div>
+
+        <div className="flex items-center justify-between gap-2 border-t border-border/50 pt-4">
+          <Button variant="secondary" size="sm" loading={test.isPending} onClick={runTest}>
+            Test
+          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button variant="primary" size="sm" loading={create.isPending || edit.isPending} onClick={save}>
+              {form.id ? 'Save' : 'Add'}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NotifierFieldInput({
+  field,
+  form,
+  setField,
+  error,
+}: {
+  field: NotifierField;
+  form: NotifierFormState;
+  setField: (key: string, value: string | boolean) => void;
+  error?: string | undefined;
+}) {
+  const value = form.fields[field.key];
+
+  if (field.kind === 'checkbox') {
+    return (
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" className="h-4 w-4 accent-primary" checked={Boolean(value)} onChange={(e) => setField(field.key, e.target.checked)} />
+        <span>{field.label}</span>
+      </label>
+    );
+  }
+
+  const secretHint = field.secret
+    ? form.has[field.key]
+      ? 'Leave blank to keep the current value.'
+      : field.hint
+    : field.hint;
+  const placeholder = field.secret ? secretPlaceholder(Boolean(form.has[field.key]), field.required) : field.placeholder;
+
+  return (
+    <Field label={field.label} hint={secretHint} error={error}>
+      <input
+        className={inputCls}
+        type={field.kind === 'password' ? 'password' : field.kind === 'number' ? 'number' : 'text'}
+        autoComplete="off"
+        value={typeof value === 'string' ? value : ''}
+        onChange={(e) => setField(field.key, e.target.value)}
+        placeholder={placeholder}
+      />
+    </Field>
   );
 }
