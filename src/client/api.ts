@@ -5,6 +5,7 @@ import type { ListEnvelope } from '@shared/schemas/v1/common';
 import type {
   ConnectorSettingsDto,
   UpdateConnectorSettingsBody,
+  TestConnectorBody,
   TestConnectorResult,
 } from '@shared/schemas/connectors';
 
@@ -116,9 +117,9 @@ export const updateConnectorSettings = (body: UpdateConnectorSettingsBody) =>
     body: JSON.stringify(body),
   })).then(parse<ConnectorSettingsDto>);
 
-export const testConnector = (channel: ConnectorChannel) =>
+export const testConnector = (body: TestConnectorBody) =>
   fetch('/api/admin/settings/connectors/test', opts({
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ channel }),
+    body: JSON.stringify(body),
   })).then(parse<TestConnectorResult>);

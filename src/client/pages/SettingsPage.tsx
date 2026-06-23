@@ -1,9 +1,20 @@
 import { useState, type ReactNode } from 'react';
-import type { ConnectorSettingsDto, UpdateConnectorSettingsBody } from '@shared/schemas/connectors';
+import type { ConnectorSettingsDto, TestConnectorBody } from '@shared/schemas/connectors';
 import { useConnectorSettings, useUpdateConnectors, useTestConnector } from '../hooks';
 import { Button } from '../components/Button';
-import type { ConnectorChannel } from '../api';
 import { initNarratorr, buildNarratorr, type NarratorrState } from './settings-narratorr';
+import {
+  initNtfy,
+  initEmail,
+  initWebhook,
+  buildNtfy,
+  buildEmail,
+  buildWebhook,
+  buildTestBody,
+  type NtfyState,
+  type EmailState,
+  type WebhookState,
+} from './settings-channels';
 
 const inputCls =
   'w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50';
@@ -26,7 +37,7 @@ function Section({
   subtitle,
   enabled,
   onToggle,
-  channel,
+  testBody,
   children,
 }: {
   title: string;
@@ -36,7 +47,9 @@ function Section({
   // so it renders without a toggle; ntfy/email/webhook keep theirs.
   enabled?: boolean;
   onToggle?: (v: boolean) => void;
-  channel?: ConnectorChannel;
+  // The Test request body built from the section's CURRENT form values. Computed by the
+  // parent so the per-section state and the top-level Public URL are both in scope.
+  testBody?: TestConnectorBody;
   children: ReactNode;
 }) {
   const test = useTestConnector();
@@ -61,17 +74,17 @@ function Section({
         )}
       </div>
       {expanded && <div className="flex flex-col gap-3 border-t border-border/50 pt-4">{children}</div>}
-      {expanded && channel && (
+      {expanded && testBody && (
         <div className="flex items-center gap-2 border-t border-border/50 pt-3">
           <Button
             variant="secondary"
             size="sm"
-            loading={test.isPending && test.variables === channel}
-            onClick={() => test.mutate(channel)}
+            loading={test.isPending && test.variables?.channel === testBody.channel}
+            onClick={() => test.mutate(testBody)}
           >
             Test
           </Button>
-          <span className="text-xs text-muted-foreground/70">Tests the last saved settings — save first.</span>
+          <span className="text-xs text-muted-foreground/70">Tests the current values above — no save required.</span>
         </div>
       )}
     </div>
@@ -98,67 +111,9 @@ export function SettingsPage() {
 }
 
 // --- Per-channel form state -------------------------------------------------
-// Grouped per connector so the form composes from focused section components and
-// the `??`/`?.` defaulting lives in these init/build helpers, not the form body.
-
-type NtfyState = { on: boolean; url: string; topic: string; token: string; priority: string; hasToken: boolean };
-type EmailState = {
-  on: boolean;
-  host: string;
-  port: string;
-  secure: boolean;
-  user: string;
-  pass: string;
-  from: string;
-  to: string;
-  hasPass: boolean;
-};
-type WebhookState = { on: boolean; url: string };
-
-const initNtfy = (c: ConnectorSettingsDto['ntfy']): NtfyState => ({
-  on: c !== null,
-  url: c?.url ?? 'https://ntfy.sh',
-  topic: c?.topic ?? '',
-  token: '',
-  priority: c?.priority ?? '',
-  hasToken: c?.hasToken ?? false,
-});
-const initEmail = (c: ConnectorSettingsDto['email']): EmailState => ({
-  on: c !== null,
-  host: c?.host ?? '',
-  port: String(c?.port ?? 587),
-  secure: c?.secure ?? false,
-  user: c?.user ?? '',
-  pass: '',
-  from: c?.from ?? '',
-  to: c?.to ?? '',
-  hasPass: c?.hasPassword ?? false,
-});
-const initWebhook = (c: ConnectorSettingsDto['webhook']): WebhookState => ({ on: c !== null, url: c?.url ?? '' });
-
-const buildNtfy = (s: NtfyState): UpdateConnectorSettingsBody['ntfy'] =>
-  s.on
-    ? {
-        url: s.url.trim(),
-        topic: s.topic.trim(),
-        ...(s.token.trim() ? { token: s.token.trim() } : {}),
-        priority: s.priority.trim() || null,
-      }
-    : null;
-const buildEmail = (s: EmailState): UpdateConnectorSettingsBody['email'] =>
-  s.on
-    ? {
-        host: s.host.trim(),
-        port: Number(s.port) || 587,
-        secure: s.secure,
-        user: s.user.trim() || null,
-        ...(s.pass ? { pass: s.pass } : {}),
-        from: s.from.trim(),
-        to: s.to.trim(),
-      }
-    : null;
-const buildWebhook = (s: WebhookState): UpdateConnectorSettingsBody['webhook'] =>
-  s.on ? { url: s.url.trim() } : null;
+// State types + init/build helpers live in ./settings-channels (ntfy/email/webhook) and
+// ./settings-narratorr — pure logic, unit-tested without a DOM. The form composes from
+// focused section components; the Test body for each is built from current state here.
 
 type Patch<T> = (p: Partial<T>) => void;
 
@@ -176,14 +131,18 @@ function SettingsForm({ initial }: { initial: ConnectorSettingsDto }) {
   const patchEmail: Patch<EmailState> = (p) => setEmail((s) => ({ ...s, ...p }));
   const patchWebhook: Patch<WebhookState> = (p) => setWebhook((s) => ({ ...s, ...p }));
 
+  // The candidate connector payloads for the CURRENT form values — shared by save (PUT)
+  // and Test, so a Test runs against exactly what a save would persist (no save required).
+  const candidatePublicUrl = publicUrl.trim() || null;
+  const candidates = {
+    narratorr: buildNarratorr(narr),
+    ntfy: buildNtfy(ntfy),
+    email: buildEmail(email),
+    webhook: buildWebhook(webhook),
+  };
+
   function save() {
-    update.mutate({
-      publicUrl: publicUrl.trim() || null,
-      narratorr: buildNarratorr(narr),
-      ntfy: buildNtfy(ntfy),
-      email: buildEmail(email),
-      webhook: buildWebhook(webhook),
-    });
+    update.mutate({ publicUrl: candidatePublicUrl, ...candidates });
   }
 
   return (
@@ -204,10 +163,10 @@ function SettingsForm({ initial }: { initial: ConnectorSettingsDto }) {
         </Field>
       </div>
 
-      <NarratorrSection state={narr} patch={patchNarr} />
-      <NtfySection state={ntfy} patch={patchNtfy} />
-      <EmailSection state={email} patch={patchEmail} />
-      <WebhookSection state={webhook} patch={patchWebhook} />
+      <NarratorrSection state={narr} patch={patchNarr} testBody={buildTestBody('narratorr', candidates, candidatePublicUrl)} />
+      <NtfySection state={ntfy} patch={patchNtfy} testBody={buildTestBody('ntfy', candidates, candidatePublicUrl)} />
+      <EmailSection state={email} patch={patchEmail} testBody={buildTestBody('email', candidates, candidatePublicUrl)} />
+      <WebhookSection state={webhook} patch={patchWebhook} testBody={buildTestBody('webhook', candidates, candidatePublicUrl)} />
 
       <div className="sticky bottom-4 flex justify-end">
         <Button variant="primary" loading={update.isPending} onClick={save}>
@@ -218,12 +177,20 @@ function SettingsForm({ initial }: { initial: ConnectorSettingsDto }) {
   );
 }
 
-function NarratorrSection({ state, patch }: { state: NarratorrState; patch: Patch<NarratorrState> }) {
+function NarratorrSection({
+  state,
+  patch,
+  testBody,
+}: {
+  state: NarratorrState;
+  patch: Patch<NarratorrState>;
+  testBody: TestConnectorBody;
+}) {
   return (
     <Section
       title="Narratorr connection"
       subtitle="The library this app sends approved requests to. Required for search and requests to work — blank the Host and save to disconnect."
-      channel="narratorr"
+      testBody={testBody}
     >
       <div className="grid grid-cols-2 gap-3">
         <Field label="Host" hint="Hostname or IP, no protocol (e.g. narratorr or 192.168.1.10).">
@@ -252,14 +219,22 @@ function NarratorrSection({ state, patch }: { state: NarratorrState; patch: Patc
   );
 }
 
-function NtfySection({ state, patch }: { state: NtfyState; patch: Patch<NtfyState> }) {
+function NtfySection({
+  state,
+  patch,
+  testBody,
+}: {
+  state: NtfyState;
+  patch: Patch<NtfyState>;
+  testBody: TestConnectorBody;
+}) {
   return (
     <Section
       title="ntfy"
       subtitle="Push notifications to your phone via ntfy.sh or a self-hosted server."
       enabled={state.on}
       onToggle={(v) => patch({ on: v })}
-      channel="ntfy"
+      testBody={testBody}
     >
       <Field label="Server URL">
         <input className={inputCls} value={state.url} onChange={(e) => patch({ url: e.target.value })} placeholder="https://ntfy.sh" />
@@ -277,7 +252,15 @@ function NtfySection({ state, patch }: { state: NtfyState; patch: Patch<NtfyStat
   );
 }
 
-function EmailSection({ state, patch }: { state: EmailState; patch: Patch<EmailState> }) {
+function EmailSection({
+  state,
+  patch,
+  testBody,
+}: {
+  state: EmailState;
+  patch: Patch<EmailState>;
+  testBody: TestConnectorBody;
+}) {
   const onToggleSecure = (on: boolean) => {
     // Keep the port consistent with the TLS mode unless a custom port is set.
     const port = on && (state.port === '' || state.port === '587') ? '465' : !on && state.port === '465' ? '587' : state.port;
@@ -289,7 +272,7 @@ function EmailSection({ state, patch }: { state: EmailState; patch: Patch<EmailS
       subtitle="Send request notifications to an email address."
       enabled={state.on}
       onToggle={(v) => patch({ on: v })}
-      channel="email"
+      testBody={testBody}
     >
       <div className="grid grid-cols-2 gap-3">
         <Field label="SMTP host">
@@ -328,14 +311,22 @@ function EmailSection({ state, patch }: { state: EmailState; patch: Patch<EmailS
   );
 }
 
-function WebhookSection({ state, patch }: { state: WebhookState; patch: Patch<WebhookState> }) {
+function WebhookSection({
+  state,
+  patch,
+  testBody,
+}: {
+  state: WebhookState;
+  patch: Patch<WebhookState>;
+  testBody: TestConnectorBody;
+}) {
   return (
     <Section
       title="Webhook / Discord"
       subtitle="POST a JSON payload to any endpoint. Works as a Discord webhook URL out of the box."
       enabled={state.on}
       onToggle={(v) => patch({ on: v })}
-      channel="webhook"
+      testBody={testBody}
     >
       <Field label="Webhook URL">
         <input className={inputCls} value={state.url} onChange={(e) => patch({ url: e.target.value })} placeholder="https://discord.com/api/webhooks/…" />
