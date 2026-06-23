@@ -64,4 +64,14 @@ describe('buildNarratorr', () => {
   it('falls back to the default port when the port input is non-numeric', () => {
     expect(buildNarratorr(state({ host: 'n', port: '' }))).toMatchObject({ port: 3000 });
   });
+
+  it('carries a non-default port and useSsl: true into the payload (not hardcoded defaults)', () => {
+    // Guards against buildNarratorr ignoring the parsed port or always sending useSsl:false —
+    // an admin saving 443 + SSL must persist exactly those, not the 3000/http defaults.
+    expect(buildNarratorr(state({ host: 'books.example.com', port: '443', useSsl: true }))).toMatchObject({
+      host: 'books.example.com',
+      port: 443,
+      useSsl: true,
+    });
+  });
 });
