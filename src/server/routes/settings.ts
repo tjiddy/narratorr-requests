@@ -68,17 +68,19 @@ export function registerSettingsRoutes(app: FastifyInstance, deps: AppDeps): voi
     },
   );
 
-  // Fire a live probe against the SAVED config for one connector. Always returns 200
-  // with { success, message } — a failed test is a result, not an HTTP error.
+  // Fire a live probe against the CANDIDATE (current, unsaved) form values for one
+  // connector — so Test confirms config BEFORE a save. Unchanged secrets fall back to the
+  // stored value and the unsaved Public URL is honored; the path NEVER persists. Always
+  // returns 200 with { success, message } — a failed test is a result, not an HTTP error.
   a.post(
     '/api/admin/settings/connectors/test',
     { schema: { body: testConnectorBodySchema, response: { 200: testConnectorResultSchema } } },
     async (request): Promise<TestConnectorResult> => {
       requireAdmin(request);
-      const { channel } = request.body;
+      const body = request.body;
 
-      if (channel === 'narratorr') {
-        const cfg = await deps.connectorSettings.getNarratorrConfig();
+      if (body.channel === 'narratorr') {
+        const cfg = await deps.connectorSettings.buildCandidateNarratorrConfig(body.narratorr);
         if (!cfg) return { success: false, message: 'Narratorr is not configured.' };
         try {
           await new NarratorrClient({ baseUrl: cfg.url, apiKey: cfg.apiKey }).ping();
@@ -88,9 +90,9 @@ export function registerSettingsRoutes(app: FastifyInstance, deps: AppDeps): voi
         }
       }
 
-      const cfg = await deps.connectorSettings.getNotificationsConfig();
-      const ch = buildChannel(channel, cfg);
-      if (!ch) return { success: false, message: `${channel} is not configured.` };
+      const cfg = await deps.connectorSettings.buildCandidateNotificationsConfig(body);
+      const ch = buildChannel(body.channel, cfg);
+      if (!ch) return { success: false, message: `${body.channel} is not configured.` };
       try {
         await ch.send(testContext(cfg));
         return { success: true, message: 'Test notification sent.' };
