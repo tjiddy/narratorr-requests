@@ -275,10 +275,18 @@ describe('settings routes — test endpoint (narratorr)', () => {
   const stubFetch = (impl: () => Promise<Response>) => vi.stubGlobal('fetch', vi.fn(impl));
   const configureNarratorr = () =>
     connectorSettings.update({ narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'k' } });
+  // The candidate mirrors the stored connection but omits the key (the "unchanged" case),
+  // so the stored key resolves in-memory — this exercises the candidate path end-to-end.
   const postNarratorr = () =>
-    app.inject({ method: 'POST', url: TEST_URL, headers: asAdmin, payload: { channel: 'narratorr' } });
+    app.inject({
+      method: 'POST',
+      url: TEST_URL,
+      headers: asAdmin,
+      payload: { channel: 'narratorr', narratorr: { host: 'n.example.com', port: 443, useSsl: true } },
+    });
 
   it('reports not-configured without throwing (always 200)', async () => {
+    // No stored key and the candidate omits one → nothing resolves → clean "not configured".
     const res = await postNarratorr();
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ success: false, message: 'Narratorr is not configured.' });
@@ -322,10 +330,23 @@ describe('settings routes — test endpoint (narratorr)', () => {
 });
 
 describe('settings routes — test endpoint (notification channels)', () => {
-  const postChannel = (channel: 'ntfy' | 'email' | 'webhook') =>
-    app.inject({ method: 'POST', url: TEST_URL, headers: asAdmin, payload: { channel } });
+  // The candidate connector is sent in the body — Test validates the unsaved form values,
+  // so each test carries the channel config it wants to probe (no stored config needed).
+  const CANDIDATE = {
+    ntfy: { url: 'https://ntfy.sh', topic: 'reqs' },
+    email: { host: 'smtp.example.com', port: 587, secure: false, user: null, from: 'a@b.c', to: 'd@e.f' },
+    webhook: { url: 'https://example.com/hook' },
+  } as const;
+  const postChannel = (channel: 'ntfy' | 'email' | 'webhook', candidate?: Record<string, unknown>) =>
+    app.inject({
+      method: 'POST',
+      url: TEST_URL,
+      headers: asAdmin,
+      payload: { channel, ...(candidate ? { [channel]: candidate } : {}) },
+    });
 
   it('reports a not-configured notification channel without throwing', async () => {
+    // No candidate block for the channel → nothing to build → clean "not configured".
     const res = await postChannel('ntfy');
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ success: false, message: 'ntfy is not configured.' });
@@ -333,23 +354,20 @@ describe('settings routes — test endpoint (notification channels)', () => {
 
   it('webhook — success on a 2xx transport response', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
-    await connectorSettings.update({ webhook: { url: 'https://example.com/hook' } });
-    const res = await postChannel('webhook');
+    const res = await postChannel('webhook', CANDIDATE.webhook);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ success: true });
   });
 
   it('webhook — Error throw surfaces the error message (settings.ts:98)', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 500 })));
-    await connectorSettings.update({ webhook: { url: 'https://example.com/hook' } });
-    const res = await postChannel('webhook');
+    const res = await postChannel('webhook', CANDIDATE.webhook);
     expect(res.json()).toEqual({ success: false, message: 'webhook responded 500' });
   });
 
   it('ntfy — success on a 2xx transport response', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 200 })));
-    await connectorSettings.update({ ntfy: { url: 'https://ntfy.sh', topic: 'reqs' } });
-    const res = await postChannel('ntfy');
+    const res = await postChannel('ntfy', CANDIDATE.ntfy);
     expect(res.json()).toMatchObject({ success: true });
   });
 
@@ -357,15 +375,13 @@ describe('settings routes — test endpoint (notification channels)', () => {
     // fetch rejecting with a non-Error value propagates that value as the throw,
     // so `err instanceof Error` is false and the route uses the generic fallback.
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue('not-an-error-object'));
-    await connectorSettings.update({ ntfy: { url: 'https://ntfy.sh', topic: 'reqs' } });
-    const res = await postChannel('ntfy');
+    const res = await postChannel('ntfy', CANDIDATE.ntfy);
     expect(res.json()).toEqual({ success: false, message: 'Unknown error' });
   });
 
   it('email — success when the SMTP transport resolves', async () => {
     sendMail.mockResolvedValue({ messageId: 'x' });
-    await connectorSettings.update({ email: { host: 'smtp.example.com', from: 'a@b.c', to: 'd@e.f' } });
-    const res = await postChannel('email');
+    const res = await postChannel('email', CANDIDATE.email);
     expect(res.json()).toMatchObject({ success: true });
     // Assert the actual message payload the handler builds (from/to from config,
     // subject from the rendered `request.created` notification), not merely that it fired.
@@ -376,8 +392,136 @@ describe('settings routes — test endpoint (notification channels)', () => {
 
   it('email — an Error throw surfaces the error message (settings.ts:98)', async () => {
     sendMail.mockRejectedValue(new Error('SMTP connection refused'));
-    await connectorSettings.update({ email: { host: 'smtp.example.com', from: 'a@b.c', to: 'd@e.f' } });
-    const res = await postChannel('email');
+    const res = await postChannel('email', CANDIDATE.email);
     expect(res.json()).toEqual({ success: false, message: 'SMTP connection refused' });
+  });
+});
+
+describe('settings routes — test endpoint (candidate / unsaved values)', () => {
+  const post = (payload: Record<string, unknown>) =>
+    app.inject({ method: 'POST', url: TEST_URL, headers: asAdmin, payload });
+  const narratorr404 = () =>
+    vi.fn((_input?: unknown, _init?: RequestInit) => Promise.resolve(new Response('{}', { status: 404 })));
+
+  it('probes the CANDIDATE narratorr URL composed from discrete fields, not the stored one', async () => {
+    await connectorSettings.update({ narratorr: { host: 'stored.example.com', port: 443, useSsl: true, apiKey: 'k' } });
+    const fetchMock = narratorr404();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await post({
+      channel: 'narratorr',
+      narratorr: { host: 'candidate.example.com', port: 8080, useSsl: false, urlBase: '/lib', apiKey: 'k' },
+    });
+    expect(res.json()).toMatchObject({ success: true });
+    const calledUrl = String(fetchMock.mock.calls[0]?.[0]);
+    expect(calledUrl).toContain('http://candidate.example.com:8080/lib/api/v1/books/');
+    expect(calledUrl).not.toContain('stored.example.com');
+  });
+
+  it('unchanged secret (apiKey omitted) falls back to the STORED, decrypted key', async () => {
+    await connectorSettings.update({ narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'stored-key' } });
+    const fetchMock = narratorr404();
+    vi.stubGlobal('fetch', fetchMock);
+
+    // apiKey omitted → the "unchanged" case; other fields present.
+    const res = await post({ channel: 'narratorr', narratorr: { host: 'n.example.com', port: 443, useSsl: true } });
+    expect(res.json()).toMatchObject({ success: true });
+    const sentKey = (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
+    expect(sentKey['X-Api-Key']).toBe('stored-key');
+  });
+
+  it('freshly-typed secret is used over the stored one', async () => {
+    await connectorSettings.update({ narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'stored-key' } });
+    const fetchMock = narratorr404();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await post({ channel: 'narratorr', narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'typed-key' } });
+    expect(res.json()).toMatchObject({ success: true });
+    const headers = (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
+    expect(headers['X-Api-Key']).toBe('typed-key');
+  });
+
+  it('narratorr with an omitted key and NO stored key fails cleanly (not configured), no crash', async () => {
+    // No stored narratorr at all; candidate omits the key → nothing to resolve.
+    const res = await post({ channel: 'narratorr', narratorr: { host: 'n.example.com', port: 443, useSsl: true } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ success: false, message: 'Narratorr is not configured.' });
+  });
+
+  it('renders the test notification with the UNSAVED candidate publicUrl', async () => {
+    await connectorSettings.update({ publicUrl: 'https://stored.example.com', webhook: { url: 'https://x/hook' } });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await post({ channel: 'webhook', webhook: { url: 'https://x/hook' }, publicUrl: 'https://candidate.example.com' });
+    expect(res.json()).toMatchObject({ success: true });
+    const body = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    expect(body.url).toBe('https://candidate.example.com/admin');
+    expect(body.url).not.toContain('stored.example.com');
+  });
+
+  it('omitted publicUrl in the test payload falls back to the stored publicUrl', async () => {
+    await connectorSettings.update({ publicUrl: 'https://stored.example.com', webhook: { url: 'https://x/hook' } });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    // publicUrl omitted entirely from the candidate.
+    const res = await post({ channel: 'webhook', webhook: { url: 'https://x/hook' } });
+    expect(res.json()).toMatchObject({ success: true });
+    const body = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    expect(body.url).toBe('https://stored.example.com/admin');
+  });
+
+  it('tests an unsaved ntfy candidate with no stored config — success on a 2xx transport', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 200 })));
+    const res = await post({ channel: 'ntfy', ntfy: { url: 'https://ntfy.sh', topic: 'reqs' }, publicUrl: null });
+    expect(res.json()).toMatchObject({ success: true });
+  });
+
+  it('tests an unsaved email candidate with no stored config — success when the transport resolves', async () => {
+    sendMail.mockResolvedValue({ messageId: 'x' });
+    const res = await post({
+      channel: 'email',
+      email: { host: 'smtp.example.com', port: 587, secure: false, user: null, from: 'a@b.c', to: 'd@e.f' },
+      publicUrl: null,
+    });
+    expect(res.json()).toMatchObject({ success: true });
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ from: 'a@b.c', to: 'd@e.f' }));
+  });
+
+  it('performs NO DB write and never calls update() — on both success and failure', async () => {
+    await connectorSettings.update({ narratorr: { host: 'stored.example.com', port: 443, useSsl: true, apiKey: 'stored-key' } });
+    const before = await connectorSettings.getStored();
+    const updateSpy = vi.spyOn(connectorSettings, 'update');
+
+    vi.stubGlobal('fetch', narratorr404());
+    await post({ channel: 'narratorr', narratorr: { host: 'candidate.example.com', port: 8080, useSsl: false, apiKey: 'typed' } });
+
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('fetch failed'))));
+    await post({ channel: 'narratorr', narratorr: { host: 'candidate.example.com', port: 8080, useSsl: false, apiKey: 'typed' } });
+
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(await connectorSettings.getStored()).toEqual(before);
+  });
+
+  it('does not leak any decrypted secret in the response — only { success, message }', async () => {
+    await connectorSettings.update({ narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'top-secret-key' } });
+    vi.stubGlobal('fetch', narratorr404());
+    const res = await post({ channel: 'narratorr', narratorr: { host: 'n.example.com', port: 443, useSsl: true } });
+    expect(Object.keys(res.json()).sort()).toEqual(['message', 'success']);
+    expect(res.body).not.toContain('top-secret-key');
+  });
+
+  it('rejects an unknown TOP-LEVEL key (body stays .strict) but tolerates unknown NESTED keys', async () => {
+    const unknownTop = await post({ channel: 'narratorr', bogus: true });
+    expect(unknownTop.statusCode).toBe(400);
+
+    vi.stubGlobal('fetch', narratorr404());
+    const lenientNested = await post({
+      channel: 'narratorr',
+      narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'k', futureField: 'ignored' },
+    });
+    expect(lenientNested.statusCode).toBe(200);
+    expect(lenientNested.json()).toMatchObject({ success: true });
   });
 });
