@@ -168,6 +168,11 @@ function NarratorrSection({
 function NotifiersSection({ notifiers, publicUrl }: { notifiers: NotifierDto[]; publicUrl: string | null }) {
   const [editing, setEditing] = useState<NotifierFormState | null>(null);
   const del = useDeleteNotifier();
+  const test = useTestNotifier();
+
+  // Test a SAVED notifier straight from its card: rebuild the candidate from the masked
+  // DTO (secrets blank → omit-to-keep, resolved by id server-side), exactly as the modal does.
+  const testSaved = (n: KnownNotifierDto) => test.mutate(buildNotifierTestBody(formFromDto(n), publicUrl));
 
   return (
     <div className="glass-card flex flex-col gap-4 rounded-xl p-4">
@@ -192,8 +197,12 @@ function NotifiersSection({ notifiers, publicUrl }: { notifiers: NotifierDto[]; 
           <NotifierCard
             key={n.id}
             notifier={n}
-            {...(isKnownNotifier(n) && { onEdit: () => setEditing(formFromDto(n)) })}
+            {...(isKnownNotifier(n) && {
+              onEdit: () => setEditing(formFromDto(n)),
+              onTest: () => testSaved(n),
+            })}
             onDelete={() => del.mutate(n.id)}
+            testing={test.isPending && test.variables?.id === n.id}
             deleting={del.isPending && del.variables === n.id}
           />
         ))}
@@ -214,12 +223,16 @@ function NotifiersSection({ notifiers, publicUrl }: { notifiers: NotifierDto[]; 
 function NotifierCard({
   notifier,
   onEdit,
+  onTest,
   onDelete,
+  testing,
   deleting,
 }: {
   notifier: NotifierDto;
   onEdit?: () => void;
+  onTest?: () => void;
   onDelete: () => void;
+  testing: boolean;
   deleting: boolean;
 }) {
   const known = isKnownNotifier(notifier);
@@ -248,6 +261,11 @@ function NotifierCard({
         {onEdit && (
           <Button variant="ghost" size="sm" onClick={onEdit}>
             Edit
+          </Button>
+        )}
+        {onTest && (
+          <Button variant="ghost" size="sm" loading={testing} onClick={onTest}>
+            Test
           </Button>
         )}
         <Button variant="ghost" size="sm" loading={deleting} onClick={onDelete}>
