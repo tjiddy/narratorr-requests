@@ -72,6 +72,23 @@ describe('Notifier', () => {
     expect(warn).toHaveBeenCalledOnce();
   });
 
+  it('redacts a secret-bearing adapter error before logging it (dispatcher log sink)', async () => {
+    // A network error from a capability-URL adapter can embed the full webhook URL — the
+    // dispatcher must pass it through redact() so the secret never reaches the log line.
+    const leaky = fakeChannel('slack', async () => {
+      throw new Error('request to https://hooks.slack.com/services/T0/B0/XXXXSECRETXXXX failed');
+    });
+    const warn = vi.fn();
+    const n = new Notifier([leaky], null, { ...silentLog, warn });
+
+    await n.notify(payload);
+
+    expect(warn).toHaveBeenCalledOnce();
+    const logged = JSON.stringify(warn.mock.calls[0]![0]);
+    expect(logged).not.toContain('XXXXSECRETXXXX');
+    expect(logged).not.toContain('T0/B0');
+  });
+
   it('renders no deep link when no base URL is configured', async () => {
     const a = fakeChannel('a');
     const n = new Notifier([a], null, silentLog);

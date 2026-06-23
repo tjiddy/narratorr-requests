@@ -12,6 +12,11 @@ vi.mock('nodemailer', () => ({
 import { NtfyChannel } from './adapters/ntfy.js';
 import { WebhookChannel } from './adapters/webhook.js';
 import { EmailChannel } from './adapters/email.js';
+import { DiscordChannel } from './adapters/discord.js';
+import { SlackChannel } from './adapters/slack.js';
+import { TelegramChannel } from './adapters/telegram.js';
+import { PushoverChannel } from './adapters/pushover.js';
+import { GotifyChannel } from './adapters/gotify.js';
 import type { SendContext } from './types.js';
 
 const ctx: SendContext = {
@@ -187,5 +192,220 @@ describe('EmailChannel', () => {
     expect(createTransport).toHaveBeenCalledOnce();
     const opts = createTransport.mock.calls[0]![0];
     expect(opts).not.toHaveProperty('auth');
+  });
+});
+
+// ---- Parity-pack adapters (Discord / Slack / Telegram / Pushover / Gotify) ----
+// Each is exercised for BOTH events, asserts the outbound URL/headers/body shape, throws
+// on a non-2xx, and bounds the call with an AbortSignal.
+
+/** Stub fetch returning 200 for a describe block; returns the mock for per-test overrides. */
+function stubFetch(status = 200): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status }));
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+describe('DiscordChannel', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    fetchMock = stubFetch(204);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('POSTs an embed with allowed_mentions:{parse:[]}, a thumbnail when includeCover + a cover, and a timeout signal', async () => {
+    const ch = new DiscordChannel({ webhookUrl: 'https://discord.com/api/webhooks/1/abc', includeCover: true });
+    await ch.send(ctx);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://discord.com/api/webhooks/1/abc');
+    expect(init.method).toBe('POST');
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    const body = JSON.parse(init.body);
+    expect(body.allowed_mentions).toEqual({ parse: [] });
+    const embed = body.embeds[0];
+    expect(embed.title).toBe('New audiobook request');
+    expect(embed.description).toContain('Dune');
+    expect(embed.url).toBe('https://req.example.com/admin');
+    expect(embed.thumbnail).toEqual({ url: 'https://x/c.jpg' });
+    expect(embed.footer).toEqual({ text: 'narratorr-request' });
+  });
+
+  it('always sends allowed_mentions even on a user.pending event (no thumbnail, no cover)', async () => {
+    const ch = new DiscordChannel({ webhookUrl: 'https://discord.com/api/webhooks/1/abc', includeCover: true });
+    await ch.send(userCtx);
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body);
+    expect(body.allowed_mentions).toEqual({ parse: [] });
+    expect(body.embeds[0].thumbnail).toBeUndefined();
+  });
+
+  it('omits the thumbnail when includeCover is false even if a cover exists', async () => {
+    const ch = new DiscordChannel({ webhookUrl: 'https://discord.com/api/webhooks/1/abc', includeCover: false });
+    await ch.send(ctx);
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).embeds[0].thumbnail).toBeUndefined();
+  });
+
+  it('truncates an over-limit title to 256 chars', async () => {
+    const ch = new DiscordChannel({ webhookUrl: 'https://discord.com/api/webhooks/1/abc', includeCover: true });
+    const longTitle = 'x'.repeat(300);
+    await ch.send({ payload: ctx.payload, message: { ...ctx.message, title: longTitle } });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).embeds[0].title).toHaveLength(256);
+  });
+
+  it('throws on a non-2xx response', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 400 }));
+    const ch = new DiscordChannel({ webhookUrl: 'https://discord.com/api/webhooks/1/abc', includeCover: true });
+    await expect(ch.send(ctx)).rejects.toThrow(/400/);
+  });
+});
+
+describe('SlackChannel', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    fetchMock = stubFetch(200);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('POSTs a bold-title text block with the link, bounded by a timeout', async () => {
+    const ch = new SlackChannel({ webhookUrl: 'https://hooks.slack.com/services/x' });
+    await ch.send(ctx);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://hooks.slack.com/services/x');
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    const body = JSON.parse(init.body);
+    expect(body.text).toContain('*New audiobook request*');
+    expect(body.text).toContain('https://req.example.com/admin');
+  });
+
+  it('delivers a user.pending event', async () => {
+    const ch = new SlackChannel({ webhookUrl: 'https://hooks.slack.com/services/x' });
+    await ch.send(userCtx);
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).text).toContain('New user awaiting approval');
+  });
+
+  it('escapes &/</> in user-supplied content (no raw injection)', async () => {
+    const ch = new SlackChannel({ webhookUrl: 'https://hooks.slack.com/services/x' });
+    await ch.send({ payload: ctx.payload, message: { ...ctx.message, body: 'A <b> & <c> @everyone' } });
+    const text = JSON.parse(fetchMock.mock.calls[0]![1].body).text;
+    expect(text).toContain('&lt;b&gt; &amp; &lt;c&gt;');
+    expect(text).not.toContain('<b>');
+  });
+
+  it('throws on a non-2xx response', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 500 }));
+    const ch = new SlackChannel({ webhookUrl: 'https://hooks.slack.com/services/x' });
+    await expect(ch.send(ctx)).rejects.toThrow(/500/);
+  });
+});
+
+describe('TelegramChannel', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    fetchMock = stubFetch(200);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('POSTs to the bot sendMessage URL with chat_id + HTML parse mode, bounded by a timeout', async () => {
+    const ch = new TelegramChannel({ botToken: '123:secret', chatId: '-42' });
+    await ch.send(ctx);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.telegram.org/bot123:secret/sendMessage');
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    const body = JSON.parse(init.body);
+    expect(body.chat_id).toBe('-42');
+    expect(body.parse_mode).toBe('HTML');
+    expect(body.text).toContain('<b>New audiobook request</b>');
+    expect(body.text).toContain('https://req.example.com/admin');
+  });
+
+  it('delivers a user.pending event', async () => {
+    const ch = new TelegramChannel({ botToken: '123:secret', chatId: '-42' });
+    await ch.send(userCtx);
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).text).toContain('<b>New user awaiting approval</b>');
+  });
+
+  it('HTML-escapes user-supplied content (no raw tag injection)', async () => {
+    const ch = new TelegramChannel({ botToken: '123:secret', chatId: '-42' });
+    await ch.send({ payload: ctx.payload, message: { ...ctx.message, body: '<i>x</i> & @everyone' } });
+    const text = JSON.parse(fetchMock.mock.calls[0]![1].body).text;
+    expect(text).toContain('&lt;i&gt;x&lt;/i&gt; &amp;');
+    expect(text).not.toContain('<i>');
+  });
+
+  it('throws on a non-2xx response', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
+    const ch = new TelegramChannel({ botToken: '123:secret', chatId: '-42' });
+    await expect(ch.send(ctx)).rejects.toThrow(/401/);
+  });
+});
+
+describe('PushoverChannel', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    fetchMock = stubFetch(200);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('POSTs token/user/title/message with priority 0 to the fixed host, bounded by a timeout', async () => {
+    const ch = new PushoverChannel({ appToken: 'app-tok', userKey: 'user-key' });
+    await ch.send(ctx);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.pushover.net/1/messages.json');
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    const body = JSON.parse(init.body);
+    expect(body).toMatchObject({ token: 'app-tok', user: 'user-key', title: 'New audiobook request', priority: 0 });
+    expect(body.message).toContain('https://req.example.com/admin');
+  });
+
+  it('delivers a user.pending event', async () => {
+    const ch = new PushoverChannel({ appToken: 'app-tok', userKey: 'user-key' });
+    await ch.send(userCtx);
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).title).toBe('New user awaiting approval');
+  });
+
+  it('truncates title to 250 and message to 1024', async () => {
+    const ch = new PushoverChannel({ appToken: 'app-tok', userKey: 'user-key' });
+    await ch.send({ payload: ctx.payload, message: { title: 'T'.repeat(300), body: 'B'.repeat(2000), url: null } });
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body);
+    expect(body.title).toHaveLength(250);
+    expect(body.message).toHaveLength(1024);
+  });
+
+  it('throws on a non-2xx response', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 429 }));
+    const ch = new PushoverChannel({ appToken: 'app-tok', userKey: 'user-key' });
+    await expect(ch.send(ctx)).rejects.toThrow(/429/);
+  });
+});
+
+describe('GotifyChannel', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    fetchMock = stubFetch(200);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('POSTs to <serverUrl>/message with the X-Gotify-Key header + priority 5, bounded by a timeout', async () => {
+    const ch = new GotifyChannel({ serverUrl: 'https://gotify.example.com', appToken: 'g-tok' });
+    await ch.send(ctx);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://gotify.example.com/message');
+    expect(init.headers['X-Gotify-Key']).toBe('g-tok');
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    const body = JSON.parse(init.body);
+    expect(body).toMatchObject({ title: 'New audiobook request', priority: 5 });
+    expect(body.message).toContain('https://req.example.com/admin');
+  });
+
+  it('normalizes a trailing slash on the server URL', async () => {
+    const ch = new GotifyChannel({ serverUrl: 'https://gotify.example.com///', appToken: 'g-tok' });
+    await ch.send(userCtx);
+    expect(fetchMock.mock.calls[0]![0]).toBe('https://gotify.example.com/message');
+  });
+
+  it('throws on a non-2xx response', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 403 }));
+    const ch = new GotifyChannel({ serverUrl: 'https://gotify.example.com', appToken: 'g-tok' });
+    await expect(ch.send(ctx)).rejects.toThrow(/403/);
   });
 });

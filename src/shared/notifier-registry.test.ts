@@ -23,7 +23,9 @@ describe('registry shape', () => {
 
   it('isKnownNotifierType discriminates registry keys from strangers', () => {
     expect(isKnownNotifierType('ntfy')).toBe(true);
-    expect(isKnownNotifierType('telegram')).toBe(false);
+    expect(isKnownNotifierType('telegram')).toBe(true);
+    // A type not in the registry (a legacy/renamed type) is a stranger.
+    expect(isKnownNotifierType('apprise')).toBe(false);
   });
 });
 
@@ -80,6 +82,60 @@ describe('webhook configSchema (capability URL secret)', () => {
   it('marks the url field secret + required with a host-hint masked field', () => {
     const sf = NOTIFIER_REGISTRY.webhook.secretFields[0]!;
     expect(sf).toMatchObject({ field: 'url', maskedField: 'hasUrl', required: true, hintField: 'urlHint' });
+  });
+});
+
+describe('parity-pack types (discord/slack/telegram/pushover/gotify)', () => {
+  it('registers all five with adapter-ready config + secret metadata', () => {
+    for (const type of ['discord', 'slack', 'telegram', 'pushover', 'gotify'] as const) {
+      const def = NOTIFIER_REGISTRY[type];
+      expect(def.type).toBe(type);
+      expect(def.fields.length).toBeGreaterThan(0);
+      expect(def.secretFields.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('discord includeCover field carries defaultValue:true and the configSchema defaults it on', () => {
+    const field = NOTIFIER_REGISTRY.discord.fields.find((f) => f.key === 'includeCover')!;
+    expect(field).toMatchObject({ kind: 'checkbox', defaultValue: true });
+    // A config omitting includeCover still resolves to true (server-side belt-and-suspenders).
+    const parsed = NOTIFIER_REGISTRY.discord.configSchema.parse({ webhookUrl: 'https://discord.com/api/webhooks/1/a' }) as {
+      includeCover: boolean;
+    };
+    expect(parsed.includeCover).toBe(true);
+  });
+
+  it('discord/slack webhook URLs are capability-URL secrets (host-hint masked)', () => {
+    for (const type of ['discord', 'slack'] as const) {
+      const sf = NOTIFIER_REGISTRY[type].secretFields.find((s) => s.field === 'webhookUrl')!;
+      expect(sf).toMatchObject({ field: 'webhookUrl', maskedField: 'hasWebhookUrl', required: true, hintField: 'webhookUrlHint' });
+    }
+  });
+
+  it('telegram botToken / pushover keys / gotify appToken are has*-masked secrets without a hint', () => {
+    expect(NOTIFIER_REGISTRY.telegram.secretFields).toEqual([{ field: 'botToken', maskedField: 'hasBotToken', required: true }]);
+    expect(NOTIFIER_REGISTRY.pushover.secretFields).toEqual([
+      { field: 'appToken', maskedField: 'hasAppToken', required: true },
+      { field: 'userKey', maskedField: 'hasUserKey', required: true },
+    ]);
+    expect(NOTIFIER_REGISTRY.gotify.secretFields).toEqual([{ field: 'appToken', maskedField: 'hasAppToken', required: true }]);
+  });
+
+  it('gotify serverUrl is a required NON-secret url field', () => {
+    const field = NOTIFIER_REGISTRY.gotify.fields.find((f) => f.key === 'serverUrl')!;
+    expect(field).toMatchObject({ kind: 'url', secret: false, required: true });
+  });
+
+  it('telegram requires a chatId and rejects a blank one', () => {
+    const schema = NOTIFIER_REGISTRY.telegram.configSchema;
+    expect(schema.safeParse({ botToken: '123:abc', chatId: '42' }).success).toBe(true);
+    expect(schema.safeParse({ botToken: '123:abc', chatId: '   ' }).success).toBe(false);
+  });
+
+  it('masked shapes surface has* / hints and never the secret value', () => {
+    expect(NOTIFIER_REGISTRY.discord.maskedConfigSchema.safeParse({ hasWebhookUrl: true, webhookUrlHint: 'discord.com/…', includeCover: true }).success).toBe(true);
+    expect(NOTIFIER_REGISTRY.telegram.maskedConfigSchema.safeParse({ hasBotToken: true, chatId: '42' }).success).toBe(true);
+    expect(NOTIFIER_REGISTRY.gotify.maskedConfigSchema.safeParse({ serverUrl: 'https://g.x', hasAppToken: true }).success).toBe(true);
   });
 });
 

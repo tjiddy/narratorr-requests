@@ -1,4 +1,5 @@
 import { render } from './render.js';
+import { redact } from './redact.js';
 import type { NotificationChannel, NotificationPayload, NotifierLogger } from './types.js';
 
 /**
@@ -27,7 +28,12 @@ export class Notifier {
           await ch.send({ payload, message });
           this.log.debug({ channel: ch.name, event: payload.event }, 'notification sent');
         } catch (err) {
-          this.log.warn({ channel: ch.name, event: payload.event, err }, 'notification failed');
+          // redact() before logging: a fetch/network error can embed a capability webhook
+          // URL or the Telegram bot-token-in-path — never let it reach the log line raw.
+          this.log.warn(
+            { channel: ch.name, event: payload.event, err: redact(err) },
+            'notification failed',
+          );
         }
       }),
     );
