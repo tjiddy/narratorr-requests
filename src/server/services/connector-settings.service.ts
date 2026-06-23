@@ -22,12 +22,25 @@ const EMPTY: StoredConnectors = {
 };
 
 /**
+ * Bracket a bare IPv6 literal host so it survives `:port` interpolation — `::1` → `[::1]`.
+ * Without brackets, `http://::1:3000` is rejected by `new URL()`. An IPv6 literal contains
+ * `::` or ≥2 colons; the single-colon `host:port` typo (Port is its own field) and IPv4/
+ * hostnames are left as-is, and already-bracketed input is idempotent.
+ */
+function bracketIpv6Host(host: string): string {
+  if (host.startsWith('[')) return host; // already bracketed → leave as-is
+  const colons = (host.match(/:/g) ?? []).length;
+  return colons >= 2 ? `[${host}]` : host;
+}
+
+/**
  * Compose narratorr's effective base URL from the stored discrete fields:
  * `${scheme}://${host}:${port}${urlBase}` — a valid http(s) URL with no trailing
  * slash. e.g. {host:'narratorr',port:3000,useSsl:false,urlBase:null} → http://narratorr:3000.
+ * A bare IPv6 host is bracketed (`::1` → `[::1]`) so the result stays parseable.
  */
 function composeNarratorrUrl(n: { host: string; port: number; useSsl: boolean; urlBase: string | null }): string {
-  return `${n.useSsl ? 'https' : 'http'}://${n.host}:${n.port}${n.urlBase ?? ''}`;
+  return `${n.useSsl ? 'https' : 'http'}://${bracketIpv6Host(n.host)}:${n.port}${n.urlBase ?? ''}`;
 }
 
 /** Minimal structural logger (Fastify's pino logger satisfies it). */
