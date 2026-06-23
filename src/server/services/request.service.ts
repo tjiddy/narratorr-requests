@@ -326,7 +326,8 @@ export class RequestService {
 
   /**
    * Apply a freshly-polled book to a request. Returns the new status if it changed,
-   * else null (so the poller logs/notifies only on transitions). We mirror narratorr's
+   * else null (so the poller logs only on transitions — there is no requester
+   * notification today; see #50). We mirror narratorr's
    * lifecycle and never invent a terminal state on a timer: a request stays `acquiring`
    * for as long as the book is pre-`imported` (a not-found book legitimately sits
    * `wanted` until narratorr's next scheduled search) and only goes terminal when
