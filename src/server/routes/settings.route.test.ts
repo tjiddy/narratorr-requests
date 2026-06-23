@@ -441,6 +441,63 @@ describe('settings routes — test endpoint (candidate / unsaved values)', () =>
     expect(headers['X-Api-Key']).toBe('typed-key');
   });
 
+  it('ntfy candidate with an omitted token reuses the STORED token in the Authorization header (F1)', async () => {
+    await connectorSettings.update({ ntfy: { url: 'https://ntfy.sh', topic: 'reqs', token: 'stored-token' } });
+    const fetchMock = vi.fn((_input?: unknown, _init?: RequestInit) => Promise.resolve(new Response(null, { status: 200 })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    // token omitted → the "unchanged" case; the stored token must reach the probe.
+    const res = await post({ channel: 'ntfy', ntfy: { url: 'https://ntfy.sh', topic: 'reqs' } });
+    expect(res.json()).toMatchObject({ success: true });
+    const headers = (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer stored-token');
+  });
+
+  it('ntfy candidate with a freshly-typed token uses that token, not the stored one (F1)', async () => {
+    await connectorSettings.update({ ntfy: { url: 'https://ntfy.sh', topic: 'reqs', token: 'stored-token' } });
+    const fetchMock = vi.fn((_input?: unknown, _init?: RequestInit) => Promise.resolve(new Response(null, { status: 200 })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await post({ channel: 'ntfy', ntfy: { url: 'https://ntfy.sh', topic: 'reqs', token: 'typed-token' } });
+    expect(res.json()).toMatchObject({ success: true });
+    const headers = (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer typed-token');
+  });
+
+  it('email candidate with an omitted password reuses the STORED password in the SMTP auth (F2)', async () => {
+    sendMail.mockResolvedValue({ messageId: 'x' });
+    // Stored credentials include a user so nodemailer auth is built (auth needs user + pass).
+    await connectorSettings.update({
+      email: { host: 'smtp.example.com', user: 'smtp-user', pass: 'stored-pwd', from: 'a@b.c', to: 'd@e.f' },
+    });
+
+    // pass omitted → the "unchanged" case; the stored, decrypted password must reach the transport.
+    const res = await post({
+      channel: 'email',
+      email: { host: 'smtp.example.com', port: 587, secure: false, user: 'smtp-user', from: 'a@b.c', to: 'd@e.f' },
+    });
+    expect(res.json()).toMatchObject({ success: true });
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ auth: { user: 'smtp-user', pass: 'stored-pwd' } }),
+    );
+  });
+
+  it('email candidate with a freshly-typed password uses that password, not the stored one (F2)', async () => {
+    sendMail.mockResolvedValue({ messageId: 'x' });
+    await connectorSettings.update({
+      email: { host: 'smtp.example.com', user: 'smtp-user', pass: 'stored-pwd', from: 'a@b.c', to: 'd@e.f' },
+    });
+
+    const res = await post({
+      channel: 'email',
+      email: { host: 'smtp.example.com', port: 587, secure: false, user: 'smtp-user', pass: 'typed-pwd', from: 'a@b.c', to: 'd@e.f' },
+    });
+    expect(res.json()).toMatchObject({ success: true });
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ auth: { user: 'smtp-user', pass: 'typed-pwd' } }),
+    );
+  });
+
   it('narratorr with an omitted key and NO stored key fails cleanly (not configured), no crash', async () => {
     // No stored narratorr at all; candidate omits the key → nothing to resolve.
     const res = await post({ channel: 'narratorr', narratorr: { host: 'n.example.com', port: 443, useSsl: true } });
