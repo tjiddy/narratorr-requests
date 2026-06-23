@@ -20,6 +20,15 @@ const EMPTY: StoredConnectors = {
   webhook: null,
 };
 
+/**
+ * Compose narratorr's effective base URL from the stored discrete fields:
+ * `${scheme}://${host}:${port}${urlBase}` — a valid http(s) URL with no trailing
+ * slash. e.g. {host:'narratorr',port:3000,useSsl:false,urlBase:null} → http://narratorr:3000.
+ */
+function composeNarratorrUrl(n: NonNullable<StoredConnectors['narratorr']>): string {
+  return `${n.useSsl ? 'https' : 'http'}://${n.host}:${n.port}${n.urlBase ?? ''}`;
+}
+
 /** Minimal structural logger (Fastify's pino logger satisfies it). */
 interface SettingsLogger {
   warn(obj: unknown, msg?: string): void;
@@ -69,7 +78,9 @@ export class ConnectorSettingsService {
     if (!c.narratorr) return null;
     const apiKey = this.reveal(c.narratorr.apiKey, 'narratorr.apiKey');
     if (!apiKey) return null;
-    return { url: c.narratorr.url, apiKey };
+    // Compose the effective base URL from the discrete fields. NarratorrClient keeps
+    // consuming { url, apiKey }, so the host→URL composition lives entirely here.
+    return { url: composeNarratorrUrl(c.narratorr), apiKey };
   }
 
   /** Notifications config (decrypted) in the shape buildNotifier expects. */
@@ -100,7 +111,15 @@ export class ConnectorSettingsService {
     const c = await this.getStored();
     return {
       publicUrl: c.publicUrl,
-      narratorr: c.narratorr ? { url: c.narratorr.url, hasApiKey: Boolean(c.narratorr.apiKey) } : null,
+      narratorr: c.narratorr
+        ? {
+            host: c.narratorr.host,
+            port: c.narratorr.port,
+            useSsl: c.narratorr.useSsl,
+            urlBase: c.narratorr.urlBase,
+            hasApiKey: Boolean(c.narratorr.apiKey),
+          }
+        : null,
       ntfy: c.ntfy
         ? { url: c.ntfy.url, topic: c.ntfy.topic, hasToken: Boolean(c.ntfy.token), priority: c.ntfy.priority }
         : null,
@@ -162,7 +181,7 @@ export class ConnectorSettingsService {
     if (body === null) return null;
     const apiKey = this.resolveSecret(body.apiKey, cur?.apiKey);
     if (!apiKey) throw badRequest('NARRATORR_KEY_REQUIRED', 'Narratorr requires an API key.');
-    return { url: body.url, apiKey };
+    return { host: body.host, port: body.port, useSsl: body.useSsl, urlBase: body.urlBase ?? null, apiKey };
   }
 
   private resolveNtfy(

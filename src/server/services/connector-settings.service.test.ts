@@ -24,29 +24,63 @@ describe('ConnectorSettingsService', () => {
   });
 
   it('stores the narratorr key encrypted, exposes it decrypted for runtime', async () => {
-    await svc.update({ narratorr: { url: 'https://n.example.com', apiKey: 'secret-key' } });
+    await svc.update({ narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'secret-key' } });
     const stored = await svc.getStored();
     expect(stored.narratorr?.apiKey).toBeDefined();
     expect(codec.isEncrypted(stored.narratorr!.apiKey)).toBe(true);
     expect(stored.narratorr!.apiKey).not.toContain('secret-key');
-    expect(await svc.getNarratorrConfig()).toEqual({ url: 'https://n.example.com', apiKey: 'secret-key' });
+    expect(await svc.getNarratorrConfig()).toEqual({ url: 'https://n.example.com:443', apiKey: 'secret-key' });
+  });
+
+  it('composes the effective base URL from the discrete fields', async () => {
+    // http, no urlBase → host:port; private/internal hosts compose and are returned.
+    await svc.update({ narratorr: { host: 'narratorr', port: 3000, useSsl: false, apiKey: 'k' } });
+    expect((await svc.getNarratorrConfig())?.url).toBe('http://narratorr:3000');
+
+    await svc.update({ narratorr: { host: '192.168.1.10', port: 8080, useSsl: false, apiKey: 'k' } });
+    expect((await svc.getNarratorrConfig())?.url).toBe('http://192.168.1.10:8080');
+
+    await svc.update({ narratorr: { host: 'localhost', port: 3000, useSsl: false, apiKey: 'k' } });
+    expect((await svc.getNarratorrConfig())?.url).toBe('http://localhost:3000');
+
+    // https + urlBase subpath, no trailing slash.
+    await svc.update({ narratorr: { host: 'books.example.com', port: 443, useSsl: true, urlBase: '/lib', apiKey: 'k' } });
+    expect((await svc.getNarratorrConfig())?.url).toBe('https://books.example.com:443/lib');
   });
 
   it('masks secrets in the DTO', async () => {
     await svc.update({
-      narratorr: { url: 'https://n', apiKey: 'abc' },
+      narratorr: { host: 'n', port: 3000, useSsl: false, apiKey: 'abc' },
       ntfy: { url: 'https://ntfy.sh', topic: 't', token: 'super-secret-token' },
     });
     const dto = await svc.getDto();
-    expect(dto.narratorr).toEqual({ url: 'https://n', hasApiKey: true });
+    expect(dto.narratorr).toEqual({ host: 'n', port: 3000, useSsl: false, urlBase: null, hasApiKey: true });
     expect(dto.ntfy).toEqual({ url: 'https://ntfy.sh', topic: 't', hasToken: true, priority: null });
     expect(JSON.stringify(dto)).not.toContain('super-secret-token');
+    expect(JSON.stringify(dto)).not.toContain('abc');
   });
 
   it('keeps the existing secret when the update omits it', async () => {
-    await svc.update({ narratorr: { url: 'https://n', apiKey: 'orig-key' } });
-    await svc.update({ narratorr: { url: 'https://n2' } }); // url only, apiKey omitted
-    expect(await svc.getNarratorrConfig()).toEqual({ url: 'https://n2', apiKey: 'orig-key' });
+    await svc.update({ narratorr: { host: 'n', port: 3000, useSsl: false, apiKey: 'orig-key' } });
+    // host/port/SSL changed, apiKey omitted → existing key preserved (omit-to-keep).
+    await svc.update({ narratorr: { host: 'n2', port: 9000, useSsl: true } });
+    expect(await svc.getNarratorrConfig()).toEqual({ url: 'https://n2:9000', apiKey: 'orig-key' });
+  });
+
+  it('rejects apiKey: "" on a non-null narratorr object (empty key never clears or persists keyless)', async () => {
+    await svc.update({ narratorr: { host: 'n', port: 3000, useSsl: false, apiKey: 'orig' } });
+    await expect(
+      svc.update({ narratorr: { host: 'n', port: 3000, useSsl: false, apiKey: '' } }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    // The prior config is untouched — the rejected update did not persist a keyless record.
+    expect((await svc.getNarratorrConfig())?.apiKey).toBe('orig');
+  });
+
+  it('clears narratorr (and drops the key) when set to null', async () => {
+    await svc.update({ narratorr: { host: 'n', port: 3000, useSsl: false, apiKey: 'k' } });
+    await svc.update({ narratorr: null });
+    expect((await svc.getDto()).narratorr).toBeNull();
+    expect(await svc.getNarratorrConfig()).toBeNull();
   });
 
   it('clears a notification secret when an empty string is sent', async () => {
@@ -56,7 +90,9 @@ describe('ConnectorSettingsService', () => {
   });
 
   it('rejects enabling narratorr without an API key', async () => {
-    await expect(svc.update({ narratorr: { url: 'https://n' } })).rejects.toMatchObject({ statusCode: 400 });
+    await expect(
+      svc.update({ narratorr: { host: 'n', port: 3000, useSsl: false } }),
+    ).rejects.toMatchObject({ statusCode: 400 });
   });
 
   it('disables a connector when set to null', async () => {
@@ -72,7 +108,7 @@ describe('ConnectorSettingsService', () => {
   });
 
   it('treats a secret encrypted under a different key as unconfigured, and warns', async () => {
-    await svc.update({ narratorr: { url: 'https://n', apiKey: 'k' } });
+    await svc.update({ narratorr: { host: 'n', port: 3000, useSsl: false, apiKey: 'k' } });
     // A fresh service with a DIFFERENT key (simulates SESSION_SECRET rotation).
     const otherCodec = new SecretCodec(deriveSettingsKey({ sessionSecret: 'rotated' }));
     const warn = vi.fn();

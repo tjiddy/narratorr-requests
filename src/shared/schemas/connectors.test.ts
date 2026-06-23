@@ -108,6 +108,69 @@ describe('email.pass — secret semantics (.trim().optional())', () => {
   });
 });
 
+describe('narratorr — discrete connection fields (host/port/useSsl/urlBase/apiKey)', () => {
+  const narr = (over: Record<string, unknown>) => ({
+    narratorr: { host: 'narratorr', port: 3000, useSsl: false, ...over },
+  });
+
+  it('accepts a full discrete narratorr object', () => {
+    const parsed = parse({
+      narratorr: { host: 'books.example.com', port: 443, useSsl: true, urlBase: '/lib', apiKey: 'k' },
+    });
+    expect(parsed.narratorr).toEqual({
+      host: 'books.example.com',
+      port: 443,
+      useSsl: true,
+      urlBase: '/lib',
+      apiKey: 'k',
+    });
+  });
+
+  it('accepts private/internal hosts (no SSRF guard on this field)', () => {
+    for (const host of ['narratorr', 'localhost', '127.0.0.1', '192.168.1.10', '10.0.0.5']) {
+      expect(accepts(narr({ host, apiKey: 'k' }))).toBe(true);
+    }
+  });
+
+  it('rejects a host containing a scheme', () => {
+    expect(accepts(narr({ host: 'http://narratorr', apiKey: 'k' }))).toBe(false);
+    expect(accepts(narr({ host: 'https://books.example.com', apiKey: 'k' }))).toBe(false);
+  });
+
+  it('rejects whitespace-only host (.trim().min(1)) and points the issue at host', () => {
+    for (const host of ['   ', '\t', '\n']) {
+      const i = issues(narr({ host }));
+      expect(i[0]?.path).toEqual(['narratorr', 'host']);
+    }
+  });
+
+  it('rejects port 0, 65536, and non-numeric; accepts boundary 1 and 65535; coerces a numeric string', () => {
+    expect(accepts(narr({ port: 0, apiKey: 'k' }))).toBe(false);
+    expect(accepts(narr({ port: 65536, apiKey: 'k' }))).toBe(false);
+    expect(accepts(narr({ port: 'abc', apiKey: 'k' }))).toBe(false);
+    expect(parse(narr({ port: 1, apiKey: 'k' })).narratorr?.port).toBe(1);
+    expect(parse(narr({ port: 65535, apiKey: 'k' })).narratorr?.port).toBe(65535);
+    expect(parse(narr({ port: '8080', apiKey: 'k' })).narratorr?.port).toBe(8080);
+  });
+
+  it('normalizes urlBase: "lib" → /lib, "/lib/" → /lib, "" → null, omitted → absent', () => {
+    expect(parse(narr({ urlBase: 'lib', apiKey: 'k' })).narratorr?.urlBase).toBe('/lib');
+    expect(parse(narr({ urlBase: '/lib/', apiKey: 'k' })).narratorr?.urlBase).toBe('/lib');
+    expect(parse(narr({ urlBase: '', apiKey: 'k' })).narratorr?.urlBase).toBeNull();
+    expect(parse(narr({ apiKey: 'k' })).narratorr).not.toHaveProperty('urlBase');
+  });
+
+  it('apiKey is optional (omittable)', () => {
+    expect(parse(narr({ apiKey: 'k' })).narratorr?.apiKey).toBe('k');
+    expect(parse(narr({})).narratorr?.apiKey).toBeUndefined();
+  });
+
+  it('tolerates an unknown nested key (lenient, not .strict()) while the top-level body stays strict', () => {
+    expect(accepts(narr({ apiKey: 'k', futureField: 'x' }))).toBe(true);
+    expect(accepts({ ...narr({ apiKey: 'k' }), bogusTop: 1 })).toBe(false);
+  });
+});
+
 describe('whitespace-only rejection — every .trim().min(1) field (ZOD-1)', () => {
   // A regression from `.trim().min(1)` to a bare `.min(1)` would accept '   ' and
   // pass every existing positive test; these inputs trim to '' and must reject.
@@ -188,7 +251,7 @@ describe('connectorSettingsDtoSchema — masked GET payload', () => {
   it('accepts a representative masked DTO (secrets surfaced as has* booleans)', () => {
     const dto = {
       publicUrl: 'https://requests.example.com',
-      narratorr: { url: 'https://narratorr.example.com', hasApiKey: true },
+      narratorr: { host: 'narratorr.example.com', port: 443, useSsl: true, urlBase: '/lib', hasApiKey: true },
       ntfy: { url: 'https://ntfy.sh', topic: 'books', hasToken: false, priority: 'high' },
       email: {
         host: 'smtp.example.com',
@@ -209,7 +272,7 @@ describe('connectorSettingsDtoSchema — masked GET payload', () => {
     // with no .trim()/.min(1), unlike the write-path update body.
     const dto = {
       publicUrl: '',
-      narratorr: { url: '  not-normalized  ', hasApiKey: false },
+      narratorr: { host: '  not-normalized  ', port: 0, useSsl: false, urlBase: null, hasApiKey: false },
       ntfy: { url: '', topic: '', hasToken: false, priority: null },
       email: { host: '', port: 0, secure: false, user: null, from: '', to: '', hasPassword: false },
       webhook: { url: '' },
