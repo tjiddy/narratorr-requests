@@ -1,27 +1,21 @@
 import { z } from 'zod';
+import { httpUrl } from './field-helpers.js';
+import { notificationEventSchema, type NotificationEvent } from '../notification-events.js';
+import { NOTIFIER_DEFS, NOTIFIER_TYPES, type NotifierType } from '../notifier-registry.js';
 
 // =============================================================================
-// Connector settings — the narratorr connection + notification channels, edited
-// on the admin Settings page. Three layers:
+// Connector settings — the narratorr connection + a list of N notifiers, edited on
+// the admin Settings page. Layers:
 //   • StoredConnectors  — shape persisted in app_settings.connectors (secrets ENCRYPTED).
-//   • ConnectorSettingsDto — masked GET payload (secrets become has* booleans).
-//   • UpdateConnectorSettingsBody — PUT payload (secret omitted = keep, '' = clear).
+//   • ConnectorSettingsDto — masked GET payload (secrets become has* / host-hints).
+//   • UpdateConnectorSettingsBody — PUT body (publicUrl + narratorr only).
+//   • Create/Update/Test notifier bodies — per-notifier CRUD.
+//
+// Notifiers are a generalized list (Sonarr/Radarr-style Connections): each has a name,
+// a type (from the shared registry), an enabled flag, the events it fires on, and
+// type-specific config. The registry (src/shared/notifier-registry.ts) is the single
+// source of truth for field metadata + config/masked schemas + secret metadata.
 // =============================================================================
-
-const httpUrl = z
-  .string()
-  .trim()
-  .regex(/^https?:\/\//, 'must be an http(s) URL')
-  // Normalize trailing slashes so deep links (`${url}/admin`) and ntfy publish URLs
-  // never get a double slash from a pasted base URL (config.ts used to do this).
-  .transform((v) => v.replace(/\/+$/, ''));
-
-// ntfy priority: the documented set or a 1-5 digit. A typo would otherwise be sent
-// verbatim in the Priority header and silently rejected by ntfy.
-const ntfyPriority = z
-  .string()
-  .trim()
-  .regex(/^(min|low|default|high|max|[1-5])$/, 'must be min/low/default/high/max or 1-5');
 
 // narratorr Host: a bare hostname or IP only — no scheme, path, or whitespace. Port,
 // SSL, and URL Base are discrete fields; `getNarratorrConfig` composes the base URL
@@ -44,27 +38,101 @@ const urlBase = z
     return trimmed ? `/${trimmed}` : null;
   });
 
+// ---- Stored shape -----------------------------------------------------------
 /**
- * As persisted. Secret fields (narratorr.apiKey, ntfy.token, email.pass) hold
- * `enc:v1:…` strings at rest; structurally identical to the decrypted runtime config.
+ * A notifier as persisted. `type` is a BARE STRING (not the registry-derived
+ * `NotifierType`) and `config` is OPAQUE on purpose: a stored row whose type is no
+ * longer in the registry must still parse and round-trip — never be rejected or
+ * dropped by the storage boundary. Secret fields inside `config` hold `enc:v1:…`
+ * strings at rest. `NotifierType` is applied only when narrowing a known row into its
+ * typed config + adapter.
+ */
+export interface StoredNotifier {
+  id: string;
+  name: string;
+  type: string;
+  enabled: boolean;
+  events: NotificationEvent[];
+  config: Record<string, unknown>;
+}
+
+/**
+ * Type-lenient storage schema for a stored notifier — `type: string`, opaque config.
+ * Used to validate/round-trip stored rows; an out-of-registry `type` must still parse.
+ */
+export const storedNotifierSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  type: z.string(),
+  enabled: z.boolean(),
+  events: z.array(notificationEventSchema),
+  config: z.record(z.string(), z.unknown()),
+});
+
+/**
+ * As persisted. The narratorr secret (apiKey) holds an `enc:v1:…` string at rest;
+ * `notifiers` is the generalized notifier list (secrets encrypted inside each config).
  */
 export interface StoredConnectors {
   publicUrl: string | null;
   narratorr: { host: string; port: number; useSsl: boolean; urlBase: string | null; apiKey: string } | null;
-  ntfy: { url: string; topic: string; token: string | null; priority: string | null } | null;
-  email: {
-    host: string;
-    port: number;
-    secure: boolean;
-    user: string | null;
-    pass: string | null;
-    from: string;
-    to: string;
-  } | null;
-  webhook: { url: string } | null;
+  notifiers: StoredNotifier[];
 }
 
-// ---- Masked DTO (GET) -------------------------------------------------------
+// ---- Masked notifier DTO (GET) ----------------------------------------------
+// Discriminated so an unknown stored type is PRESERVED end-to-end, not 500'd:
+//   • Known: { id, name, type: <registry key>, enabled, events, config: <masked> }
+//   • Unknown: { id, name, type: <raw string>, enabled: false, events, unknown: true }
+//     — no config, rendered disabled + deletable.
+const knownNotifierDtoSchemas = NOTIFIER_DEFS.map((def) =>
+  z.object({
+    id: z.string(),
+    name: z.string(),
+    type: z.literal(def.type),
+    enabled: z.boolean(),
+    events: z.array(notificationEventSchema),
+    config: def.maskedConfigSchema,
+  }),
+);
+
+export const unknownNotifierDtoSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  type: z.string(),
+  enabled: z.literal(false),
+  events: z.array(notificationEventSchema),
+  unknown: z.literal(true),
+});
+
+// z.union wants a >=2 tuple; the spread yields an array, so cast to satisfy the type. The
+// inferred type of a ZodTypeAny union collapses to `unknown`, so the DTO TS types below are
+// hand-written (discriminated, accurate) — this schema is the runtime/response validator only.
+export const notifierDtoSchema = z.union([
+  ...knownNotifierDtoSchemas,
+  unknownNotifierDtoSchema,
+] as unknown as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]);
+
+/** A known notifier in the masked GET DTO — `config` carries masked secrets (has* / host-hints). */
+export interface KnownNotifierDto {
+  id: string;
+  name: string;
+  type: NotifierType;
+  enabled: boolean;
+  events: NotificationEvent[];
+  config: Record<string, unknown>;
+}
+/** A stored notifier whose type is no longer in the registry — disabled, deletable, no config. */
+export interface UnknownNotifierDto {
+  id: string;
+  name: string;
+  type: string;
+  enabled: false;
+  events: NotificationEvent[];
+  unknown: true;
+}
+export type NotifierDto = KnownNotifierDto | UnknownNotifierDto;
+
+// ---- Masked connector-settings DTO (GET) ------------------------------------
 export const connectorSettingsDtoSchema = z.object({
   publicUrl: z.string().nullable(),
   narratorr: z
@@ -76,29 +144,18 @@ export const connectorSettingsDtoSchema = z.object({
       hasApiKey: z.boolean(),
     })
     .nullable(),
-  ntfy: z
-    .object({ url: z.string(), topic: z.string(), hasToken: z.boolean(), priority: z.string().nullable() })
-    .nullable(),
-  email: z
-    .object({
-      host: z.string(),
-      port: z.number(),
-      secure: z.boolean(),
-      user: z.string().nullable(),
-      from: z.string(),
-      to: z.string(),
-      hasPassword: z.boolean(),
-    })
-    .nullable(),
-  webhook: z.object({ url: z.string() }).nullable(),
+  notifiers: z.array(notifierDtoSchema),
 });
-export type ConnectorSettingsDto = z.infer<typeof connectorSettingsDtoSchema>;
+/** Hand-written (the runtime schema's `notifiers` infers `unknown[]`; this keeps it typed). */
+export interface ConnectorSettingsDto {
+  publicUrl: string | null;
+  narratorr: { host: string; port: number; useSsl: boolean; urlBase: string | null; hasApiKey: boolean } | null;
+  notifiers: NotifierDto[];
+}
 
-// ---- Per-connector candidate shapes -----------------------------------------
-// Shared by the PUT body and the Test body so the candidate sent to Test mirrors a
-// save exactly (secrets optional; omit-to-keep). Each is the connector's own object,
-// non-`.strict()` per CLAUDE.md (tolerate provider/UI drift on unused nested keys) —
-// the .strict() guard lives on the top-level bodies only.
+// ---- narratorr connector (shared by PUT + Test) -----------------------------
+// Non-`.strict()` per CLAUDE.md (tolerate provider/UI drift on unused nested keys) —
+// the .strict() guard lives on the top-level bodies only. Secrets optional (omit-to-keep).
 const narratorrConnectorSchema = z.object({
   host: narratorrHost,
   port: z.coerce.number().int().min(1).max(65535),
@@ -106,52 +163,26 @@ const narratorrConnectorSchema = z.object({
   urlBase: urlBase.nullable().optional(),
   apiKey: z.string().trim().optional(),
 });
-const ntfyConnectorSchema = z.object({
-  url: httpUrl,
-  topic: z.string().trim().min(1),
-  token: z.string().trim().optional(),
-  priority: ntfyPriority.nullable().optional(),
-});
-const emailConnectorSchema = z.object({
-  host: z.string().trim().min(1),
-  port: z.coerce.number().int().min(1).max(65535).optional(),
-  secure: z.boolean().optional(),
-  user: z.string().trim().nullable().optional(),
-  pass: z.string().trim().optional(),
-  from: z.string().trim().min(1),
-  to: z.string().trim().min(1),
-});
-const webhookConnectorSchema = z.object({ url: httpUrl });
 
-// ---- Update body (PUT) ------------------------------------------------------
-// Per connector: omitted (undefined) → leave unchanged; null → disable/clear; object → set.
-// Secret fields inside: omitted → keep existing secret; '' → clear it; non-empty → replace.
+// ---- Update body (PUT /connectors) ------------------------------------------
+// Now carries ONLY publicUrl + narratorr — the notification channels moved to the
+// per-notifier CRUD routes. publicUrl: omitted → keep, null → clear, value → set.
 export const updateConnectorSettingsBodySchema = z
   .object({
     publicUrl: httpUrl.nullable().optional(),
     narratorr: narratorrConnectorSchema.nullable().optional(),
-    ntfy: ntfyConnectorSchema.nullable().optional(),
-    email: emailConnectorSchema.nullable().optional(),
-    webhook: webhookConnectorSchema.nullable().optional(),
   })
   .strict();
 export type UpdateConnectorSettingsBody = z.infer<typeof updateConnectorSettingsBodySchema>;
 
-// ---- Test a connector -------------------------------------------------------
-// The Test body carries the same candidate connector fields as a PUT plus a top-level
-// `publicUrl`, so Test validates the CURRENT (unsaved) form values without persisting.
-// Secrets stay optional (omit-to-keep → falls back to the stored secret server-side);
-// `publicUrl` is not a secret, so an omitted value falls back to the stored one while an
-// explicit value (including null) is used as given. Top-level stays `.strict()`.
-export const CONNECTOR_KEYS = ['narratorr', 'ntfy', 'email', 'webhook'] as const;
+// ---- Test the narratorr connection (POST /connectors/test) -------------------
+// Probes the CURRENT (unsaved) narratorr form values without persisting. Secrets stay
+// optional (omit-to-keep → falls back to the stored secret server-side). Notifier tests
+// have their own route + body (notifierTestBodySchema) below.
 export const testConnectorBodySchema = z
   .object({
-    channel: z.enum(CONNECTOR_KEYS),
-    publicUrl: httpUrl.nullable().optional(),
+    channel: z.literal('narratorr'),
     narratorr: narratorrConnectorSchema.nullable().optional(),
-    ntfy: ntfyConnectorSchema.nullable().optional(),
-    email: emailConnectorSchema.nullable().optional(),
-    webhook: webhookConnectorSchema.nullable().optional(),
   })
   .strict();
 export type TestConnectorBody = z.infer<typeof testConnectorBodySchema>;
@@ -161,3 +192,35 @@ export const testConnectorResultSchema = z.object({
   message: z.string(),
 });
 export type TestConnectorResult = z.infer<typeof testConnectorResultSchema>;
+
+// ---- Notifier CRUD bodies ----------------------------------------------------
+// The envelope is validated here (name/type/enabled/events); the type-specific `config`
+// is validated server-side against the registry's per-type `configSchema` (the type is
+// only known at runtime). `config` stays opaque at this layer.
+const notifierWriteBodySchema = z
+  .object({
+    name: z.string().trim().min(1),
+    type: z.enum(NOTIFIER_TYPES),
+    enabled: z.boolean(),
+    events: z.array(notificationEventSchema).min(1),
+    config: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+export const createNotifierBodySchema = notifierWriteBodySchema;
+export const updateNotifierBodySchema = notifierWriteBodySchema;
+export type CreateNotifierBody = z.infer<typeof createNotifierBodySchema>;
+export type UpdateNotifierBody = z.infer<typeof updateNotifierBodySchema>;
+
+// ---- Test a notifier candidate (POST /notifiers/test) -----------------------
+// Fires a sample `request.created` through the built channel from the CURRENT (unsaved)
+// form values — no save required. `id` (edit) → omit-to-keep secrets against the stored
+// notifier; absent (create) → required secrets must be present. Always returns 200.
+export const notifierTestBodySchema = z
+  .object({
+    type: z.enum(NOTIFIER_TYPES),
+    config: z.record(z.string(), z.unknown()),
+    id: z.string().optional(),
+    publicUrl: httpUrl.nullable().optional(),
+  })
+  .strict();
+export type NotifierTestBody = z.infer<typeof notifierTestBodySchema>;

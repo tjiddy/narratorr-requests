@@ -68,6 +68,10 @@ import {
   useDecide,
   useUpdateConnectors,
   useTestConnector,
+  useCreateNotifier,
+  useUpdateNotifier,
+  useDeleteNotifier,
+  useTestNotifier,
   useSearch,
   useLocalAuth,
   useTheme,
@@ -225,6 +229,80 @@ describe('useTestConnector', () => {
     expect(error).toHaveBeenCalledWith('upstream down');
     h.onError(new Error('x'));
     expect(error).toHaveBeenCalledWith('Test failed');
+  });
+});
+
+describe('notifier mutation hooks — cache invalidation + toast contract', () => {
+  // The notifier list is carried by the connectors query, so create/update/delete must
+  // invalidate that exact key (not setQueryData) to refetch the committed list + reset
+  // freshly-masked secrets. Pin the verbatim key so a drift would fail here.
+  const CONNECTORS_KEY = ['admin', 'settings', 'connectors'];
+
+  it('useCreateNotifier invalidates the connectors key and toasts "Notifier added"', () => {
+    cb(useCreateNotifier()).onSuccess();
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: CONNECTORS_KEY });
+    expect(hoisted.qc.setQueryData).not.toHaveBeenCalled();
+    expect(success).toHaveBeenCalledWith('Notifier added');
+  });
+
+  it('useCreateNotifier surfaces ApiError message, else "Could not add notifier"', () => {
+    const h = cb(useCreateNotifier());
+    h.onError(new ApiError(400, 'B', 'bad notifier'));
+    expect(error).toHaveBeenCalledWith('bad notifier');
+    h.onError(new Error('x'));
+    expect(error).toHaveBeenCalledWith('Could not add notifier');
+  });
+
+  it('useUpdateNotifier invalidates the connectors key and toasts "Notifier saved"', () => {
+    cb(useUpdateNotifier()).onSuccess();
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: CONNECTORS_KEY });
+    expect(success).toHaveBeenCalledWith('Notifier saved');
+  });
+
+  it('useUpdateNotifier surfaces ApiError message, else "Could not save notifier"', () => {
+    const h = cb(useUpdateNotifier());
+    h.onError(new ApiError(404, 'N', 'gone'));
+    expect(error).toHaveBeenCalledWith('gone');
+    h.onError(new Error('x'));
+    expect(error).toHaveBeenCalledWith('Could not save notifier');
+  });
+
+  it('useDeleteNotifier invalidates the connectors key and toasts "Notifier deleted"', () => {
+    cb(useDeleteNotifier()).onSuccess();
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: CONNECTORS_KEY });
+    expect(success).toHaveBeenCalledWith('Notifier deleted');
+  });
+
+  it('useDeleteNotifier surfaces ApiError message, else "Could not delete notifier"', () => {
+    const h = cb(useDeleteNotifier());
+    h.onError(new ApiError(404, 'N', 'missing'));
+    expect(error).toHaveBeenCalledWith('missing');
+    h.onError(new Error('x'));
+    expect(error).toHaveBeenCalledWith('Could not delete notifier');
+  });
+});
+
+describe('useTestNotifier — routes the probe result to a toast', () => {
+  it('routes a success result to toast.success and a failure to toast.error', () => {
+    const h = cb(useTestNotifier());
+    h.onSuccess({ success: true, message: 'Test notification sent.' } as TestConnectorResult);
+    expect(success).toHaveBeenCalledWith('Test notification sent.');
+    h.onSuccess({ success: false, message: 'webhook responded 500' } as TestConnectorResult);
+    expect(error).toHaveBeenCalledWith('webhook responded 500');
+  });
+
+  it('surfaces ApiError message, else "Test failed", on error', () => {
+    const h = cb(useTestNotifier());
+    h.onError(new ApiError(500, 'E', 'upstream down'));
+    expect(error).toHaveBeenCalledWith('upstream down');
+    h.onError(new Error('x'));
+    expect(error).toHaveBeenCalledWith('Test failed');
+  });
+
+  it('does not touch the connectors cache (a probe never mutates state)', () => {
+    cb(useTestNotifier()).onSuccess({ success: true, message: 'ok' } as TestConnectorResult);
+    expect(hoisted.qc.invalidateQueries).not.toHaveBeenCalled();
+    expect(hoisted.qc.setQueryData).not.toHaveBeenCalled();
   });
 });
 

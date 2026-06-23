@@ -4,7 +4,7 @@ import type { BadgeVariant } from '../components/Badge';
 // Pure display logic for the user's request quota. Pulled out of MyRequestsPage so
 // the null-vs-zero decisions (unlimited cap, at-cap, zero limit) are unit-testable
 // without a DOM (vitest node env), matching the build*/init* helper pattern in
-// settings-narratorr.ts / settings-channels.ts.
+// settings-narratorr.ts / settings-notifiers.ts.
 //
 // The server owns quota semantics (RequestService.resolveLimit / quotaUsage):
 //   - limit === null      → unlimited (admins or no cap); remaining is null too

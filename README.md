@@ -10,8 +10,8 @@ progress to **available** on their **My requests** page. Notifications are admin
 request to review, a new signup awaiting approval — not requester-facing.
 
 It is a **plug-in sidecar** that talks to Narratorr only over its public `/api/v1` HTTP
-surface (API key). It has no other coupling. The Narratorr connection and the notification
-channels (ntfy / email / webhook) are configured in the in-app **Settings** page after first
+surface (API key). It has no other coupling. The Narratorr connection and the notifiers
+(a list of ntfy / email / webhook destinations, each routed to the events it fires on) are configured in the in-app **Settings** page after first
 boot — not via environment variables — and stored encrypted in the DB, so spinning it up
 takes a minimal env (a session secret + auth) and the rest is point-and-click.
 
@@ -35,8 +35,9 @@ pnpm dev                      # server :3000, client :5173
 ```
 
 Open http://localhost:5173, then go to **Settings** and enter a Narratorr URL + API key
-(use **Test** to verify) to enable search and requests. Turn on a notification channel the
-same way. Until Narratorr is configured, search/requests return a "not connected yet" notice.
+(use **Test** to verify) to enable search and requests. Add a notifier the same way — pick a
+type, choose which events it fires on, and **Test** before saving. Until Narratorr is
+configured, search/requests return a "not connected yet" notice.
 
 ## Auth
 
@@ -68,7 +69,7 @@ Authentication (who you are) is **pluggable**; authorization (who may request) i
 The admin **Settings** page configures, and stores encrypted at rest:
 
 - **Narratorr connection** — base URL + API key (the lifeline; required for search/requests).
-- **Notifications** — ntfy, email (SMTP), and a generic/Discord webhook; each with a **Test** button.
+- **Notifiers** — a list of destinations (ntfy, email/SMTP, generic/Discord webhook). Each has a name, an enabled toggle, the events it fires on (new request / new signup), and a **Test** button — add as many as you like, including several of the same type routed to different events.
 - **Public URL** — used to deep-link notifications back to the request queue.
 
 Secrets are never returned to the browser (the form shows `•••••••• (unchanged)`). The at-rest key

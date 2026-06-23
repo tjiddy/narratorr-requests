@@ -1,7 +1,7 @@
 // Pure parse-and-guard for the per-user request-quota input. Pulled out of
 // QuotaControl.saveQuota (UserDetailPage.tsx) so the null-vs-zero-vs-junk decision
 // is unit-testable without a DOM (vitest node env), matching the helper pattern in
-// quota-display.ts / settings-narratorr.ts / settings-channels.ts.
+// quota-display.ts / settings-narratorr.ts / settings-notifiers.ts.
 //
 // Behaviour-preserving extraction of the original inline logic:
 //   const trimmed = quota.trim();
