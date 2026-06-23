@@ -5,9 +5,7 @@ import { Badge } from '../components/Badge';
 import { Button } from '../components/Button';
 import { EmptyState } from '../components/EmptyState';
 import { InboxIcon } from '../components/icons';
-
-// Surface pending users first (the admin's action list), then active, then rejected.
-const STATUS_ORDER: Record<UserDto['status'], number> = { pending: 0, active: 1, rejected: 2 };
+import { sortUsersByStatus } from './sortUsersByStatus';
 
 type UpdateUser = ReturnType<typeof useUpdateUser>;
 type UserPatch = Parameters<UpdateUser['mutate']>[0]['patch'];
@@ -17,7 +15,7 @@ export function UsersPage() {
   const users = useUsers();
   const update = useUpdateUser();
 
-  const rows = users.data ? [...users.data.data].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status]) : [];
+  const rows = users.data ? sortUsersByStatus(users.data.data) : [];
   const pendingCount = rows.filter((u) => u.status === 'pending').length;
 
   return (

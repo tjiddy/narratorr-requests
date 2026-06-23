@@ -8,6 +8,7 @@ import { StatusBadge } from '../components/StatusBadge';
 import { EmptyState } from '../components/EmptyState';
 import { InboxIcon } from '../components/icons';
 import { requestFailureReason } from '../components/request-failure';
+import { parseQuota } from './parseQuota';
 
 type UpdateUser = ReturnType<typeof useUpdateUser>;
 type UserRequests = ReturnType<typeof useUserRequests>;
@@ -149,9 +150,8 @@ function QuotaControl({ user, update }: { user: UserDto; update: UpdateUser }) {
   const [quota, setQuota] = useState(user.requestQuota === null ? '' : String(user.requestQuota));
 
   const saveQuota = () => {
-    const trimmed = quota.trim();
-    const value = trimmed === '' ? null : Number(trimmed);
-    if (value !== null && (!Number.isInteger(value) || value < 0)) return; // ignore junk input
+    const value = parseQuota(quota);
+    if (value === undefined) return; // ignore junk input
     update.mutate({ publicId: user.publicId, patch: { requestQuota: value } });
   };
 
