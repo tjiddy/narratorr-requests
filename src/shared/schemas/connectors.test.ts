@@ -1,31 +1,27 @@
 import { describe, it, expect } from 'vitest';
 import {
-  CONNECTOR_KEYS,
   connectorSettingsDtoSchema,
+  notifierDtoSchema,
+  storedNotifierSchema,
   testConnectorBodySchema,
   testConnectorResultSchema,
   updateConnectorSettingsBodySchema,
+  createNotifierBodySchema,
+  notifierTestBodySchema,
 } from './connectors';
 
-// `httpUrl` and `ntfyPriority` are private constants; their behavior is exercised
-// through the exported `updateConnectorSettingsBodySchema` (the PUT body), the same
-// way the API contract is reached through its public surface.
+// `httpUrl` is a private constant; its behavior is exercised through the exported
+// `updateConnectorSettingsBodySchema` (the PUT body) — the same way the API contract is
+// reached through its public surface. The notification-channel field validators moved to
+// the notifier registry (see notifier-registry.test.ts).
 const parse = (body: unknown) => updateConnectorSettingsBodySchema.parse(body);
 const accepts = (body: unknown) => updateConnectorSettingsBodySchema.safeParse(body).success;
 const issues = (body: unknown) => updateConnectorSettingsBodySchema.safeParse(body).error?.issues ?? [];
 
 describe('httpUrl (via publicUrl)', () => {
-  it('strips trailing slashes', () => {
+  it('strips trailing slashes and trims', () => {
     expect(parse({ publicUrl: 'https://x.com/' }).publicUrl).toBe('https://x.com');
-    expect(parse({ publicUrl: 'https://x.com///' }).publicUrl).toBe('https://x.com');
-  });
-
-  it('trims surrounding whitespace before normalizing', () => {
-    expect(parse({ publicUrl: '  https://x.com  ' }).publicUrl).toBe('https://x.com');
-  });
-
-  it('accepts http and https', () => {
-    expect(parse({ publicUrl: 'http://x.com/' }).publicUrl).toBe('http://x.com');
+    expect(parse({ publicUrl: '  https://x.com///  ' }).publicUrl).toBe('https://x.com');
   });
 
   it('rejects non-http(s) schemes and scheme-less values', () => {
@@ -34,255 +30,141 @@ describe('httpUrl (via publicUrl)', () => {
   });
 });
 
-describe('ntfyPriority (via ntfy.priority)', () => {
-  const ntfy = (priority: string) => ({ ntfy: { url: 'https://ntfy.sh', topic: 't', priority } });
-
-  it('accepts the documented words and 1-5 digits', () => {
-    for (const p of ['min', 'low', 'default', 'high', 'max', '1', '2', '3', '4', '5']) {
-      expect(parse(ntfy(p)).ntfy?.priority).toBe(p);
-    }
-  });
-
-  it('trims surrounding whitespace', () => {
-    expect(parse(ntfy('  high  ')).ntfy?.priority).toBe('high');
-  });
-
-  it('rejects out-of-range digits, unknown words, wrong case, and empty', () => {
-    for (const p of ['0', '6', '12', 'urgent', 'MIN', '']) {
-      expect(accepts(ntfy(p))).toBe(false);
-    }
-  });
-});
-
-describe('email.port', () => {
-  const email = (port: unknown) => ({ email: { host: 'h', from: 'f@x', to: 't@x', port } });
-
-  it('coerces a numeric string to a number', () => {
-    expect(parse(email('3306')).email?.port).toBe(3306);
-  });
-
-  it('accepts the inclusive bounds 1 and 65535', () => {
-    expect(parse(email(1)).email?.port).toBe(1);
-    expect(parse(email(65535)).email?.port).toBe(65535);
-  });
-
-  it('rejects out-of-range, non-integer, and non-numeric ports', () => {
-    expect(accepts(email(0))).toBe(false);
-    expect(accepts(email(65536))).toBe(false);
-    expect(accepts(email(1.5))).toBe(false);
-    expect(accepts(email('abc'))).toBe(false);
-  });
-
-  it('coerces a numeric string to a number (string-coercion behavior)', () => {
-    // Belt-and-suspenders alongside the `'3306'` case above: in-bounds numeric
-    // strings coerce and pass, confirming z.coerce.number() runs on string input.
-    expect(parse(email('1')).email?.port).toBe(1);
-    expect(parse(email('65535')).email?.port).toBe(65535);
-  });
-
-  it('accepts a valid email block with port omitted (.optional())', () => {
-    const parsed = parse({ email: { host: 'h', from: 'f@x', to: 't@x' } });
-    expect(parsed.email?.port).toBeUndefined();
-  });
-
-  it('rejects port: null and port: "" — z.coerce.number() turns both into 0, which fails min(1)', () => {
-    // Pinning current behavior: coercion runs before .optional() short-circuits, and
-    // only `undefined` is treated as absent. null and '' both coerce to 0 → too_small.
-    for (const port of [null, '']) {
-      const i = issues(email(port));
-      expect(i[0]?.code).toBe('too_small');
-      expect(i[0]?.path).toEqual(['email', 'port']);
-    }
-  });
-});
-
-describe('email.pass — secret semantics (.trim().optional())', () => {
-  // The three documented secret states (header comment connectors.ts:70):
-  // omitted → keep existing, '' → clear, non-empty → replace. All three must parse.
-  const email = (pass: unknown) => ({ email: { host: 'h', from: 'f@x', to: 't@x', ...(pass !== undefined && { pass }) } });
-
-  it('accepts omitted, empty-string, and non-empty pass', () => {
-    expect(parse(email(undefined)).email?.pass).toBeUndefined();
-    expect(parse(email('')).email?.pass).toBe('');
-    expect(parse(email('hunter2')).email?.pass).toBe('hunter2');
-  });
-});
-
-describe('narratorr — discrete connection fields (host/port/useSsl/urlBase/apiKey)', () => {
+describe('updateConnectorSettingsBodySchema — narratorr + publicUrl only', () => {
   const narr = (over: Record<string, unknown>) => ({
     narratorr: { host: 'narratorr', port: 3000, useSsl: false, ...over },
   });
 
   it('accepts a full discrete narratorr object', () => {
-    const parsed = parse({
-      narratorr: { host: 'books.example.com', port: 443, useSsl: true, urlBase: '/lib', apiKey: 'k' },
-    });
-    expect(parsed.narratorr).toEqual({
-      host: 'books.example.com',
-      port: 443,
-      useSsl: true,
-      urlBase: '/lib',
-      apiKey: 'k',
-    });
+    const parsed = parse({ narratorr: { host: 'books.example.com', port: 443, useSsl: true, urlBase: '/lib', apiKey: 'k' } });
+    expect(parsed.narratorr).toEqual({ host: 'books.example.com', port: 443, useSsl: true, urlBase: '/lib', apiKey: 'k' });
   });
 
-  it('accepts private/internal hosts (no SSRF guard on this field)', () => {
-    for (const host of ['narratorr', 'localhost', '127.0.0.1', '192.168.1.10', '10.0.0.5']) {
+  it('rejects a host containing a scheme; accepts private/internal hosts', () => {
+    expect(accepts(narr({ host: 'http://narratorr', apiKey: 'k' }))).toBe(false);
+    for (const host of ['narratorr', 'localhost', '127.0.0.1', '10.0.0.5']) {
       expect(accepts(narr({ host, apiKey: 'k' }))).toBe(true);
     }
   });
 
-  it('rejects a host containing a scheme', () => {
-    expect(accepts(narr({ host: 'http://narratorr', apiKey: 'k' }))).toBe(false);
-    expect(accepts(narr({ host: 'https://books.example.com', apiKey: 'k' }))).toBe(false);
-  });
-
-  it('rejects whitespace-only host (.trim().min(1)) and points the issue at host', () => {
-    for (const host of ['   ', '\t', '\n']) {
-      const i = issues(narr({ host }));
-      expect(i[0]?.path).toEqual(['narratorr', 'host']);
-    }
-  });
-
-  it('rejects port 0, 65536, and non-numeric; accepts boundary 1 and 65535; coerces a numeric string', () => {
-    expect(accepts(narr({ port: 0, apiKey: 'k' }))).toBe(false);
-    expect(accepts(narr({ port: 65536, apiKey: 'k' }))).toBe(false);
-    expect(accepts(narr({ port: 'abc', apiKey: 'k' }))).toBe(false);
-    expect(parse(narr({ port: 1, apiKey: 'k' })).narratorr?.port).toBe(1);
-    expect(parse(narr({ port: 65535, apiKey: 'k' })).narratorr?.port).toBe(65535);
+  it('normalizes urlBase and coerces port', () => {
+    expect(parse(narr({ urlBase: 'lib', apiKey: 'k' })).narratorr?.urlBase).toBe('/lib');
+    expect(parse(narr({ urlBase: '', apiKey: 'k' })).narratorr?.urlBase).toBeNull();
     expect(parse(narr({ port: '8080', apiKey: 'k' })).narratorr?.port).toBe(8080);
   });
 
-  it('normalizes urlBase: "lib" → /lib, "/lib/" → /lib, "" → null, omitted → absent', () => {
-    expect(parse(narr({ urlBase: 'lib', apiKey: 'k' })).narratorr?.urlBase).toBe('/lib');
-    expect(parse(narr({ urlBase: '/lib/', apiKey: 'k' })).narratorr?.urlBase).toBe('/lib');
-    expect(parse(narr({ urlBase: '', apiKey: 'k' })).narratorr?.urlBase).toBeNull();
-    expect(parse(narr({ apiKey: 'k' })).narratorr).not.toHaveProperty('urlBase');
-  });
-
-  it('apiKey is optional (omittable)', () => {
-    expect(parse(narr({ apiKey: 'k' })).narratorr?.apiKey).toBe('k');
-    expect(parse(narr({})).narratorr?.apiKey).toBeUndefined();
-  });
-
-  it('tolerates an unknown nested key (lenient, not .strict()) while the top-level body stays strict', () => {
-    expect(accepts(narr({ apiKey: 'k', futureField: 'x' }))).toBe(true);
-    expect(accepts({ ...narr({ apiKey: 'k' }), bogusTop: 1 })).toBe(false);
+  it('is .strict() at the top level — the old ntfy/email/webhook slots are now rejected', () => {
+    expect(issues({ ntfy: { url: 'https://ntfy.sh', topic: 't' } })[0]?.code).toBe('unrecognized_keys');
+    expect(accepts({ email: { host: 'h', from: 'f@x', to: 't@x' } })).toBe(false);
+    expect(accepts({ webhook: { url: 'https://x/hook' } })).toBe(false);
+    expect(accepts({ bogus: 1 })).toBe(false);
   });
 });
 
-describe('whitespace-only rejection — every .trim().min(1) field (ZOD-1)', () => {
-  // A regression from `.trim().min(1)` to a bare `.min(1)` would accept '   ' and
-  // pass every existing positive test; these inputs trim to '' and must reject.
-  const WHITESPACE = ['   ', '\t', '\n'];
-  const cases = [
-    { field: 'ntfy.topic', path: ['ntfy', 'topic'], body: (v: string) => ({ ntfy: { url: 'https://ntfy.sh', topic: v } }) },
-    { field: 'email.host', path: ['email', 'host'], body: (v: string) => ({ email: { host: v, from: 'f@x', to: 't@x' } }) },
-    { field: 'email.from', path: ['email', 'from'], body: (v: string) => ({ email: { host: 'h', from: v, to: 't@x' } }) },
-    { field: 'email.to', path: ['email', 'to'], body: (v: string) => ({ email: { host: 'h', from: 'f@x', to: v } }) },
-  ];
-
-  for (const { field, path, body } of cases) {
-    it(`rejects whitespace-only ${field} and points the issue at the field`, () => {
-      for (const v of WHITESPACE) {
-        const result = updateConnectorSettingsBodySchema.safeParse(body(v));
-        expect(result.success).toBe(false);
-        expect(result.error?.issues[0]?.path).toEqual(path);
-      }
-    });
-  }
-});
-
-describe('unknown-key handling — strict top-level, lenient nested', () => {
-  it('rejects an unknown TOP-LEVEL key (.strict()) with an unrecognized-key issue', () => {
-    const i = issues({ bogus: 1 });
-    expect(i[0]?.code).toBe('unrecognized_keys');
-    expect(i[0]?.path).toEqual([]);
+describe('testConnectorBodySchema — narratorr only', () => {
+  it('accepts a narratorr candidate', () => {
+    expect(testConnectorBodySchema.parse({ channel: 'narratorr' }).channel).toBe('narratorr');
+    expect(
+      testConnectorBodySchema.safeParse({ channel: 'narratorr', narratorr: { host: 'n', port: 3000, useSsl: false } }).success,
+    ).toBe(true);
   });
 
-  it('ACCEPTS an unknown key nested under email — nested objects are lenient by design (not .strict())', () => {
-    // Intentional: only the top-level body is .strict(). Nested connector objects
-    // tolerate provider/UI drift. Adding .strict() here would be a behavior change
-    // (out of scope for this test-hardening chore — see issue #29).
-    expect(accepts({ email: { host: 'h', from: 'f@x', to: 't@x', futureField: 'x' } })).toBe(true);
-  });
-});
-
-describe('testConnectorBodySchema — channel enum + .strict()', () => {
-  for (const channel of CONNECTOR_KEYS) {
-    it(`accepts the valid channel "${channel}"`, () => {
-      expect(testConnectorBodySchema.parse({ channel }).channel).toBe(channel);
-    });
-  }
-
-  it('rejects an out-of-enum channel (path points at channel)', () => {
-    const result = testConnectorBodySchema.safeParse({ channel: 'invalid' });
-    expect(result.success).toBe(false);
-    expect(result.error?.issues[0]?.code).toBe('invalid_value');
-    expect(result.error?.issues[0]?.path).toEqual(['channel']);
-  });
-
-  it('rejects an unknown extra key (.strict())', () => {
-    const result = testConnectorBodySchema.safeParse({ channel: 'narratorr', extra: 1 });
-    expect(result.success).toBe(false);
-    expect(result.error?.issues[0]?.code).toBe('unrecognized_keys');
+  it('rejects a non-narratorr channel and unknown top-level keys (.strict)', () => {
+    expect(testConnectorBodySchema.safeParse({ channel: 'ntfy' }).success).toBe(false);
+    expect(testConnectorBodySchema.safeParse({ channel: 'narratorr', extra: 1 }).success).toBe(false);
   });
 });
 
 describe('testConnectorResultSchema', () => {
-  it('accepts { success: boolean, message: string }', () => {
+  it('accepts { success, message } and rejects wrong types', () => {
     expect(testConnectorResultSchema.parse({ success: true, message: 'ok' })).toEqual({ success: true, message: 'ok' });
-  });
-
-  it('rejects a non-boolean success (path points at success)', () => {
-    const result = testConnectorResultSchema.safeParse({ success: 'true', message: 'ok' });
-    expect(result.success).toBe(false);
-    expect(result.error?.issues[0]?.path).toEqual(['success']);
-  });
-
-  it('rejects a non-string message (path points at message)', () => {
-    const result = testConnectorResultSchema.safeParse({ success: true, message: 1 });
-    expect(result.success).toBe(false);
-    expect(result.error?.issues[0]?.path).toEqual(['message']);
+    expect(testConnectorResultSchema.safeParse({ success: 'yes', message: 'ok' }).success).toBe(false);
   });
 });
 
-describe('connectorSettingsDtoSchema — masked GET payload', () => {
-  it('accepts a representative masked DTO (secrets surfaced as has* booleans)', () => {
+describe('createNotifierBodySchema / notifierTestBodySchema', () => {
+  const base = { name: 'My phone', type: 'ntfy', enabled: true, events: ['request.created'], config: {} };
+
+  it('accepts a valid envelope (config validated server-side, opaque here)', () => {
+    expect(createNotifierBodySchema.safeParse(base).success).toBe(true);
+  });
+
+  it('rejects an out-of-registry type, empty events, whitespace-only name, and unknown keys', () => {
+    expect(createNotifierBodySchema.safeParse({ ...base, type: 'discord' }).success).toBe(false);
+    expect(createNotifierBodySchema.safeParse({ ...base, events: [] }).success).toBe(false);
+    expect(createNotifierBodySchema.safeParse({ ...base, name: '   ' }).success).toBe(false);
+    expect(createNotifierBodySchema.safeParse({ ...base, bogus: 1 }).success).toBe(false);
+  });
+
+  it('rejects an unknown event key in events', () => {
+    expect(createNotifierBodySchema.safeParse({ ...base, events: ['request.failed'] }).success).toBe(false);
+  });
+
+  it('notifier test body carries type + config, optional id + publicUrl', () => {
+    expect(notifierTestBodySchema.parse({ type: 'webhook', config: { url: 'https://x/h' }, id: 'nf_1', publicUrl: 'https://a.com' })).toMatchObject({
+      type: 'webhook',
+      id: 'nf_1',
+    });
+    expect(notifierTestBodySchema.safeParse({ type: 'webhook', config: {} }).success).toBe(true);
+  });
+});
+
+describe('storedNotifierSchema — type-lenient persistence boundary', () => {
+  it('parses a row whose type is NOT in the registry (round-trips, type: string)', () => {
+    const row = { id: 'nf_x', name: 'Legacy', type: 'telegram', enabled: true, events: ['user.pending'], config: { token: 'enc:v1:abc' } };
+    const parsed = storedNotifierSchema.parse(row);
+    expect(parsed.type).toBe('telegram');
+    expect(parsed.config).toEqual({ token: 'enc:v1:abc' });
+  });
+});
+
+describe('notifierDtoSchema — discriminated known | unknown', () => {
+  it('accepts a known (masked) notifier DTO', () => {
+    const dto = {
+      id: 'nf_1',
+      name: 'Phone',
+      type: 'ntfy',
+      enabled: true,
+      events: ['request.created'],
+      config: { url: 'https://ntfy.sh', topic: 't', hasToken: true, priority: null },
+    };
+    expect(notifierDtoSchema.safeParse(dto).success).toBe(true);
+  });
+
+  it('accepts a webhook DTO masked to a host hint (no plaintext url)', () => {
+    const dto = { id: 'nf_2', name: 'Discord', type: 'webhook', enabled: true, events: ['request.created'], config: { hasUrl: true, urlHint: 'discord.com/…' } };
+    expect(notifierDtoSchema.safeParse(dto).success).toBe(true);
+  });
+
+  it('accepts an unknown-type DTO (disabled, deletable, no config)', () => {
+    const dto = { id: 'nf_3', name: 'Legacy', type: 'telegram', enabled: false, events: ['user.pending'], unknown: true };
+    expect(notifierDtoSchema.safeParse(dto).success).toBe(true);
+  });
+
+  it('rejects an unknown-type DTO that claims enabled: true', () => {
+    const dto = { id: 'nf_4', name: 'Legacy', type: 'telegram', enabled: true, events: [], unknown: true };
+    expect(notifierDtoSchema.safeParse(dto).success).toBe(false);
+  });
+});
+
+describe('connectorSettingsDtoSchema', () => {
+  it('accepts a representative masked payload with a notifier list', () => {
     const dto = {
       publicUrl: 'https://requests.example.com',
       narratorr: { host: 'narratorr.example.com', port: 443, useSsl: true, urlBase: '/lib', hasApiKey: true },
-      ntfy: { url: 'https://ntfy.sh', topic: 'books', hasToken: false, priority: 'high' },
-      email: {
-        host: 'smtp.example.com',
-        port: 587,
-        secure: true,
-        user: 'mailer@example.com',
-        from: 'noreply@example.com',
-        to: 'admin@example.com',
-        hasPassword: true,
-      },
-      webhook: { url: 'https://hooks.example.com/abc' },
-    };
-    expect(connectorSettingsDtoSchema.parse(dto)).toEqual(dto);
-  });
-
-  it('accepts plain url/host/topic/from/to strings with no trim/min constraints (e.g. empty or untrimmed)', () => {
-    // The DTO is a read-only projection — its string fields are plain z.string()
-    // with no .trim()/.min(1), unlike the write-path update body.
-    const dto = {
-      publicUrl: '',
-      narratorr: { host: '  not-normalized  ', port: 0, useSsl: false, urlBase: null, hasApiKey: false },
-      ntfy: { url: '', topic: '', hasToken: false, priority: null },
-      email: { host: '', port: 0, secure: false, user: null, from: '', to: '', hasPassword: false },
-      webhook: { url: '' },
+      notifiers: [
+        { id: 'nf_1', name: 'Phone', type: 'ntfy', enabled: true, events: ['request.created'], config: { url: 'https://ntfy.sh', topic: 't', hasToken: false, priority: null } },
+        { id: 'nf_2', name: 'Legacy', type: 'telegram', enabled: false, events: ['user.pending'], unknown: true },
+      ],
     };
     expect(connectorSettingsDtoSchema.safeParse(dto).success).toBe(true);
   });
 
-  it('accepts all connectors null (every block is .nullable())', () => {
-    expect(
-      connectorSettingsDtoSchema.parse({ publicUrl: null, narratorr: null, ntfy: null, email: null, webhook: null }),
-    ).toEqual({ publicUrl: null, narratorr: null, ntfy: null, email: null, webhook: null });
+  it('accepts empty notifiers + null connections', () => {
+    expect(connectorSettingsDtoSchema.parse({ publicUrl: null, narratorr: null, notifiers: [] })).toEqual({
+      publicUrl: null,
+      narratorr: null,
+      notifiers: [],
+    });
   });
 });

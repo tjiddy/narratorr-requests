@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { httpUrl } from './field-helpers.js';
 import { notificationEventSchema, type NotificationEvent } from '../notification-events.js';
-import { NOTIFIER_DEFS, NOTIFIER_TYPES } from '../notifier-registry.js';
+import { NOTIFIER_DEFS, NOTIFIER_TYPES, type NotifierType } from '../notifier-registry.js';
 
 // =============================================================================
 // Connector settings — the narratorr connection + a list of N notifiers, edited on
