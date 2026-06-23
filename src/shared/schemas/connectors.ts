@@ -23,13 +23,34 @@ const ntfyPriority = z
   .trim()
   .regex(/^(min|low|default|high|max|[1-5])$/, 'must be min/low/default/high/max or 1-5');
 
+// narratorr Host: a bare hostname or IP only — no scheme, path, or whitespace. Port,
+// SSL, and URL Base are discrete fields; `getNarratorrConfig` composes the base URL
+// from them server-side. Internal/private hosts (`narratorr`, `localhost`, `10.x`) are
+// intentionally allowed — this is trusted server-to-server admin config, NOT the
+// public-only coverUrl SSRF guard (`isInternalHost` in request.ts).
+const narratorrHost = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((v) => !/[\s/]/.test(v) && !v.includes('://'), 'enter a hostname or IP only, without http(s):// or a path');
+
+// narratorr URL Base: optional reverse-proxy subpath. Normalized to a single leading
+// slash and no trailing slash (`lib` → `/lib`, `/lib/` → `/lib`); blank → no subpath.
+const urlBase = z
+  .string()
+  .trim()
+  .transform((v) => {
+    const trimmed = v.replace(/^\/+/, '').replace(/\/+$/, '');
+    return trimmed ? `/${trimmed}` : null;
+  });
+
 /**
  * As persisted. Secret fields (narratorr.apiKey, ntfy.token, email.pass) hold
  * `enc:v1:…` strings at rest; structurally identical to the decrypted runtime config.
  */
 export interface StoredConnectors {
   publicUrl: string | null;
-  narratorr: { url: string; apiKey: string } | null;
+  narratorr: { host: string; port: number; useSsl: boolean; urlBase: string | null; apiKey: string } | null;
   ntfy: { url: string; topic: string; token: string | null; priority: string | null } | null;
   email: {
     host: string;
@@ -46,7 +67,15 @@ export interface StoredConnectors {
 // ---- Masked DTO (GET) -------------------------------------------------------
 export const connectorSettingsDtoSchema = z.object({
   publicUrl: z.string().nullable(),
-  narratorr: z.object({ url: z.string(), hasApiKey: z.boolean() }).nullable(),
+  narratorr: z
+    .object({
+      host: z.string(),
+      port: z.number(),
+      useSsl: z.boolean(),
+      urlBase: z.string().nullable(),
+      hasApiKey: z.boolean(),
+    })
+    .nullable(),
   ntfy: z
     .object({ url: z.string(), topic: z.string(), hasToken: z.boolean(), priority: z.string().nullable() })
     .nullable(),
@@ -72,7 +101,13 @@ export const updateConnectorSettingsBodySchema = z
   .object({
     publicUrl: httpUrl.nullable().optional(),
     narratorr: z
-      .object({ url: httpUrl, apiKey: z.string().trim().optional() })
+      .object({
+        host: narratorrHost,
+        port: z.coerce.number().int().min(1).max(65535),
+        useSsl: z.boolean(),
+        urlBase: urlBase.nullable().optional(),
+        apiKey: z.string().trim().optional(),
+      })
       .nullable()
       .optional(),
     ntfy: z

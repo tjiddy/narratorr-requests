@@ -3,6 +3,7 @@ import type { ConnectorSettingsDto, UpdateConnectorSettingsBody } from '@shared/
 import { useConnectorSettings, useUpdateConnectors, useTestConnector } from '../hooks';
 import { Button } from '../components/Button';
 import type { ConnectorChannel } from '../api';
+import { initNarratorr, buildNarratorr, type NarratorrState } from './settings-narratorr';
 
 const inputCls =
   'w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50';
@@ -30,12 +31,16 @@ function Section({
 }: {
   title: string;
   subtitle: string;
-  enabled: boolean;
-  onToggle: (v: boolean) => void;
+  // Toggle is optional: omit both to render a non-toggling, always-expanded card.
+  // The narratorr connection has no enable/disable concept (it's the app's lifeline),
+  // so it renders without a toggle; ntfy/email/webhook keep theirs.
+  enabled?: boolean;
+  onToggle?: (v: boolean) => void;
   channel?: ConnectorChannel;
   children: ReactNode;
 }) {
   const test = useTestConnector();
+  const expanded = onToggle ? Boolean(enabled) : true;
   return (
     <div className="glass-card flex flex-col gap-4 rounded-xl p-4">
       <div className="flex items-start justify-between gap-4">
@@ -43,18 +48,20 @@ function Section({
           <p className="font-medium">{title}</p>
           <p className="text-xs text-muted-foreground/70">{subtitle}</p>
         </div>
-        <label className="flex shrink-0 items-center gap-2 text-sm">
-          <span className="text-muted-foreground">Enabled</span>
-          <input
-            type="checkbox"
-            className="h-4 w-4 accent-primary"
-            checked={enabled}
-            onChange={(e) => onToggle(e.target.checked)}
-          />
-        </label>
+        {onToggle && (
+          <label className="flex shrink-0 items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Enabled</span>
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-primary"
+              checked={Boolean(enabled)}
+              onChange={(e) => onToggle(e.target.checked)}
+            />
+          </label>
+        )}
       </div>
-      {enabled && <div className="flex flex-col gap-3 border-t border-border/50 pt-4">{children}</div>}
-      {enabled && channel && (
+      {expanded && <div className="flex flex-col gap-3 border-t border-border/50 pt-4">{children}</div>}
+      {expanded && channel && (
         <div className="flex items-center gap-2 border-t border-border/50 pt-3">
           <Button
             variant="secondary"
@@ -94,7 +101,6 @@ export function SettingsPage() {
 // Grouped per connector so the form composes from focused section components and
 // the `??`/`?.` defaulting lives in these init/build helpers, not the form body.
 
-type NarratorrState = { on: boolean; url: string; key: string; hasKey: boolean };
 type NtfyState = { on: boolean; url: string; topic: string; token: string; priority: string; hasToken: boolean };
 type EmailState = {
   on: boolean;
@@ -109,12 +115,6 @@ type EmailState = {
 };
 type WebhookState = { on: boolean; url: string };
 
-const initNarratorr = (c: ConnectorSettingsDto['narratorr']): NarratorrState => ({
-  on: c !== null,
-  url: c?.url ?? '',
-  key: '',
-  hasKey: c?.hasApiKey ?? false,
-});
 const initNtfy = (c: ConnectorSettingsDto['ntfy']): NtfyState => ({
   on: c !== null,
   url: c?.url ?? 'https://ntfy.sh',
@@ -136,8 +136,6 @@ const initEmail = (c: ConnectorSettingsDto['email']): EmailState => ({
 });
 const initWebhook = (c: ConnectorSettingsDto['webhook']): WebhookState => ({ on: c !== null, url: c?.url ?? '' });
 
-const buildNarratorr = (s: NarratorrState): UpdateConnectorSettingsBody['narratorr'] =>
-  s.on ? { url: s.url.trim(), ...(s.key.trim() ? { apiKey: s.key.trim() } : {}) } : null;
 const buildNtfy = (s: NtfyState): UpdateConnectorSettingsBody['ntfy'] =>
   s.on
     ? {
@@ -224,13 +222,28 @@ function NarratorrSection({ state, patch }: { state: NarratorrState; patch: Patc
   return (
     <Section
       title="Narratorr connection"
-      subtitle="The library this app sends approved requests to. Required for search and requests to work."
-      enabled={state.on}
-      onToggle={(v) => patch({ on: v })}
+      subtitle="The library this app sends approved requests to. Required for search and requests to work — blank the Host and save to disconnect."
       channel="narratorr"
     >
-      <Field label="Narratorr URL" hint="Base URL of your narratorr instance.">
-        <input className={inputCls} value={state.url} onChange={(e) => patch({ url: e.target.value })} placeholder="https://narratorr.example.com" />
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Host" hint="Hostname or IP, no protocol (e.g. narratorr or 192.168.1.10).">
+          <input className={inputCls} value={state.host} onChange={(e) => patch({ host: e.target.value })} placeholder="narratorr" />
+        </Field>
+        <Field label="Port">
+          <input className={inputCls} type="number" value={state.port} onChange={(e) => patch({ port: e.target.value })} placeholder="3000" />
+        </Field>
+      </div>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="h-4 w-4 accent-primary"
+          checked={state.useSsl}
+          onChange={(e) => patch({ useSsl: e.target.checked })}
+        />
+        <span>Use SSL (https)</span>
+      </label>
+      <Field label="URL Base" hint="Optional — only if narratorr is behind a reverse-proxy subpath (e.g. /lib).">
+        <input className={inputCls} value={state.urlBase} onChange={(e) => patch({ urlBase: e.target.value })} placeholder="/lib" />
       </Field>
       <Field label="API key" hint={state.hasKey ? 'Leave blank to keep the current key.' : 'From narratorr → Settings → API.'}>
         <input className={inputCls} type="password" autoComplete="off" value={state.key} onChange={(e) => patch({ key: e.target.value })} placeholder={secretPlaceholder(state.hasKey, true)} />

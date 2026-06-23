@@ -73,7 +73,7 @@ afterEach(async () => {
 
 describe('settings routes — narratorr generic (non-NarratorrError) fallback', () => {
   it('falls through to err.message when ping() throws a plain Error', async () => {
-    await connectorSettings.update({ narratorr: { url: 'https://n.example.com', apiKey: 'k' } });
+    await connectorSettings.update({ narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'k' } });
     const res = await app.inject({
       method: 'POST',
       url: '/api/admin/settings/connectors/test',

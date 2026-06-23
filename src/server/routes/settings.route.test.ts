@@ -108,16 +108,16 @@ describe('settings routes — auth gating', () => {
 
 describe('settings routes — GET/PUT', () => {
   it('GET returns the masked DTO and never the secret value', async () => {
-    await connectorSettings.update({ narratorr: { url: 'https://n.example.com', apiKey: 'super-secret-key' } });
+    await connectorSettings.update({ narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'super-secret-key' } });
     const res = await app.inject({ method: 'GET', url: CONNECTORS_URL, headers: asAdmin });
     expect(res.statusCode).toBe(200);
     expect(res.body).not.toContain('super-secret-key');
-    expect(res.json().narratorr).toEqual({ url: 'https://n.example.com', hasApiKey: true });
+    expect(res.json().narratorr).toEqual({ host: 'n.example.com', port: 443, useSsl: true, urlBase: null, hasApiKey: true });
   });
 
   it('GET masks every channel secret — only has* booleans leak', async () => {
     await connectorSettings.update({
-      narratorr: { url: 'https://n.example.com', apiKey: 'narratorr-secret' },
+      narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'narratorr-secret' },
       ntfy: { url: 'https://ntfy.sh', topic: 'reqs', token: 'ntfy-secret' },
       email: { host: 'smtp.example.com', from: 'a@b.c', to: 'd@e.f', pass: 'email-secret' },
       webhook: { url: 'https://example.com/hook' },
@@ -141,7 +141,7 @@ describe('settings routes — GET/PUT', () => {
       method: 'PUT',
       url: CONNECTORS_URL,
       headers: asAdmin,
-      payload: { narratorr: { url: 'https://n.example.com', apiKey: 'k' } },
+      payload: { narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'k' } },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().narratorr.hasApiKey).toBe(true);
@@ -149,7 +149,19 @@ describe('settings routes — GET/PUT', () => {
     expect(narratorr.configured).toBe(true); // reconfigure() swapped the holder
   });
 
-  it('PUT rejects unknown TOP-LEVEL keys (only the body is .strict) and non-http URLs', async () => {
+  it('PUT accepts a private/internal narratorr host (no SSRF guard on this field)', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: CONNECTORS_URL,
+      headers: asAdmin,
+      payload: { narratorr: { host: 'narratorr', port: 3000, useSsl: false, apiKey: 'k' } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().narratorr).toMatchObject({ host: 'narratorr', port: 3000, hasApiKey: true });
+    expect(await connectorSettings.getNarratorrConfig()).toEqual({ url: 'http://narratorr:3000', apiKey: 'k' });
+  });
+
+  it('PUT rejects unknown TOP-LEVEL keys (only the body is .strict) and a host with a scheme', async () => {
     const unknown = await app.inject({
       method: 'PUT',
       url: CONNECTORS_URL,
@@ -158,13 +170,13 @@ describe('settings routes — GET/PUT', () => {
     });
     expect(unknown.statusCode).toBe(400);
 
-    const badUrl = await app.inject({
+    const badHost = await app.inject({
       method: 'PUT',
       url: CONNECTORS_URL,
       headers: asAdmin,
-      payload: { narratorr: { url: 'ftp://nope', apiKey: 'k' } },
+      payload: { narratorr: { host: 'http://nope', port: 3000, useSsl: false, apiKey: 'k' } },
     });
-    expect(badUrl.statusCode).toBe(400);
+    expect(badHost.statusCode).toBe(400);
   });
 
   it('PUT tolerates unknown NESTED keys — only the top-level body is .strict, connector objects are lenient', async () => {
@@ -174,15 +186,16 @@ describe('settings routes — GET/PUT', () => {
       method: 'PUT',
       url: CONNECTORS_URL,
       headers: asAdmin,
-      payload: { narratorr: { url: 'https://n.example.com', apiKey: 'k', futureField: 'ignored' } },
+      payload: { narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'k', futureField: 'ignored' } },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json().narratorr).toEqual({ url: 'https://n.example.com', hasApiKey: true });
+    expect(res.json().narratorr).toEqual({ host: 'n.example.com', port: 443, useSsl: true, urlBase: null, hasApiKey: true });
   });
 });
 
 describe('settings routes — secret persistence (keep/clear/replace + round-trip)', () => {
-  const NARRATORR_URL = 'https://n.example.com';
+  // Discrete narratorr fields composing to https://n.example.com:443.
+  const NARR = { host: 'n.example.com', port: 443, useSsl: true } as const;
   const putConnectors = (payload: Record<string, unknown>) =>
     app.inject({ method: 'PUT', url: CONNECTORS_URL, headers: asAdmin, payload });
 
@@ -190,11 +203,12 @@ describe('settings routes — secret persistence (keep/clear/replace + round-tri
     // The UI sends masked/omitted secrets for unchanged fields. Omitted (undefined) must
     // preserve the stored key — a regression that wiped it here would silently de-configure
     // narratorr in production while changing an unrelated field.
-    await connectorSettings.update({ narratorr: { url: NARRATORR_URL, apiKey: 'orig' } });
-    const res = await putConnectors({ narratorr: { url: 'https://changed.example.com' } });
+    await connectorSettings.update({ narratorr: { ...NARR, apiKey: 'orig' } });
+    // Edit only host/port/SSL (apiKey omitted, Host non-blank) → stored key preserved.
+    const res = await putConnectors({ narratorr: { host: 'changed.example.com', port: 8080, useSsl: false } });
     expect(res.statusCode).toBe(200);
     expect(await connectorSettings.getNarratorrConfig()).toEqual({
-      url: 'https://changed.example.com',
+      url: 'http://changed.example.com:8080',
       apiKey: 'orig',
     });
   });
@@ -209,16 +223,24 @@ describe('settings routes — secret persistence (keep/clear/replace + round-tri
   it('round-trips narratorr.apiKey — the stored secret decrypts back to the original plaintext', async () => {
     // Not just `hasApiKey: true` (truthy for ANY blob) — a garbage-but-valid-looking
     // ciphertext would pass that. Only decrypt-to-original proves the round-trip.
-    const res = await putConnectors({ narratorr: { url: NARRATORR_URL, apiKey: 'secret123' } });
+    const res = await putConnectors({ narratorr: { ...NARR, apiKey: 'secret123' } });
     expect(res.statusCode).toBe(200);
     expect((await connectorSettings.getNarratorrConfig())?.apiKey).toBe('secret123');
   });
 
   it('replaces narratorr.apiKey when a new non-empty value is provided', async () => {
-    await connectorSettings.update({ narratorr: { url: NARRATORR_URL, apiKey: 'old' } });
-    const res = await putConnectors({ narratorr: { url: NARRATORR_URL, apiKey: 'new' } });
+    await connectorSettings.update({ narratorr: { ...NARR, apiKey: 'old' } });
+    const res = await putConnectors({ narratorr: { ...NARR, apiKey: 'new' } });
     expect(res.statusCode).toBe(200);
     expect((await connectorSettings.getNarratorrConfig())?.apiKey).toBe('new');
+  });
+
+  it('clears the narratorr connection (and drops the key) when narratorr: null is sent', async () => {
+    await connectorSettings.update({ narratorr: { ...NARR, apiKey: 'orig' } });
+    const res = await putConnectors({ narratorr: null });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().narratorr).toBeNull();
+    expect(await connectorSettings.getNarratorrConfig()).toBeNull();
   });
 
   it('round-trips email.pass — a second secret field through a distinct sub-resolver', async () => {
@@ -232,7 +254,15 @@ describe('settings routes — secret persistence (keep/clear/replace + round-tri
   it('treats a whitespace-only apiKey as a clear (trim → "") — 400 when no prior key exists', async () => {
     // Zod `.trim()` collapses '   ' to '', which resolveSecret reads as "clear". With no
     // existing key to fall back on, resolveNarratorr rejects with NARRATORR_KEY_REQUIRED.
-    const res = await putConnectors({ narratorr: { url: NARRATORR_URL, apiKey: '   ' } });
+    const res = await putConnectors({ narratorr: { ...NARR, apiKey: '   ' } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('NARRATORR_KEY_REQUIRED');
+  });
+
+  it('rejects apiKey: "" on a non-null narratorr object — no clear-via-empty for the required key', async () => {
+    // Unlike optional secrets (ntfy/email), '' does not clear the narratorr key; it falls
+    // into the NARRATORR_KEY_REQUIRED guard. Clearing the connection is narratorr: null.
+    const res = await putConnectors({ narratorr: { ...NARR, apiKey: '' } });
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe('NARRATORR_KEY_REQUIRED');
   });
@@ -244,7 +274,7 @@ describe('settings routes — test endpoint (narratorr)', () => {
   // of describeNarratorrError() by stubbing fetch, not by a fake client.
   const stubFetch = (impl: () => Promise<Response>) => vi.stubGlobal('fetch', vi.fn(impl));
   const configureNarratorr = () =>
-    connectorSettings.update({ narratorr: { url: 'https://n.example.com', apiKey: 'k' } });
+    connectorSettings.update({ narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'k' } });
   const postNarratorr = () =>
     app.inject({ method: 'POST', url: TEST_URL, headers: asAdmin, payload: { channel: 'narratorr' } });
 
