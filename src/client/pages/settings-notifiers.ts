@@ -5,6 +5,7 @@ import type {
 } from '@shared/schemas/connectors';
 import {
   NOTIFIER_REGISTRY,
+  type NotifierField,
   type NotifierType,
   type NotifierTypeDef,
 } from '@shared/notifier-registry';
@@ -151,6 +152,27 @@ export function buildNotifierTestBody(state: NotifierFormState, publicUrl: strin
     ...(state.id ? { id: state.id } : {}),
     ...(publicUrl !== null ? { publicUrl } : {}),
   };
+}
+
+/**
+ * Whether to render the "clear stored value" affordance for a field: an already-saved
+ * (`has[key]`) OPTIONAL secret only — never a required secret, never an unsaved one.
+ */
+export function showClearAffordance(field: NotifierField, state: NotifierFormState): boolean {
+  return field.secret && !field.required && Boolean(state.has[field.key]);
+}
+
+/**
+ * The hint text under a notifier field input. Secret-aware: a stored optional secret
+ * advertises replace-or-clear; a stored required secret advertises keep-on-blank; an
+ * unsaved secret (and any non-secret) falls back to the field's own hint.
+ */
+export function secretFieldHint(field: NotifierField, state: NotifierFormState): string | undefined {
+  if (!field.secret) return field.hint;
+  if (!state.has[field.key]) return field.hint;
+  return field.required
+    ? 'Leave blank to keep the current value.'
+    : 'Type a new value to replace it, or use “Clear stored value” to remove it.';
 }
 
 /**

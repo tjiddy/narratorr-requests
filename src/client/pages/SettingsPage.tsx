@@ -20,6 +20,8 @@ import {
   buildNotifierBody,
   buildNotifierTestBody,
   validateNotifierForm,
+  showClearAffordance,
+  secretFieldHint,
   type NotifierFormState,
 } from './settings-notifiers';
 
@@ -425,41 +427,19 @@ function NotifierFieldInput({
     );
   }
 
-  const hasStored = field.secret && Boolean(form.has[field.key]);
-  // The clear affordance is shown ONLY for an already-saved OPTIONAL secret.
-  const clearable = hasStored && !field.required;
+  const clearable = showClearAffordance(field, form);
   const inputEmpty = typeof value !== 'string' || value.trim() === '';
-
-  const secretHint = field.secret
-    ? hasStored
-      ? clearable
-        ? 'Type a new value to replace it, or use “Clear stored value” to remove it.'
-        : 'Leave blank to keep the current value.'
-      : field.hint
-    : field.hint;
   const placeholder = field.secret ? secretPlaceholder(Boolean(form.has[field.key]), field.required) : field.placeholder;
+  const inputType = field.kind === 'password' ? 'password' : field.kind === 'number' ? 'number' : 'text';
 
   return (
-    <Field label={field.label} hint={secretHint} error={error}>
-      <input
-        className={inputCls}
-        type={field.kind === 'password' ? 'password' : field.kind === 'number' ? 'number' : 'text'}
-        autoComplete="off"
-        value={typeof value === 'string' ? value : ''}
-        onChange={(e) => setField(field.key, e.target.value)}
-        placeholder={placeholder}
-      />
+    <Field label={field.label} hint={secretFieldHint(field, form)} error={error}>
+      <input className={inputCls} type={inputType} autoComplete="off" value={typeof value === 'string' ? value : ''} onChange={(e) => setField(field.key, e.target.value)} placeholder={placeholder} />
       {clearable && (
         // A non-empty input always wins (rung 1), so disable + visually uncheck while the
         // input has text — clear and replace can never both be active.
         <label className="flex items-center gap-2 text-xs text-muted-foreground/70">
-          <input
-            type="checkbox"
-            className="h-3.5 w-3.5 accent-primary"
-            checked={Boolean(form.clear[field.key]) && inputEmpty}
-            disabled={!inputEmpty}
-            onChange={(e) => setClear(field.key, e.target.checked)}
-          />
+          <input type="checkbox" className="h-3.5 w-3.5 accent-primary" checked={Boolean(form.clear[field.key]) && inputEmpty} disabled={!inputEmpty} onChange={(e) => setClear(field.key, e.target.checked)} />
           <span>Clear stored value</span>
         </label>
       )}

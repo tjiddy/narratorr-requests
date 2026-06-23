@@ -7,6 +7,8 @@ import {
   buildNotifierBody,
   buildNotifierTestBody,
   validateNotifierForm,
+  showClearAffordance,
+  secretFieldHint,
   type NotifierFormState,
 } from './settings-notifiers';
 import { NOTIFIER_REGISTRY } from '@shared/notifier-registry';
@@ -168,6 +170,30 @@ describe('buildNotifierBody / buildNotifierTestBody', () => {
 
   it('returns null when no event is selected (nothing to sample)', () => {
     expect(buildNotifierTestBody({ ...newNotifierForm('ntfy'), events: [] }, null)).toBeNull();
+  });
+});
+
+describe('showClearAffordance / secretFieldHint — saved-optional-secret display', () => {
+  const ntfyTokenField = NOTIFIER_REGISTRY.ntfy.fields.find((f) => f.key === 'token')!;
+  const webhookUrlField = NOTIFIER_REGISTRY.webhook.fields.find((f) => f.key === 'url')!;
+
+  it('shows the clear affordance only for an already-saved OPTIONAL secret', () => {
+    const stored: NotifierFormState = { ...newNotifierForm('ntfy'), id: 'nf_1', has: { token: true } };
+    expect(showClearAffordance(ntfyTokenField, stored)).toBe(true);
+    // Not stored yet → no affordance.
+    expect(showClearAffordance(ntfyTokenField, newNotifierForm('ntfy'))).toBe(false);
+    // Required secret (webhook url), even when stored → never clearable.
+    const storedReq: NotifierFormState = { ...newNotifierForm('webhook'), id: 'nf_2', has: { url: true } };
+    expect(showClearAffordance(webhookUrlField, storedReq)).toBe(false);
+  });
+
+  it('hints replace-or-clear for a saved optional secret, keep for a saved required secret', () => {
+    const optStored: NotifierFormState = { ...newNotifierForm('ntfy'), id: 'nf_1', has: { token: true } };
+    expect(secretFieldHint(ntfyTokenField, optStored)).toMatch(/replace|clear/i);
+    const reqStored: NotifierFormState = { ...newNotifierForm('webhook'), id: 'nf_2', has: { url: true } };
+    expect(secretFieldHint(webhookUrlField, reqStored)).toMatch(/keep/i);
+    // Unsaved secret falls back to the field's own hint.
+    expect(secretFieldHint(ntfyTokenField, newNotifierForm('ntfy'))).toBe(ntfyTokenField.hint);
   });
 });
 
