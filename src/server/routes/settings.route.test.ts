@@ -179,6 +179,62 @@ describe('settings routes — notifier CRUD + live reconfigure', () => {
   });
 });
 
+describe('settings routes — create returns the row by id (not by array index)', () => {
+  it('the response id matches the created row, for each create (not just the last)', async () => {
+    const a = (await createNotifier(ntfyCreate({ name: 'First', config: { url: 'https://ntfy.sh', topic: 'a' } }))).json();
+    const b = (await createNotifier(ntfyCreate({ name: 'Second', config: { url: 'https://ntfy.sh', topic: 'b' } }))).json();
+    expect(a.id).not.toBe(b.id);
+    // Each returned id maps to the correctly-named stored row → the route matched by id, not index.
+    const stored = (await connectorSettings.getStored()).notifiers;
+    expect(stored.find((n) => n.id === a.id)?.name).toBe('First');
+    expect(stored.find((n) => n.id === b.id)?.name).toBe('Second');
+  });
+});
+
+describe('settings routes — bounded notifier write body', () => {
+  const NAME_MAX = 100;
+  it('a name at the max length succeeds; one over the max is rejected (4xx)', async () => {
+    const atMax = await createNotifier(ntfyCreate({ name: 'x'.repeat(NAME_MAX) }));
+    expect(atMax.statusCode).toBe(200);
+    const overMax = await createNotifier(ntfyCreate({ name: 'x'.repeat(NAME_MAX + 1) }));
+    expect(overMax.statusCode).toBe(400);
+  });
+});
+
+describe('settings routes — Test probes do not hold the write mutex', () => {
+  it('a stalled notifier probe does not block a concurrent create (lock released before send)', async () => {
+    // fetch never resolves → the ntfy probe's send() hangs. With the lock held across send the
+    // concurrent create would deadlock behind it; releasing the lock first lets the create land.
+    let releaseFetch: (v: Response) => void = () => {};
+    const fetchCalled = new Promise<void>((resolveCalled) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() => {
+          resolveCalled(); // the probe has reached send() — its lock section is already over
+          return new Promise<Response>((res) => { releaseFetch = res; });
+        }),
+      );
+    });
+
+    const probe = app.inject({
+      method: 'POST',
+      url: `${NOTIFIERS_URL}/test`,
+      headers: asAdmin,
+      payload: { type: 'ntfy', config: { url: 'https://ntfy.sh', topic: 'hang' } },
+    });
+
+    // The create must land while the probe's send() is still hung — proof the lock was released.
+    const created = await createNotifier(ntfyCreate({ name: 'Concurrent', config: { url: 'https://ntfy.sh', topic: 'c' } }));
+    expect(created.statusCode).toBe(200);
+
+    // Cleanup: wait until the probe is actually inside the hung fetch, then release it so the
+    // pending request settles before afterEach closes the app.
+    await fetchCalled;
+    releaseFetch(new Response(null, { status: 200 }));
+    expect((await probe).statusCode).toBe(200);
+  });
+});
+
 describe('settings routes — notifier test (always 200)', () => {
   const test = (payload: Record<string, unknown>) => app.inject({ method: 'POST', url: `${NOTIFIERS_URL}/test`, headers: asAdmin, payload });
 

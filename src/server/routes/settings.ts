@@ -111,11 +111,13 @@ export function registerSettingsRoutes(app: FastifyInstance, deps: AppDeps): voi
     async (request) => {
       requireAdmin(request);
       return writeLock.run(async () => {
-        await deps.connectorSettings.createNotifier(request.body);
+        const created = await deps.connectorSettings.createNotifier(request.body);
         await reconfigure();
-        // Return the freshly-created notifier from the masked DTO list (no secret leak).
+        // Return the freshly-created notifier from the masked DTO list (no secret leak),
+        // matched by its assigned id — not by array position, which is brittle against any
+        // future reorder/filter in getDto() (the update route already returns by id).
         const dto = await deps.connectorSettings.getDto();
-        return dto.notifiers[dto.notifiers.length - 1]!;
+        return dto.notifiers.find((n) => n.id === created.id)!;
       });
     },
   );
@@ -152,51 +154,53 @@ export function registerSettingsRoutes(app: FastifyInstance, deps: AppDeps): voi
   // Fire a sample notification through the CANDIDATE (current, unsaved) notifier values —
   // so Test confirms config BEFORE a save. Edit (id present) → unchanged secrets fall back
   // to the stored value; the path NEVER persists. Always 200 { success, message } — a
-  // failed probe is a result, not an HTTP error. Mutex-wrapped (reads stored secrets).
+  // failed probe is a result, not an HTTP error. The write mutex is held ONLY around
+  // candidate-config building (it resolves omit-to-keep secrets from the stored row); the
+  // outbound send() runs OUTSIDE the lock so a slow/dead endpoint can't block Save/Delete/Create.
   a.post(
     '/api/admin/settings/notifiers/test',
     { schema: { body: notifierTestBodySchema, response: { 200: testConnectorResultSchema } } },
     async (request): Promise<TestConnectorResult> => {
       requireAdmin(request);
       const body = request.body;
-      return writeLock.run(async () => {
-        let channel;
-        try {
-          const candidate = await deps.connectorSettings.buildCandidateNotifier(body);
-          channel = buildNotifierChannel(candidate.type, candidate.config);
-        } catch (err) {
-          // A bad candidate (e.g. a required secret that won't resolve) is a failed test.
-          return { success: false, message: err instanceof Error ? err.message : 'Unknown error' };
-        }
-        if (!channel) return { success: false, message: `${body.type} is not configured.` };
-        try {
-          await channel.send(testContext(body.event, body.publicUrl ?? null));
-          return { success: true, message: 'Test notification sent.' };
-        } catch (err) {
-          return { success: false, message: err instanceof Error ? err.message : 'Unknown error' };
-        }
-      });
+      let channel;
+      try {
+        // Secret resolution reads stored state → serialize it. Channel construction reads no
+        // DB state, so building it here (still inside the try) needs no lock.
+        const candidate = await writeLock.run(() => deps.connectorSettings.buildCandidateNotifier(body));
+        channel = buildNotifierChannel(candidate.type, candidate.config);
+      } catch (err) {
+        // A bad candidate (e.g. a required secret that won't resolve) is a failed test.
+        return { success: false, message: err instanceof Error ? err.message : 'Unknown error' };
+      }
+      if (!channel) return { success: false, message: `${body.type} is not configured.` };
+      try {
+        await channel.send(testContext(body.event, body.publicUrl ?? null));
+        return { success: true, message: 'Test notification sent.' };
+      } catch (err) {
+        return { success: false, message: err instanceof Error ? err.message : 'Unknown error' };
+      }
     },
   );
 
   // Test the narratorr connection (its own card; the /connectors PUT persists it). Probes
-  // the candidate (unsaved) discrete fields, omit-to-keep apiKey. Always 200. Mutex-wrapped.
+  // the candidate (unsaved) discrete fields, omit-to-keep apiKey. Always 200. The write mutex
+  // wraps ONLY the candidate-config build (resolves the stored apiKey); the ping() runs OUTSIDE
+  // the lock so a slow/dead narratorr can't block a concurrent Save/Delete/Create write.
   a.post(
     '/api/admin/settings/connectors/test',
     { schema: { body: testConnectorBodySchema, response: { 200: testConnectorResultSchema } } },
     async (request): Promise<TestConnectorResult> => {
       requireAdmin(request);
       const body = request.body;
-      return writeLock.run(async () => {
-        const cfg = await deps.connectorSettings.buildCandidateNarratorrConfig(body.narratorr);
-        if (!cfg) return { success: false, message: 'Narratorr is not configured.' };
-        try {
-          await new NarratorrClient({ baseUrl: cfg.url, apiKey: cfg.apiKey }).ping();
-          return { success: true, message: 'Connected to narratorr.' };
-        } catch (err) {
-          return { success: false, message: describeNarratorrError(err) };
-        }
-      });
+      const cfg = await writeLock.run(() => deps.connectorSettings.buildCandidateNarratorrConfig(body.narratorr));
+      if (!cfg) return { success: false, message: 'Narratorr is not configured.' };
+      try {
+        await new NarratorrClient({ baseUrl: cfg.url, apiKey: cfg.apiKey }).ping();
+        return { success: true, message: 'Connected to narratorr.' };
+      } catch (err) {
+        return { success: false, message: describeNarratorrError(err) };
+      }
     },
   );
 }

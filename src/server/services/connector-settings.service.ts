@@ -1,6 +1,8 @@
 import { eq } from 'drizzle-orm';
+import { z } from 'zod';
 import type { Db } from '../../db/client.js';
 import { appSettings } from '../../db/schema.js';
+import { notificationEventSchema, type NotificationEvent } from '../../shared/notification-events.js';
 import type {
   StoredConnectors,
   StoredNotifier,
@@ -212,6 +214,13 @@ export class ConnectorSettingsService {
     const idx = cur.notifiers.findIndex((n) => n.id === id);
     if (idx === -1) throw notFound('Notifier not found.');
     const existing = cur.notifiers[idx]!;
+    // Don't launder an UNKNOWN (out-of-registry) stored type into a known one: that path would
+    // silently discard the old encrypted config. An unknown notifier is disabled + deletable
+    // only — its type is locked. (`body.type` is always a known registry key, so any update to
+    // an unknown row is necessarily a type change.) The stored row is left untouched.
+    if (!isKnownNotifierType(existing.type) && existing.type !== body.type) {
+      throw badRequest('NOTIFIER_TYPE_LOCKED', 'Cannot change the type of an unrecognized notifier — delete it instead.');
+    }
     const def = NOTIFIER_REGISTRY[body.type];
     // If the type changed, the stored secret has a different shape → no omit-to-keep base,
     // so required secrets must be present (treated like a create).
@@ -266,19 +275,43 @@ export class ConnectorSettingsService {
     return { ...n, config: this.revealNotifierConfig(NOTIFIER_REGISTRY[n.type], n.config) };
   }
 
-  /** Mask a stored notifier into its DTO — known → masked config; unknown → disabled+deletable. */
+  /**
+   * Mask a stored notifier into its DTO — known → masked config; unknown → disabled+deletable.
+   * NEVER-BRICK: a single row whose config OR events fail their response schema must not 500 the
+   * whole Settings GET (the admin couldn't even load the page to delete the offending row). Both
+   * independently-validated fields degrade: a config that fails masking falls back to the
+   * disabled/deletable UnknownNotifierDto; events that fail validation become `events: []`. Each
+   * failure logs a WARN with the notifier id, mirroring the buildOne skip-with-warn at runtime.
+   */
   private toNotifierDto(n: StoredNotifier): NotifierDto {
-    if (!isKnownNotifierType(n.type)) {
-      return { id: n.id, name: n.name, type: n.type, enabled: false, events: n.events, unknown: true };
+    // Events validate against the response schema on BOTH the known and unknown DTOs, so make
+    // them response-safe before either branch.
+    const events = this.safeEvents(n);
+
+    if (isKnownNotifierType(n.type)) {
+      const config = this.tryMaskNotifierConfig(NOTIFIER_REGISTRY[n.type], n.config);
+      if (config !== null) {
+        return { id: n.id, name: n.name, type: n.type, enabled: n.enabled, events, config };
+      }
+      // Masked config failed its schema → degrade to the unknown DTO (disabled, deletable, no
+      // config) so the row stays visible and removable instead of bricking the response.
+      this.logger.warn(
+        { notifier: n.id, type: n.type },
+        'notifier config could not be masked (malformed stored config) — degrading to a disabled, deletable row',
+      );
     }
-    return {
-      id: n.id,
-      name: n.name,
-      type: n.type,
-      enabled: n.enabled,
-      events: n.events,
-      config: this.maskNotifierConfig(NOTIFIER_REGISTRY[n.type], n.config),
-    };
+    return { id: n.id, name: n.name, type: n.type, enabled: false, events, unknown: true };
+  }
+
+  /** Response-safe events: valid keys pass through; a malformed set degrades to [] + WARN. */
+  private safeEvents(n: StoredNotifier): NotificationEvent[] {
+    const result = z.array(notificationEventSchema).safeParse(n.events);
+    if (result.success) return result.data;
+    this.logger.warn(
+      { notifier: n.id, type: n.type },
+      'notifier events failed the schema — emitting events: [] so the Settings GET still loads',
+    );
+    return [];
   }
 
   /** Decrypt each secret field; copy non-secrets through. */
@@ -291,8 +324,12 @@ export class ConnectorSettingsService {
     return out;
   }
 
-  /** Drop secret values → has* booleans (+ host hint for capability URLs); copy non-secrets. */
-  private maskNotifierConfig(def: NotifierTypeDef, stored: Record<string, unknown>): Record<string, unknown> {
+  /**
+   * Drop secret values → has* booleans (+ host hint for capability URLs); copy non-secrets.
+   * Returns null (rather than throwing) when the masked shape fails the type's masked schema —
+   * a malformed stored config — so the caller can degrade the row instead of bricking the GET.
+   */
+  private tryMaskNotifierConfig(def: NotifierTypeDef, stored: Record<string, unknown>): Record<string, unknown> | null {
     const out: Record<string, unknown> = {};
     for (const f of def.fields) {
       const sf = def.secretFields.find((s) => s.field === f.key);
@@ -303,7 +340,8 @@ export class ConnectorSettingsService {
         out[f.key] = stored[f.key];
       }
     }
-    return def.maskedConfigSchema.parse(out) as Record<string, unknown>;
+    const result = def.maskedConfigSchema.safeParse(out);
+    return result.success ? (result.data as Record<string, unknown>) : null;
   }
 
   /**
