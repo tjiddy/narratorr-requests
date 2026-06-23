@@ -65,10 +65,15 @@ describe('toggleEvent', () => {
 
 describe('buildConfigPayload — omit-to-keep secret encoding', () => {
   const ntfyDef = NOTIFIER_REGISTRY.ntfy;
-  const state = (over: Partial<NotifierFormState['fields']>, has: Record<string, boolean> = {}): NotifierFormState => ({
+  const state = (
+    over: Partial<NotifierFormState['fields']>,
+    has: Record<string, boolean> = {},
+    clear: Record<string, boolean> = {},
+  ): NotifierFormState => ({
     ...newNotifierForm('ntfy'),
     fields: { url: 'https://ntfy.sh', topic: 'reqs', token: '', priority: '', ...over },
     has,
+    clear,
   });
 
   it('omits a blank secret (keep stored) and includes a typed one verbatim (password kind)', () => {
@@ -76,6 +81,41 @@ describe('buildConfigPayload — omit-to-keep secret encoding', () => {
     // ntfy token is a password-kind secret → kept verbatim (the server trims it).
     expect(buildConfigPayload(ntfyDef, state({ token: '  tok  ' })).token).toBe('  tok  ');
     expect(buildConfigPayload(ntfyDef, state({ token: 'tok' })).token).toBe('tok');
+  });
+
+  describe('optional-secret clear/replace precedence ladder', () => {
+    // ntfy `token` is the optional (non-required) secret; `has.token` marks it stored.
+    it('rung 1: non-empty input + clear selected → sends the typed value (replacement wins)', () => {
+      const payload = buildConfigPayload(ntfyDef, state({ token: 'new' }, { token: true }, { token: true }));
+      expect(payload.token).toBe('new');
+    });
+
+    it('rung 1: non-empty input, clear not selected → sends the value (unchanged behavior)', () => {
+      expect(buildConfigPayload(ntfyDef, state({ token: 'new' }, { token: true })).token).toBe('new');
+    });
+
+    it('rung 2: blank input + clear selected → emits the empty-string clear sentinel', () => {
+      const payload = buildConfigPayload(ntfyDef, state({ token: '' }, { token: true }, { token: true }));
+      expect(payload.token).toBe('');
+    });
+
+    it('rung 3: blank input + clear not selected → omits the field (keep stored)', () => {
+      expect(buildConfigPayload(ntfyDef, state({ token: '' }, { token: true }))).not.toHaveProperty('token');
+    });
+
+    it('a REQUIRED secret never emits the clear sentinel — blank stays omitted even if clear is set', () => {
+      // webhook `url` is the required secret; the UI never shows clear for it, but assert the
+      // helper would not honor a stray clear flag regardless.
+      const webhookDef = NOTIFIER_REGISTRY.webhook;
+      const f: NotifierFormState = { ...newNotifierForm('webhook'), id: 'nf_1', fields: { url: '' }, has: { url: true }, clear: { url: true } };
+      expect(buildConfigPayload(webhookDef, f)).not.toHaveProperty('url');
+    });
+  });
+
+  it('a blank REQUIRED non-secret field emits an empty string (which the server min(1) rejects)', () => {
+    // ntfy `topic` is required + non-secret: documents that buildConfigPayload sends ''
+    // for it (settings-notifiers.ts collapses required text to its trimmed value).
+    expect(buildConfigPayload(ntfyDef, state({ topic: '' })).topic).toBe('');
   });
 
   it('collapses an empty optional non-secret to null (priority)', () => {
@@ -115,6 +155,19 @@ describe('buildNotifierBody / buildNotifierTestBody', () => {
     expect(buildNotifierTestBody(editForm, 'https://app.com')).toMatchObject({ type: 'ntfy', id: 'nf_1', publicUrl: 'https://app.com' });
     expect(buildNotifierTestBody(newNotifierForm('ntfy'), null)).not.toHaveProperty('publicUrl');
     expect(buildNotifierTestBody(newNotifierForm('ntfy'), null)).not.toHaveProperty('id');
+  });
+
+  it('test body samples the first selected event (single- and multi-event)', () => {
+    // newNotifierForm selects all events in registry order → first is request.created.
+    expect(buildNotifierTestBody(newNotifierForm('ntfy'), null)?.event).toBe('request.created');
+    const pendingOnly: NotifierFormState = { ...newNotifierForm('ntfy'), events: ['user.pending'] };
+    expect(buildNotifierTestBody(pendingOnly, null)?.event).toBe('user.pending');
+    const both: NotifierFormState = { ...newNotifierForm('ntfy'), events: ['user.pending', 'request.created'] };
+    expect(buildNotifierTestBody(both, null)?.event).toBe('user.pending');
+  });
+
+  it('returns null when no event is selected (nothing to sample)', () => {
+    expect(buildNotifierTestBody({ ...newNotifierForm('ntfy'), events: [] }, null)).toBeNull();
   });
 });
 

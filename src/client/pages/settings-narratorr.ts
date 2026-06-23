@@ -29,6 +29,16 @@ export const initNarratorr = (c: ConnectorSettingsDto['narratorr']): NarratorrSt
   hasKey: c?.hasApiKey ?? false,
 });
 
+/**
+ * The remount/reseed key for the connection form. It projects ONLY the connection's own
+ * persisted slice (publicUrl + narratorr) — deliberately NOT the notifier list. Keying the
+ * form on this means a notifier mutation's connectors refetch (which changes the notifier
+ * list but not this slice) no longer remounts the form, so in-progress host/key/Public-URL
+ * edits survive; a genuine connection save (which does change this slice) still reseeds it.
+ */
+export const connectionFormKey = (dto: ConnectorSettingsDto): string =>
+  JSON.stringify({ publicUrl: dto.publicUrl, narratorr: dto.narratorr });
+
 export const buildNarratorr = (s: NarratorrState): UpdateConnectorSettingsBody['narratorr'] =>
   s.host.trim() === ''
     ? null

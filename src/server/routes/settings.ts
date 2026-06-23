@@ -20,6 +20,7 @@ import {
   buildNotifier,
   buildNotifierChannel,
   render,
+  type NotificationEvent,
   type NotificationPayload,
   type SendContext,
 } from '../services/notifications/index.js';
@@ -33,13 +34,30 @@ function describeNarratorrError(err: unknown): string {
   return err instanceof Error ? err.message : 'Unknown error';
 }
 
-/** A sample `request.created` event rendered with the given public URL, for a Test probe. */
-function testContext(publicUrl: string | null): SendContext {
-  const payload: NotificationPayload = {
-    event: 'request.created',
-    request: { publicId: 'rq_test', title: 'Test notification', author: 'narratorr-request', asin: 'TEST', coverUrl: null },
-    requester: { username: '(settings test)' },
-  };
+/** The sample payload for an event — so Test exercises the event the notifier is configured for. */
+function samplePayload(event: NotificationEvent): NotificationPayload {
+  switch (event) {
+    case 'request.created':
+      return {
+        event: 'request.created',
+        request: { publicId: 'rq_test', title: 'Test notification', author: 'narratorr-request', asin: 'TEST', coverUrl: null },
+        requester: { username: '(settings test)' },
+      };
+    case 'user.pending':
+      return {
+        event: 'user.pending',
+        user: { publicId: 'us_test', username: '(settings test)', email: null, authProvider: 'local' },
+      };
+    default: {
+      const _exhaustive: never = event;
+      return _exhaustive;
+    }
+  }
+}
+
+/** A sample event rendered with the given public URL, for a Test probe. */
+function testContext(event: NotificationEvent, publicUrl: string | null): SendContext {
+  const payload = samplePayload(event);
   // Render via the real renderer so a test notification matches production formatting.
   return { payload, message: render(payload, publicUrl) };
 }
@@ -152,7 +170,7 @@ export function registerSettingsRoutes(app: FastifyInstance, deps: AppDeps): voi
         }
         if (!channel) return { success: false, message: `${body.type} is not configured.` };
         try {
-          await channel.send(testContext(body.publicUrl ?? null));
+          await channel.send(testContext(body.event, body.publicUrl ?? null));
           return { success: true, message: 'Test notification sent.' };
         } catch (err) {
           return { success: false, message: err instanceof Error ? err.message : 'Unknown error' };

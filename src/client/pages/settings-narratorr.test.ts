@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { initNarratorr, buildNarratorr, type NarratorrState } from './settings-narratorr';
-import type { ConnectorSettingsDto } from '@shared/schemas/connectors';
+import { initNarratorr, buildNarratorr, connectionFormKey, type NarratorrState } from './settings-narratorr';
+import type { ConnectorSettingsDto, NotifierDto } from '@shared/schemas/connectors';
 
 const dto = (over: Partial<NonNullable<ConnectorSettingsDto['narratorr']>>): ConnectorSettingsDto['narratorr'] => ({
   host: 'narratorr',
@@ -73,5 +73,36 @@ describe('buildNarratorr', () => {
       port: 443,
       useSsl: true,
     });
+  });
+});
+
+describe('connectionFormKey — keyed on the connection slice, not the notifier list', () => {
+  const notifier = (id: string): NotifierDto => ({
+    id,
+    name: id,
+    type: 'ntfy',
+    enabled: true,
+    events: ['request.created'],
+    config: { url: 'https://ntfy.sh', topic: 't', hasToken: false, priority: null },
+  });
+  const settings = (over: Partial<ConnectorSettingsDto> = {}): ConnectorSettingsDto => ({
+    publicUrl: 'https://app.example.com',
+    narratorr: dto({ host: 'narratorr', port: 3000 }),
+    notifiers: [],
+    ...over,
+  });
+
+  it('is unchanged when only the notifier list differs (no remount → unsaved edits survive)', () => {
+    const before = settings({ notifiers: [notifier('nf_1')] });
+    const after = settings({ notifiers: [notifier('nf_1'), notifier('nf_2')] });
+    expect(connectionFormKey(after)).toBe(connectionFormKey(before));
+  });
+
+  it('changes when the connection slice genuinely changes (real save → reseed)', () => {
+    const before = settings();
+    expect(connectionFormKey(settings({ publicUrl: 'https://moved.example.com' }))).not.toBe(connectionFormKey(before));
+    expect(connectionFormKey(settings({ narratorr: dto({ host: 'narratorr', port: 3000, hasApiKey: true }) }))).not.toBe(
+      connectionFormKey(before),
+    );
   });
 });

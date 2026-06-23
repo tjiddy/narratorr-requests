@@ -248,7 +248,9 @@ export class ConnectorSettingsService {
    * "Test" path). `id` present (edit) → omit-to-keep secrets against the stored notifier;
    * absent (create) → secrets must be provided. NEVER writes.
    */
-  async buildCandidateNotifier(body: NotifierTestBody): Promise<{ type: NotifierType; config: Record<string, unknown> }> {
+  async buildCandidateNotifier(
+    body: Pick<NotifierTestBody, 'type' | 'config' | 'id'>,
+  ): Promise<{ type: NotifierType; config: Record<string, unknown> }> {
     const def = NOTIFIER_REGISTRY[body.type];
     const parsed = this.parseConfig(def, body.config);
     const stored = body.id ? (await this.getStored()).notifiers.find((n) => n.id === body.id) : undefined;

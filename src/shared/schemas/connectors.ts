@@ -212,13 +212,17 @@ export type CreateNotifierBody = z.infer<typeof createNotifierBodySchema>;
 export type UpdateNotifierBody = z.infer<typeof updateNotifierBodySchema>;
 
 // ---- Test a notifier candidate (POST /notifiers/test) -----------------------
-// Fires a sample `request.created` through the built channel from the CURRENT (unsaved)
-// form values — no save required. `id` (edit) → omit-to-keep secrets against the stored
-// notifier; absent (create) → required secrets must be present. Always returns 200.
+// Fires a sample event through the built channel from the CURRENT (unsaved) form values —
+// no save required. `event` selects WHICH sample is sent (the client picks from the
+// notifier's selected events) so Test exercises the event the notifier is actually
+// configured for; it defaults to `request.created` to preserve the legacy probe when
+// omitted. `id` (edit) → omit-to-keep secrets against the stored notifier; absent
+// (create) → required secrets must be present. Always returns 200.
 export const notifierTestBodySchema = z
   .object({
     type: z.enum(NOTIFIER_TYPES),
     config: z.record(z.string(), z.unknown()),
+    event: notificationEventSchema.default('request.created'),
     id: z.string().optional(),
     publicUrl: httpUrl.nullable().optional(),
   })

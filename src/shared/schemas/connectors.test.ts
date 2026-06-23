@@ -107,6 +107,14 @@ describe('createNotifierBodySchema / notifierTestBodySchema', () => {
     });
     expect(notifierTestBodySchema.safeParse({ type: 'webhook', config: {} }).success).toBe(true);
   });
+
+  it('notifier test body event: accepts the known events, defaults to request.created, rejects unknown', () => {
+    expect(notifierTestBodySchema.parse({ type: 'ntfy', config: {}, event: 'user.pending' }).event).toBe('user.pending');
+    expect(notifierTestBodySchema.parse({ type: 'ntfy', config: {}, event: 'request.created' }).event).toBe('request.created');
+    // Omitted → legacy request.created sample, preserving today's probe.
+    expect(notifierTestBodySchema.parse({ type: 'ntfy', config: {} }).event).toBe('request.created');
+    expect(notifierTestBodySchema.safeParse({ type: 'ntfy', config: {}, event: 'request.failed' }).success).toBe(false);
+  });
 });
 
 describe('storedNotifierSchema — type-lenient persistence boundary', () => {

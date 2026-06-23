@@ -12,7 +12,7 @@ import {
   useTestNotifier,
 } from '../hooks';
 import { Button } from '../components/Button';
-import { initNarratorr, buildNarratorr, type NarratorrState } from './settings-narratorr';
+import { initNarratorr, buildNarratorr, connectionFormKey, type NarratorrState } from './settings-narratorr';
 import {
   newNotifierForm,
   formFromDto,
@@ -61,8 +61,10 @@ export function SettingsPage() {
       </div>
       {isLoading && <p className="text-sm text-muted-foreground/70">Loading…</p>}
       {error && <p className="text-sm text-destructive">Could not load settings.</p>}
-      {/* Remount on save so freshly-masked secrets + has* flags reset cleanly. */}
-      {data && <SettingsForm key={JSON.stringify(data)} initial={data} />}
+      {/* Key on ONLY the connection slice (not the notifier list) so a notifier mutation's
+          refetch doesn't remount the form and discard unsaved connection edits; a real
+          connection save changes the slice and reseeds freshly-masked secrets + has* flags. */}
+      {data && <SettingsForm key={connectionFormKey(data)} initial={data} />}
     </div>
   );
 }
@@ -171,8 +173,13 @@ function NotifiersSection({ notifiers, publicUrl }: { notifiers: NotifierDto[]; 
   const test = useTestNotifier();
 
   // Test a SAVED notifier straight from its card: rebuild the candidate from the masked
-  // DTO (secrets blank → omit-to-keep, resolved by id server-side), exactly as the modal does.
-  const testSaved = (n: KnownNotifierDto) => test.mutate(buildNotifierTestBody(formFromDto(n), publicUrl));
+  // DTO (secrets blank → omit-to-keep, resolved by id server-side), exactly as the modal
+  // does. The test body samples the notifier's first selected event (null → no event, Test
+  // is hidden on the card below).
+  const testSaved = (n: KnownNotifierDto) => {
+    const body = buildNotifierTestBody(formFromDto(n), publicUrl);
+    if (body) test.mutate(body);
+  };
 
   return (
     <div className="glass-card flex flex-col gap-4 rounded-xl p-4">
@@ -199,7 +206,9 @@ function NotifiersSection({ notifiers, publicUrl }: { notifiers: NotifierDto[]; 
             notifier={n}
             {...(isKnownNotifier(n) && {
               onEdit: () => setEditing(formFromDto(n)),
-              onTest: () => testSaved(n),
+              // No event selected → nothing to sample → hide Test (the modal requires ≥1
+              // event, but a leniently-stored notifier can have none).
+              ...(n.events.length > 0 && { onTest: () => testSaved(n) }),
             })}
             onDelete={() => del.mutate(n.id)}
             testing={test.isPending && test.variables?.id === n.id}
@@ -299,6 +308,8 @@ function NotifierModal({
 
   const setField = (key: string, value: string | boolean) =>
     setForm({ ...form, fields: { ...form.fields, [key]: value } });
+  const setClear = (key: string, value: boolean) =>
+    setForm({ ...form, clear: { ...form.clear, [key]: value } });
 
   function save() {
     setSubmitted(true);
@@ -314,7 +325,8 @@ function NotifierModal({
   function runTest() {
     setSubmitted(true);
     if (!isValid) return;
-    test.mutate(buildNotifierTestBody(form, publicUrl));
+    const body = buildNotifierTestBody(form, publicUrl);
+    if (body) test.mutate(body);
   }
 
   return (
@@ -367,7 +379,7 @@ function NotifierModal({
 
         <div className="flex flex-col gap-3 border-t border-border/50 pt-4">
           {def.fields.map((f) => (
-            <NotifierFieldInput key={f.key} field={f} form={form} setField={setField} error={showError(f.key)} />
+            <NotifierFieldInput key={f.key} field={f} form={form} setField={setField} setClear={setClear} error={showError(f.key)} />
           ))}
         </div>
 
@@ -393,11 +405,13 @@ function NotifierFieldInput({
   field,
   form,
   setField,
+  setClear,
   error,
 }: {
   field: NotifierField;
   form: NotifierFormState;
   setField: (key: string, value: string | boolean) => void;
+  setClear: (key: string, value: boolean) => void;
   error?: string | undefined;
 }) {
   const value = form.fields[field.key];
@@ -411,9 +425,16 @@ function NotifierFieldInput({
     );
   }
 
+  const hasStored = field.secret && Boolean(form.has[field.key]);
+  // The clear affordance is shown ONLY for an already-saved OPTIONAL secret.
+  const clearable = hasStored && !field.required;
+  const inputEmpty = typeof value !== 'string' || value.trim() === '';
+
   const secretHint = field.secret
-    ? form.has[field.key]
-      ? 'Leave blank to keep the current value.'
+    ? hasStored
+      ? clearable
+        ? 'Type a new value to replace it, or use “Clear stored value” to remove it.'
+        : 'Leave blank to keep the current value.'
       : field.hint
     : field.hint;
   const placeholder = field.secret ? secretPlaceholder(Boolean(form.has[field.key]), field.required) : field.placeholder;
@@ -428,6 +449,20 @@ function NotifierFieldInput({
         onChange={(e) => setField(field.key, e.target.value)}
         placeholder={placeholder}
       />
+      {clearable && (
+        // A non-empty input always wins (rung 1), so disable + visually uncheck while the
+        // input has text — clear and replace can never both be active.
+        <label className="flex items-center gap-2 text-xs text-muted-foreground/70">
+          <input
+            type="checkbox"
+            className="h-3.5 w-3.5 accent-primary"
+            checked={Boolean(form.clear[field.key]) && inputEmpty}
+            disabled={!inputEmpty}
+            onChange={(e) => setClear(field.key, e.target.checked)}
+          />
+          <span>Clear stored value</span>
+        </label>
+      )}
     </Field>
   );
 }
