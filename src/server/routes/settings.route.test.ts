@@ -180,23 +180,45 @@ describe('settings routes — notifier CRUD + live reconfigure', () => {
 });
 
 describe('settings routes — create returns the row by id (not by array index)', () => {
-  it('the response id matches the created row, for each create (not just the last)', async () => {
-    const a = (await createNotifier(ntfyCreate({ name: 'First', config: { url: 'https://ntfy.sh', topic: 'a' } }))).json();
-    const b = (await createNotifier(ntfyCreate({ name: 'Second', config: { url: 'https://ntfy.sh', topic: 'b' } }))).json();
-    expect(a.id).not.toBe(b.id);
-    // Each returned id maps to the correctly-named stored row → the route matched by id, not index.
+  it('returns the created row even when getDto does NOT place it last (index-based impl would fail)', async () => {
+    // Force getDto to surface notifiers in a NON-append order so the just-created row is not at
+    // the last index. The old `dto.notifiers[length - 1]` impl would return the wrong row here;
+    // matching by `created.id` returns the right one. This is what makes the test non-vacuous
+    // against a future reorder/filter in getDto (the contract finding #4 protects).
+    const realGetDto = connectorSettings.getDto.bind(connectorSettings);
+    vi.spyOn(connectorSettings, 'getDto').mockImplementation(async () => {
+      const dto = await realGetDto();
+      return { ...dto, notifiers: [...dto.notifiers].reverse() }; // created row moves OFF the last index
+    });
+
+    // Seed one notifier first so a second create has a sibling to be reordered against.
+    await createNotifier(ntfyCreate({ name: 'First', config: { url: 'https://ntfy.sh', topic: 'a' } }));
+    const second = await createNotifier(ntfyCreate({ name: 'Second', config: { url: 'https://ntfy.sh', topic: 'b' } }));
+    expect(second.statusCode).toBe(200);
+    // Under reversed order the LAST index holds 'First'; only a by-id match returns 'Second'.
+    expect(second.json().name).toBe('Second');
+
     const stored = (await connectorSettings.getStored()).notifiers;
-    expect(stored.find((n) => n.id === a.id)?.name).toBe('First');
-    expect(stored.find((n) => n.id === b.id)?.name).toBe('Second');
+    expect(stored.find((n) => n.id === second.json().id)?.name).toBe('Second');
   });
 });
 
 describe('settings routes — bounded notifier write body', () => {
   const NAME_MAX = 100;
+  const EVENTS_MAX = 20;
   it('a name at the max length succeeds; one over the max is rejected (4xx)', async () => {
     const atMax = await createNotifier(ntfyCreate({ name: 'x'.repeat(NAME_MAX) }));
     expect(atMax.statusCode).toBe(200);
     const overMax = await createNotifier(ntfyCreate({ name: 'x'.repeat(NAME_MAX + 1) }));
+    expect(overMax.statusCode).toBe(400);
+  });
+
+  it('an events list at the cap succeeds; one over the cap is rejected (4xx)', async () => {
+    // Valid keys repeated to length — the cap bounds array length, not key uniqueness.
+    const events = (n: number) => Array.from({ length: n }, () => 'request.created' as const);
+    const atMax = await createNotifier(ntfyCreate({ events: events(EVENTS_MAX) }));
+    expect(atMax.statusCode).toBe(200);
+    const overMax = await createNotifier(ntfyCreate({ events: events(EVENTS_MAX + 1) }));
     expect(overMax.statusCode).toBe(400);
   });
 });
@@ -223,14 +245,54 @@ describe('settings routes — Test probes do not hold the write mutex', () => {
       payload: { type: 'ntfy', config: { url: 'https://ntfy.sh', topic: 'hang' } },
     });
 
-    // The create must land while the probe's send() is still hung — proof the lock was released.
+    // Wait until the probe is INSIDE the hung send() before issuing the write. By now the lock is
+    // either still held (the regression we guard against → the create below would deadlock) or
+    // already released (correct → the create completes). Awaiting first makes the assertion
+    // deterministic instead of racing the create against the probe's lock acquisition.
+    await fetchCalled;
     const created = await createNotifier(ntfyCreate({ name: 'Concurrent', config: { url: 'https://ntfy.sh', topic: 'c' } }));
     expect(created.statusCode).toBe(200);
 
-    // Cleanup: wait until the probe is actually inside the hung fetch, then release it so the
-    // pending request settles before afterEach closes the app.
-    await fetchCalled;
+    // Cleanup: release the hung probe so the pending request settles before afterEach closes the app.
     releaseFetch(new Response(null, { status: 200 }));
+    expect((await probe).statusCode).toBe(200);
+  });
+
+  it('a stalled narratorr probe does not block a concurrent write (ping released outside the lock)', async () => {
+    // Configure narratorr so the probe builds a real client and reaches ping(); ping() uses the
+    // global fetch, which we stall. With the lock held across ping() the concurrent create would
+    // deadlock behind it — releasing the lock before ping() lets the write land.
+    await connectorSettings.update({ narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'k' } });
+
+    let releaseFetch: (v: Response) => void = () => {};
+    const fetchCalled = new Promise<void>((resolveCalled) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() => {
+          resolveCalled(); // the probe is inside ping() → its lock section is already over
+          return new Promise<Response>((res) => { releaseFetch = res; });
+        }),
+      );
+    });
+
+    const probe = app.inject({
+      method: 'POST',
+      url: `${CONNECTORS_URL}/test`,
+      headers: asAdmin,
+      payload: { channel: 'narratorr', narratorr: { host: 'n.example.com', port: 443, useSsl: true } },
+    });
+
+    // Wait until the probe is INSIDE the hung ping() before issuing the write — by now the lock is
+    // either still held (regression → the create would deadlock) or released (correct → it lands).
+    // Awaiting first removes the lock-acquisition race that would otherwise let the create win the
+    // lock before the probe and pass regardless of where ping() sits relative to the lock.
+    await fetchCalled;
+    const created = await createNotifier(ntfyCreate({ name: 'Concurrent', config: { url: 'https://ntfy.sh', topic: 'c' } }));
+    expect(created.statusCode).toBe(200);
+
+    // Cleanup: release the hung ping (404 → a clean narratorr "connected" probe) so the pending
+    // request settles before afterEach closes the app.
+    releaseFetch(new Response('{}', { status: 404 }));
     expect((await probe).statusCode).toBe(200);
   });
 });
