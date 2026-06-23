@@ -58,7 +58,7 @@ libSQL (SQLite) · Zod everywhere · TypeScript (strict) · ESM · tsup (server 
   N generic OIDC providers); authorization is the in-app **approval queue** (`pending`/`active`/
   `rejected`). Identity is a generic `(authProvider, authSubject)` pair — **no account linking**.
   First user in becomes admin+active unless `BOOTSTRAP_ADMIN` pins one. `AUTH_BYPASS` makes every
-  request the dev admin and refuses to run in prod or bind non-loopback (see `config.ts`).
+  request the dev admin and refuses to run in prod, and refuses a non-loopback bind unless `ALLOW_INSECURE_AUTH_BYPASS` is set (see `config.ts`).
 - **Connector config lives in the DB, not env.** The narratorr URL/key and notification channels
   (ntfy/email/webhook) are set in the admin **Settings** page and stored encrypted (`SecretCodec`,
   key derived from `SESSION_SECRET` or `SETTINGS_KEY`). The env surface is deliberately just

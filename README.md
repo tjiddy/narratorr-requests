@@ -4,9 +4,10 @@ An [Overseerr](https://overseerr.dev/)-style request manager for
 [Narratorr](https://github.com/tjiddy/narratorr) (Sonarr/Radarr for audiobooks). Family and friends sign in
 (local email/password or any OIDC provider — Plex bridge, Authelia, Authentik, Google, …),
 search/browse audiobooks, and request them. New users land in an **approval queue** until an
-admin lets them in; an admin then approves each request; approved requests are handed to
-Narratorr's `search → download → import` pipeline; the requester is notified when the book is
-available.
+admin lets them in; an admin then approves each request (admins and auto-approve users skip the queue); approved
+requests hand off to Narratorr's `search → download → import` pipeline, and the requester tracks
+progress to **available** on their **My requests** page. Notifications are admin-facing — a new
+request to review, a new signup awaiting approval — not requester-facing.
 
 It is a **plug-in sidecar** that talks to Narratorr only over its public `/api/v1` HTTP
 surface (API key). It has no other coupling. The Narratorr connection and the notification

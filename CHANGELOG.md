@@ -13,7 +13,8 @@ Initial public release.
 
 ### Added
 - Overseerr-style audiobook request flow: search/browse → request → admin approval → handoff
-  to narratorr's `search → download → import` pipeline → "available" notification.
+  to narratorr's `search → download → import` pipeline, with the request reconciled to
+  `available` as narratorr completes the import (tracked live on the requester's My Requests page).
 - Library-aware search: each result reflects narratorr's library status (in library /
   acquiring / requestable), so users don't re-request books already owned.
 - Pluggable authentication: local email + password (scrypt) and any number of generic OIDC
@@ -25,8 +26,9 @@ Initial public release.
   and set per-user request quota + auto-approve.
 - Per-user request quotas (rolling 30-day window) with an app-wide default
   (`DEFAULT_REQUEST_QUOTA`) and per-user overrides.
-- In-app Settings for the narratorr connection and notification channels (ntfy / email /
-  webhook), stored encrypted at rest with AES-256-GCM; secrets are masked in API responses.
+- In-app Settings for the narratorr connection and admin notification channels (ntfy / email /
+  webhook) — fired on a new request and a new-user signup — stored encrypted at rest with
+  AES-256-GCM; secrets are masked in API responses.
 - Request-lifecycle polling that reconciles narratorr book status to `available` / `failed`.
 - Contract-first narratorr integration: the consumed `/api/v1` surface is vendored as Zod
   schemas; a non-conforming response surfaces as `502 CONTRACT_MISMATCH`.
