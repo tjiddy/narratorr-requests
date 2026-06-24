@@ -39,8 +39,12 @@ export class EmailChannel implements NotificationChannel {
   }
 
   async send({ message }: SendContext): Promise<void> {
-    // message.url is our own constructed origin + '/admin', not user input — safe in href.
-    const link = message.url ? `<p><a href="${message.url}">Open the request queue</a></p>` : '';
+    // message.url is our own constructed origin + an app-owned deep-link path (e.g. /admin or
+    // /users), not user input — safe in href. linkLabel is renderer-owned too, but escape it so
+    // the HTML-safety contract stays explicit alongside the escaped body below.
+    const link = message.url
+      ? `<p><a href="${message.url}">${escapeHtml(message.linkLabel)}</a></p>`
+      : '';
     await this.transport.sendMail({
       from: this.cfg.from,
       to: this.cfg.to,

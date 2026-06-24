@@ -67,6 +67,10 @@ export interface RenderedMessage {
   body: string;
   /** Deep link to act on the event (admin queue / users page), or null if PUBLIC_URL is unset. */
   url: string | null;
+  /** Call-to-action text for the deep link, tracking `url`'s destination (e.g. "Review pending
+   *  users" for /users vs "Open the request queue" for /admin). Used by the email adapter's
+   *  `<a>` label; non-null so it needs no guard. */
+  linkLabel: string;
 }
 
 /** What each channel's send() receives: the structured event + the rendered message. */

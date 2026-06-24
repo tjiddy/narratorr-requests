@@ -29,6 +29,7 @@ const ctx: SendContext = {
     title: 'New audiobook request',
     body: 'todd requested “Dune” by Frank Herbert.',
     url: 'https://req.example.com/admin',
+    linkLabel: 'Open the request queue',
   },
 };
 
@@ -43,6 +44,7 @@ const userCtx: SendContext = {
     title: 'New user awaiting approval',
     body: 'newbie (newbie@x.com) signed up via authelia and is waiting for your approval.',
     url: 'https://req.example.com/users',
+    linkLabel: 'Review pending users',
   },
 };
 
@@ -59,6 +61,7 @@ const failedCtx: SendContext = {
     title: 'Request failed',
     body: '“Dune” failed to acquire by Frank Herbert: No source found upstream.',
     url: 'https://req.example.com/admin',
+    linkLabel: 'Open the request queue',
   },
 };
 
@@ -180,6 +183,24 @@ describe('EmailChannel', () => {
     expect(mail.subject).toBe('New audiobook request');
     expect(mail.text).toContain('https://req.example.com/admin');
     expect(mail.html).toContain('Open the request queue');
+  });
+
+  it('labels the link per event — user.pending reads "Review pending users" and links to /users', async () => {
+    const ch = new EmailChannel({
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      user: 'u',
+      pass: 'p',
+      from: 'bot@x',
+      to: 'admin@x',
+    });
+    await ch.send(userCtx);
+
+    const mail = sendMail.mock.calls[0]![0];
+    expect(mail.html).toContain('>Review pending users</a>');
+    expect(mail.html).toContain('href="https://req.example.com/users"');
+    expect(mail.html).not.toContain('Open the request queue');
   });
 
   it('omits the link and uses the plain body as text when message.url is null', async () => {
@@ -414,7 +435,10 @@ describe('PushoverChannel', () => {
 
   it('truncates title to 250 and message to 1024', async () => {
     const ch = new PushoverChannel({ appToken: 'app-tok', userKey: 'user-key' });
-    await ch.send({ payload: ctx.payload, message: { title: 'T'.repeat(300), body: 'B'.repeat(2000), url: null } });
+    await ch.send({
+      payload: ctx.payload,
+      message: { title: 'T'.repeat(300), body: 'B'.repeat(2000), url: null, linkLabel: 'Open the request queue' },
+    });
     const body = JSON.parse(fetchMock.mock.calls[0]![1].body);
     expect(body.title).toHaveLength(250);
     expect(body.message).toHaveLength(1024);
