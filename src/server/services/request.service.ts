@@ -2,6 +2,7 @@ import { and, desc, eq, gte, inArray, or, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
 import { requests, users, type RequestRow } from '../../db/schema.js';
 import type { Notifier } from './notifications/index.js';
+import { redact } from './notifications/redact.js';
 import type { NotifierLogger } from './notifications/types.js';
 import type { UserService } from './user.service.js';
 import type {
@@ -389,8 +390,11 @@ export class RequestService {
       try {
         requester = await deps.users.getById(row.userId);
       } catch (err) {
+        // redact() before logging: a lookup fault's error text could embed a secret-bearing
+        // value, and the breadcrumb must never carry one raw (URL-pattern scrub; no per-channel
+        // secrets to exact-match here — those live inside the dispatcher).
         deps.logger?.warn(
-          { err, request: row.publicId },
+          { err: redact(err), request: row.publicId },
           'request.failed: requester lookup failed; emitting with placeholder username',
         );
       }
@@ -410,15 +414,18 @@ export class RequestService {
       } catch (err) {
         // A lost notification must be diagnosable — without this breadcrumb a dropped
         // request.failed is invisible. The failed transition already committed; never propagate.
+        // redact() before logging: a dispatch error can embed a capability webhook URL or a
+        // token-in-path (the very reason the dispatcher redacts), so scrub it here too.
         deps.logger?.warn(
-          { err, request: row.publicId },
+          { err: redact(err), request: row.publicId },
           'request.failed: notifier dispatch failed; notification lost',
         );
       }
     })().catch((err) => {
       // Final backstop: both awaits above are individually guarded, so this only fires on a
-      // truly unexpected throw. The failed transition already landed; swallow into a breadcrumb.
-      deps.logger?.warn({ err, request: row.publicId }, 'request.failed: emission failed unexpectedly');
+      // truly unexpected throw. The failed transition already landed; swallow into a (redacted)
+      // breadcrumb.
+      deps.logger?.warn({ err: redact(err), request: row.publicId }, 'request.failed: emission failed unexpectedly');
     });
   }
 

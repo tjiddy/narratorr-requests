@@ -557,6 +557,32 @@ describe('request.failed emission diagnostics (#68: a lost notification is logge
     expect(warnFor(warn, 'notifier dispatch failed')?.[0]).toMatchObject({ request: row.publicId });
   });
 
+  it('REDACTS a secret-bearing dispatch error before logging the breadcrumb (capability URL never reaches the log raw)', async () => {
+    // A real dispatch fault can embed a capability URL / token-in-path (the leak vector redact()
+    // exists for). The error text below carries a Telegram bot token in the URL path; the logged
+    // breadcrumb must scrub it. Deleting redact() from emitFailed would fail THIS assertion (the
+    // plain-text 'channel down' case above would still pass — it has no secret to scrub).
+    const secretToken = 'bot123456789:AA-ZZ_SuperSecretBotTokenValue';
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const { deps, warn, notify } = diagDeps({
+      notify: async () => {
+        throw new Error(`fetch failed for https://api.telegram.org/${secretToken}/sendMessage`);
+      },
+    });
+    const svc = new RequestService(db, client, policy(), deps);
+    const { row } = await svc.create(user.id, body('B1'));
+
+    await expect(svc.markFailed(row, 'gone')).resolves.toBe(true);
+    await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(warnFor(warn, 'notifier dispatch failed')).toBeTruthy());
+    const breadcrumb = warnFor(warn, 'notifier dispatch failed')![0];
+    const serialized = JSON.stringify(breadcrumb);
+    expect(serialized).not.toContain(secretToken); // token scrubbed
+    expect(serialized).not.toContain('SuperSecretBotTokenValue'); // and its value-class fragment
+    expect(serialized).toContain('«redacted»'); // replaced by the shared redaction marker
+    expect(breadcrumb).toMatchObject({ request: row.publicId });
+  });
+
   it('logs nothing at warn on the happy path (successful lookup + dispatch, emitted once)', async () => {
     const user = await insertUser(db, { role: 'user', username: 'todd' });
     const { deps, warn, notify } = diagDeps({});
