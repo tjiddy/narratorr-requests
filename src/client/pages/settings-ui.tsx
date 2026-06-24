@@ -1,8 +1,8 @@
-import type { ReactNode } from 'react';
+import type { ElementType, ReactNode } from 'react';
 
-// Shared Settings form primitive — used by both the Narratorr connection section and the
-// notifier add/edit modal (SettingsPage.tsx). Component-only (react-refresh): the className
-// string + secret placeholder helper stay in SettingsPage.
+// Shared Settings presentational primitives — used by the connection sections, the notifier
+// list/cards, and the add/edit modal. Component-only (react-refresh): pure constants/helpers
+// live in settings-fields.ts; pure logic in settings-narratorr.ts / settings-notifiers.ts.
 
 /** A labelled form field — shows an error in place of the hint when one is present. */
 export function Field({
@@ -26,5 +26,62 @@ export function Field({
         hint && <span className="text-xs text-muted-foreground/70">{hint}</span>
       )}
     </label>
+  );
+}
+
+/** The rounded, primary-tinted icon badge that fronts each section header. */
+export function IconBadge({ icon: Icon }: { icon: ElementType }) {
+  return (
+    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+      <Icon className="h-5 w-5" />
+    </div>
+  );
+}
+
+/** A settings section header: icon badge + serif title + subtitle, with an optional action
+ *  (e.g. an "Add Notifier" button) pinned to the right. */
+export function SectionHeader({
+  icon,
+  title,
+  subtitle,
+  action,
+}: {
+  icon: ElementType;
+  title: string;
+  subtitle: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div className="flex min-w-0 items-center gap-3.5">
+        <IconBadge icon={icon} />
+        <div className="min-w-0">
+          <h2 className="font-display text-lg font-semibold tracking-tight">{title}</h2>
+          <p className="text-sm text-muted-foreground">{subtitle}</p>
+        </div>
+      </div>
+      {action}
+    </div>
+  );
+}
+
+/** The spacious glass card shell (rounded-2xl, fade-in). Padding is left to the caller so a
+ *  card can carry a full-bleed bordered footer (the per-card Save/Test row). */
+export function SettingsCard({
+  delay,
+  className = '',
+  children,
+}: {
+  delay?: string | undefined;
+  className?: string | undefined;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className={`glass-card animate-fade-in-up rounded-2xl ${className}`}
+      style={delay ? { animationDelay: delay } : undefined}
+    >
+      {children}
+    </div>
   );
 }

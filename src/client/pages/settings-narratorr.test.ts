@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { initNarratorr, buildNarratorr, connectionFormKey, type NarratorrState } from './settings-narratorr';
-import type { ConnectorSettingsDto, NotifierDto } from '@shared/schemas/connectors';
+import { initNarratorr, buildNarratorr, isNarratorrDirty, isPublicUrlDirty, type NarratorrState } from './settings-narratorr';
+import type { ConnectorSettingsDto } from '@shared/schemas/connectors';
 
 const dto = (over: Partial<NonNullable<ConnectorSettingsDto['narratorr']>>): ConnectorSettingsDto['narratorr'] => ({
   url: 'http://narratorr:3000',
@@ -52,32 +52,46 @@ describe('buildNarratorr', () => {
   });
 });
 
-describe('connectionFormKey — keyed on the connection slice, not the notifier list', () => {
-  const notifier = (id: string): NotifierDto => ({
-    id,
-    name: id,
-    type: 'ntfy',
-    events: ['request.created'],
-    config: { url: 'https://ntfy.sh', topic: 't', hasToken: false, priority: null },
-  });
-  const settings = (over: Partial<ConnectorSettingsDto> = {}): ConnectorSettingsDto => ({
-    publicUrl: 'https://app.example.com',
-    narratorr: dto({ url: 'http://narratorr:3000' }),
-    notifiers: [],
-    ...over,
+describe('isNarratorrDirty — drives the Narratorr card Save button', () => {
+  const initial = state({ url: 'http://narratorr:3000', key: '' });
+
+  it('is clean when the url matches and no key was typed', () => {
+    expect(isNarratorrDirty(state({ url: 'http://narratorr:3000', key: '' }), initial)).toBe(false);
   });
 
-  it('is unchanged when only the notifier list differs (no remount → unsaved edits survive)', () => {
-    const before = settings({ notifiers: [notifier('nf_1')] });
-    const after = settings({ notifiers: [notifier('nf_1'), notifier('nf_2')] });
-    expect(connectionFormKey(after)).toBe(connectionFormKey(before));
+  it('ignores surrounding whitespace on the url (trim before compare)', () => {
+    expect(isNarratorrDirty(state({ url: '  http://narratorr:3000  ' }), initial)).toBe(false);
   });
 
-  it('changes when the connection slice genuinely changes (real save → reseed)', () => {
-    const before = settings();
-    expect(connectionFormKey(settings({ publicUrl: 'https://moved.example.com' }))).not.toBe(connectionFormKey(before));
-    expect(connectionFormKey(settings({ narratorr: dto({ url: 'http://narratorr:3000', hasApiKey: true }) }))).not.toBe(
-      connectionFormKey(before),
-    );
+  it('is dirty when the url changed', () => {
+    expect(isNarratorrDirty(state({ url: 'http://narratorr:9999' }), initial)).toBe(true);
+  });
+
+  it('is dirty when a new api key was typed even if the url is unchanged', () => {
+    expect(isNarratorrDirty(state({ url: 'http://narratorr:3000', key: 'newkey' }), initial)).toBe(true);
+  });
+});
+
+describe('isPublicUrlDirty — drives the General card Save button', () => {
+  it('is clean when an empty input matches a null saved value', () => {
+    expect(isPublicUrlDirty('', null)).toBe(false);
+    expect(isPublicUrlDirty('   ', null)).toBe(false);
+  });
+
+  it('is clean when the input matches the saved value (trimmed)', () => {
+    expect(isPublicUrlDirty('https://app.example.com', 'https://app.example.com')).toBe(false);
+    expect(isPublicUrlDirty('  https://app.example.com  ', 'https://app.example.com')).toBe(false);
+  });
+
+  it('is dirty when the input differs from the saved value', () => {
+    expect(isPublicUrlDirty('https://moved.example.com', 'https://app.example.com')).toBe(true);
+  });
+
+  it('is dirty when clearing a previously-set url (input blank, saved set)', () => {
+    expect(isPublicUrlDirty('', 'https://app.example.com')).toBe(true);
+  });
+
+  it('is dirty when setting a url that had no saved value', () => {
+    expect(isPublicUrlDirty('https://app.example.com', null)).toBe(true);
   });
 });
