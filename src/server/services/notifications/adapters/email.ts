@@ -39,11 +39,12 @@ export class EmailChannel implements NotificationChannel {
   }
 
   async send({ message }: SendContext): Promise<void> {
-    // message.url is our own constructed origin + an app-owned deep-link path (e.g. /admin or
-    // /users), not user input — safe in href. linkLabel is renderer-owned too, but escape it so
-    // the HTML-safety contract stays explicit alongside the escaped body below.
+    // Escape EVERY value interpolated into this HTML at the boundary (href, label, body)
+    // rather than reasoning per-value about trust. url + linkLabel are renderer-owned today,
+    // but uniform escaping keeps the email injection-proof if PUBLIC_URL (in the href) or a
+    // future dynamic label ever carries a metacharacter.
     const link = message.url
-      ? `<p><a href="${message.url}">${escapeHtml(message.linkLabel)}</a></p>`
+      ? `<p><a href="${escapeHtml(message.url)}">${escapeHtml(message.linkLabel)}</a></p>`
       : '';
     await this.transport.sendMail({
       from: this.cfg.from,

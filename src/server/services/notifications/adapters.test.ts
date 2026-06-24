@@ -223,6 +223,27 @@ describe('EmailChannel', () => {
     expect(mail.html).not.toContain('<b>');
   });
 
+  it('HTML-escapes message.url before inserting it into the href (no attribute breakout)', async () => {
+    const ch = new EmailChannel({
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      user: 'u',
+      pass: 'p',
+      from: 'bot@x',
+      to: 'admin@x',
+    });
+    await ch.send({
+      payload: ctx.payload,
+      message: { ...ctx.message, url: 'https://req.example.com/admin?a=1&b=2"x' },
+    });
+
+    const mail = sendMail.mock.calls[0]![0];
+    expect(mail.html).toContain('href="https://req.example.com/admin?a=1&amp;b=2&quot;x"');
+    // A raw quote would close the href attribute early — assert it never reaches the markup.
+    expect(mail.html).not.toContain('b=2"x');
+  });
+
   it('omits the link and uses the plain body as text when message.url is null', async () => {
     const ch = new EmailChannel({
       host: 'smtp.example.com',
