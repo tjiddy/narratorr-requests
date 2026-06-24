@@ -203,6 +203,26 @@ describe('EmailChannel', () => {
     expect(mail.html).not.toContain('Open the request queue');
   });
 
+  it('HTML-escapes the linkLabel before inserting it into the anchor text', async () => {
+    const ch = new EmailChannel({
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      user: 'u',
+      pass: 'p',
+      from: 'bot@x',
+      to: 'admin@x',
+    });
+    await ch.send({
+      payload: ctx.payload,
+      message: { ...ctx.message, linkLabel: 'Review <b>"all" & more</b>' },
+    });
+
+    const mail = sendMail.mock.calls[0]![0];
+    expect(mail.html).toContain('Review &lt;b&gt;&quot;all&quot; &amp; more&lt;/b&gt;');
+    expect(mail.html).not.toContain('<b>');
+  });
+
   it('omits the link and uses the plain body as text when message.url is null', async () => {
     const ch = new EmailChannel({
       host: 'smtp.example.com',
