@@ -69,6 +69,14 @@ export interface SendContext {
  */
 export interface NotificationChannel {
   readonly name: string;
+  /**
+   * The plaintext secret values this channel holds (tokens / keys / capability URLs), for
+   * exact-match redaction at the dispatcher log sink — where a fetch/network error can embed
+   * a value the URL-pattern scrub can't enumerate (a Pushover/Gotify token, or an arbitrary
+   * webhook URL). Omitted/empty when the channel has no secrets. The Test route redacts with
+   * the candidate secrets instead (it has the candidate config); this is the dispatcher half.
+   */
+  readonly secrets?: readonly string[];
   send(ctx: SendContext): Promise<void>;
 }
 

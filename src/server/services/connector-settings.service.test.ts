@@ -223,13 +223,13 @@ describe('ConnectorSettingsService — never-brick (undecryptable) + unknown typ
         connectors: {
           publicUrl: null,
           narratorr: null,
-          notifiers: [{ id: 'nf_legacy', name: 'Legacy', type: 'telegram', enabled: true, events: ['user.pending'], config: { token: 'enc:v1:x' } }],
+          notifiers: [{ id: 'nf_legacy', name: 'Legacy', type: 'apprise', enabled: true, events: ['user.pending'], config: { token: 'enc:v1:x' } }],
         },
       })
       .where(eq(appSettings.id, 1));
 
     const dto = await svc.getDto();
-    expect(dto.notifiers[0]).toEqual({ id: 'nf_legacy', name: 'Legacy', type: 'telegram', enabled: false, events: ['user.pending'], unknown: true });
+    expect(dto.notifiers[0]).toEqual({ id: 'nf_legacy', name: 'Legacy', type: 'apprise', enabled: false, events: ['user.pending'], unknown: true });
 
     // It can still be deleted (delete works from stored metadata, no decrypt needed).
     await svc.deleteNotifier('nf_legacy');
@@ -239,7 +239,7 @@ describe('ConnectorSettingsService — never-brick (undecryptable) + unknown typ
 
 describe('ConnectorSettingsService — updateNotifier type change', () => {
   it('rejects changing the type AWAY from an unknown (out-of-registry) stored type; row left untouched', async () => {
-    const before = { id: 'nf_legacy', name: 'Legacy', type: 'telegram', enabled: true, events: ['user.pending'], config: { token: 'enc:v1:x' } };
+    const before = { id: 'nf_legacy', name: 'Legacy', type: 'apprise', enabled: true, events: ['user.pending'], config: { token: 'enc:v1:x' } };
     const connectors = { publicUrl: null, narratorr: null, notifiers: [before] } as unknown as StoredConnectors;
     await db.update(appSettings).set({ connectors }).where(eq(appSettings.id, 1));
 

@@ -20,10 +20,12 @@ import {
   buildNotifier,
   buildNotifierChannel,
   render,
+  redact,
   type NotificationEvent,
   type NotificationPayload,
   type SendContext,
 } from '../services/notifications/index.js';
+import { NOTIFIER_REGISTRY, type NotifierType } from '../../shared/notifier-registry.js';
 
 function describeNarratorrError(err: unknown): string {
   if (err instanceof NarratorrError) {
@@ -60,6 +62,17 @@ function testContext(event: NotificationEvent, publicUrl: string | null): SendCo
   const payload = samplePayload(event);
   // Render via the real renderer so a test notification matches production formatting.
   return { payload, message: render(payload, publicUrl) };
+}
+
+/**
+ * The resolved (plaintext) secret values in a candidate notifier config — passed to
+ * redact() so a Test error embedding a token/key/capability-URL never reaches the admin
+ * raw. Walks the registry's secret metadata, so it covers every type without a per-type branch.
+ */
+function candidateSecrets(candidate: { type: NotifierType; config: Record<string, unknown> }): string[] {
+  return NOTIFIER_REGISTRY[candidate.type].secretFields
+    .map((sf) => candidate.config[sf.field])
+    .filter((v): v is string => typeof v === 'string' && v.length > 0);
 }
 
 const idParams = z.object({ id: z.string().min(1) });
@@ -164,21 +177,25 @@ export function registerSettingsRoutes(app: FastifyInstance, deps: AppDeps): voi
       requireAdmin(request);
       const body = request.body;
       let channel;
+      let candidate;
       try {
         // Secret resolution reads stored state → serialize it. Channel construction reads no
         // DB state, so building it here (still inside the try) needs no lock.
-        const candidate = await writeLock.run(() => deps.connectorSettings.buildCandidateNotifier(body));
+        candidate = await writeLock.run(() => deps.connectorSettings.buildCandidateNotifier(body));
         channel = buildNotifierChannel(candidate.type, candidate.config);
       } catch (err) {
-        // A bad candidate (e.g. a required secret that won't resolve) is a failed test.
-        return { success: false, message: err instanceof Error ? err.message : 'Unknown error' };
+        // A bad candidate (e.g. a required secret that won't resolve) is a failed test. No
+        // resolved candidate config to enumerate here → pattern-based redaction only.
+        return { success: false, message: redact(err) };
       }
       if (!channel) return { success: false, message: `${body.type} is not configured.` };
       try {
         await channel.send(testContext(body.event, body.publicUrl ?? null));
         return { success: true, message: 'Test notification sent.' };
       } catch (err) {
-        return { success: false, message: err instanceof Error ? err.message : 'Unknown error' };
+        // redact() before returning: a fetch/network error can embed the capability webhook
+        // URL or a token — scrub both the resolved candidate secrets and URL-path secrets.
+        return { success: false, message: redact(err, candidateSecrets(candidate)) };
       }
     },
   );

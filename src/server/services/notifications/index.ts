@@ -3,6 +3,11 @@ import { Notifier } from './notifier.service.js';
 import { NtfyChannel } from './adapters/ntfy.js';
 import { EmailChannel } from './adapters/email.js';
 import { WebhookChannel } from './adapters/webhook.js';
+import { DiscordChannel } from './adapters/discord.js';
+import { SlackChannel } from './adapters/slack.js';
+import { TelegramChannel } from './adapters/telegram.js';
+import { PushoverChannel } from './adapters/pushover.js';
+import { GotifyChannel } from './adapters/gotify.js';
 import { NOTIFIER_TYPES, type NotifierType } from '../../../shared/notifier-registry.js';
 import type { NotificationEvent } from '../../../shared/notification-events.js';
 import type {
@@ -38,6 +43,11 @@ const emailRuntimeSchema = z.object({
   to: z.string(),
 });
 const webhookRuntimeSchema = z.object({ url: z.string().min(1) });
+const discordRuntimeSchema = z.object({ webhookUrl: z.string().min(1), includeCover: z.boolean().default(true) });
+const slackRuntimeSchema = z.object({ webhookUrl: z.string().min(1) });
+const telegramRuntimeSchema = z.object({ botToken: z.string().min(1), chatId: z.string().min(1) });
+const pushoverRuntimeSchema = z.object({ appToken: z.string().min(1), userKey: z.string().min(1) });
+const gotifyRuntimeSchema = z.object({ serverUrl: z.string().min(1), appToken: z.string().min(1) });
 
 type AdapterBuilder = (config: Record<string, unknown>) => NotificationChannel;
 
@@ -45,6 +55,11 @@ const ADAPTERS: Record<NotifierType, AdapterBuilder> = {
   ntfy: (c) => new NtfyChannel(ntfyRuntimeSchema.parse(c)),
   email: (c) => new EmailChannel(emailRuntimeSchema.parse(c)),
   webhook: (c) => new WebhookChannel(webhookRuntimeSchema.parse(c)),
+  discord: (c) => new DiscordChannel(discordRuntimeSchema.parse(c)),
+  slack: (c) => new SlackChannel(slackRuntimeSchema.parse(c)),
+  telegram: (c) => new TelegramChannel(telegramRuntimeSchema.parse(c)),
+  pushover: (c) => new PushoverChannel(pushoverRuntimeSchema.parse(c)),
+  gotify: (c) => new GotifyChannel(gotifyRuntimeSchema.parse(c)),
 };
 
 /**
@@ -69,6 +84,11 @@ class EventFilteredChannel implements NotificationChannel {
     private readonly events: ReadonlySet<NotificationEvent>,
     readonly name: string,
   ) {}
+
+  /** Forward the wrapped channel's secrets so the dispatcher can redact them from a log line. */
+  get secrets(): readonly string[] {
+    return this.inner.secrets ?? [];
+  }
 
   async send(ctx: SendContext): Promise<void> {
     if (this.events.has(ctx.payload.event)) await this.inner.send(ctx);
@@ -111,6 +131,7 @@ export function buildNotifier(cfg: NotificationsConfig, log: NotifierLogger): No
 export { NOTIFIER_TYPES };
 export { Notifier } from './notifier.service.js';
 export { render } from './render.js';
+export { redact } from './redact.js';
 export type {
   NotificationEvent,
   NotificationPayload,

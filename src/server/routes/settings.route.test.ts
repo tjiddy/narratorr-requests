@@ -374,6 +374,31 @@ describe('settings routes — notifier test (always 200)', () => {
     expect(res.json().success).toBe(false);
     expect(await connectorSettings.getStored()).toEqual(before);
   });
+
+  it('redacts a capability webhook URL embedded in a send error from the Test response (Slack)', async () => {
+    // Simulate a network error whose message carries the full webhook URL (the capability
+    // secret). The route must pass it through redact() — deleting that call leaks the URL.
+    const webhookUrl = 'https://hooks.slack.com/services/T00/B00/ROUTESECRETXYZ';
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error(`request to ${webhookUrl} failed: ECONNRESET`)));
+    const res = await test({ type: 'slack', config: { webhookUrl } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.success).toBe(false);
+    expect(body.message).not.toContain('ROUTESECRETXYZ');
+    expect(body.message).not.toContain('T00/B00');
+  });
+
+  it('redacts a VALUE-class token (Gotify appToken) in a send error via the candidate secrets', async () => {
+    // A bare token is not URL-pattern-shaped, so only `redact(err, candidateSecrets(candidate))`
+    // scrubs it — this test is non-vacuous against removing the candidateSecrets argument.
+    const appToken = 'gotify-app-token-ROUTESECRET-0987654321';
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error(`Gotify auth rejected key=${appToken}`)));
+    const res = await test({ type: 'gotify', config: { serverUrl: 'https://gotify.example.com', appToken } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.success).toBe(false);
+    expect(body.message).not.toContain(appToken);
+  });
 });
 
 describe('settings routes — narratorr test endpoint (unchanged)', () => {

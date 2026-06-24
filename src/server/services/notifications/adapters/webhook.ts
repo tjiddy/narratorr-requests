@@ -11,7 +11,13 @@ export interface WebhookConfig {
  */
 export class WebhookChannel implements NotificationChannel {
   readonly name = 'webhook';
-  constructor(private readonly cfg: WebhookConfig) {}
+  // The webhook URL is a capability secret (may carry a token) — exposed for dispatcher-log
+  // redaction. Pattern scrubbing only covers Discord/Slack hosts; an arbitrary hook URL needs
+  // this exact-match value so it never lands in the log line raw.
+  readonly secrets: readonly string[];
+  constructor(private readonly cfg: WebhookConfig) {
+    this.secrets = [cfg.url];
+  }
 
   async send({ payload, message }: SendContext): Promise<void> {
     const content = [message.title, message.body, message.url].filter(Boolean).join('\n');

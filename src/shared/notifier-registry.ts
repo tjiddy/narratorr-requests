@@ -20,7 +20,7 @@ import { httpUrl, ntfyPriority } from './schemas/field-helpers.js';
 // =============================================================================
 
 /** The registry keys, as a literal tuple — drives `z.enum` and the `NotifierType` union. */
-export const NOTIFIER_TYPES = ['ntfy', 'email', 'webhook'] as const;
+export const NOTIFIER_TYPES = ['ntfy', 'email', 'webhook', 'discord', 'slack', 'telegram', 'pushover', 'gotify'] as const;
 export type NotifierType = (typeof NOTIFIER_TYPES)[number];
 
 export type NotifierFieldKind = 'text' | 'password' | 'url' | 'number' | 'select' | 'checkbox';
@@ -36,6 +36,13 @@ export interface NotifierField {
   secret: boolean;
   required: boolean;
   options?: { value: string; label: string }[];
+  /**
+   * Checkbox-only seed for a NEW notifier: `blankFields()` starts the checkbox here
+   * (default `false` when unset). Ignored for non-checkbox kinds. Lets a registry entry
+   * declare "default on" (e.g. Discord `includeCover`) without a type-specific branch in
+   * the form helper. Edit forms read the stored value, so this only affects fresh forms.
+   */
+  defaultValue?: boolean;
 }
 
 /** Structured secret metadata — what the generic mask/reveal/resolve helpers walk. */
@@ -158,7 +165,150 @@ const webhook: NotifierTypeDef = {
   secretFields: [{ field: 'url', maskedField: 'hasUrl', required: true, hintField: 'urlHint' }],
 };
 
-export const NOTIFIER_REGISTRY: Record<NotifierType, NotifierTypeDef> = { ntfy, email, webhook };
+// ---- Discord ----------------------------------------------------------------
+// A native Discord embed (richer than the generic `webhook` content string). The
+// webhook URL carries its token, so it's a capability-URL secret (host-hint masked).
+// `includeCover` defaults ON via the registry — see `defaultValue` + the configSchema
+// belt-and-suspenders default, so a config that omits the key still resolves to `true`.
+const discord: NotifierTypeDef = {
+  type: 'discord',
+  label: 'Discord',
+  blurb: 'Post a rich embed to a Discord channel via a webhook URL.',
+  fields: [
+    {
+      key: 'webhookUrl',
+      label: 'Webhook URL',
+      kind: 'url',
+      placeholder: 'https://discord.com/api/webhooks/…',
+      secret: true,
+      required: true,
+    },
+    {
+      key: 'includeCover',
+      label: 'Include the book cover as a thumbnail',
+      kind: 'checkbox',
+      secret: false,
+      required: false,
+      defaultValue: true,
+    },
+  ],
+  configSchema: z.object({
+    webhookUrl: httpUrl.or(z.literal('')).optional(),
+    includeCover: z.boolean().default(true),
+  }),
+  maskedConfigSchema: z.object({
+    hasWebhookUrl: z.boolean(),
+    webhookUrlHint: z.string().nullable(),
+    includeCover: z.boolean(),
+  }),
+  secretFields: [{ field: 'webhookUrl', maskedField: 'hasWebhookUrl', required: true, hintField: 'webhookUrlHint' }],
+};
+
+// ---- Slack ------------------------------------------------------------------
+// An incoming-webhook message. The whole webhook URL is the secret (host-hint masked).
+const slack: NotifierTypeDef = {
+  type: 'slack',
+  label: 'Slack',
+  blurb: 'Post a message to a Slack channel via an incoming webhook URL.',
+  fields: [
+    {
+      key: 'webhookUrl',
+      label: 'Webhook URL',
+      kind: 'url',
+      placeholder: 'https://hooks.slack.com/services/…',
+      secret: true,
+      required: true,
+    },
+  ],
+  configSchema: z.object({
+    webhookUrl: httpUrl.or(z.literal('')).optional(),
+  }),
+  maskedConfigSchema: z.object({
+    hasWebhookUrl: z.boolean(),
+    webhookUrlHint: z.string().nullable(),
+  }),
+  secretFields: [{ field: 'webhookUrl', maskedField: 'hasWebhookUrl', required: true, hintField: 'webhookUrlHint' }],
+};
+
+// ---- Telegram ---------------------------------------------------------------
+// Sends via the Bot API. The bot token rides in the request URL path, so it's the sharp
+// redaction edge (see notifications/redact.ts); the chat id is a plain (non-secret) field.
+const telegram: NotifierTypeDef = {
+  type: 'telegram',
+  label: 'Telegram',
+  blurb: 'Send a message from a Telegram bot to a chat.',
+  fields: [
+    { key: 'botToken', label: 'Bot token', kind: 'password', placeholder: '123456:ABC-DEF…', secret: true, required: true },
+    { key: 'chatId', label: 'Chat ID', kind: 'text', placeholder: '-1001234567890', secret: false, required: true },
+  ],
+  configSchema: z.object({
+    botToken: z.string().trim().optional(),
+    chatId: z.string().trim().min(1),
+  }),
+  maskedConfigSchema: z.object({
+    hasBotToken: z.boolean(),
+    chatId: z.string(),
+  }),
+  secretFields: [{ field: 'botToken', maskedField: 'hasBotToken', required: true }],
+};
+
+// ---- Pushover ---------------------------------------------------------------
+// Fixed host (api.pushover.net). Both the application token and the user/group key are
+// secrets (sent in the body), redacted from any error/log line.
+const pushover: NotifierTypeDef = {
+  type: 'pushover',
+  label: 'Pushover',
+  blurb: 'Push notifications to your devices via Pushover.',
+  fields: [
+    { key: 'appToken', label: 'Application token', kind: 'password', secret: true, required: true },
+    { key: 'userKey', label: 'User / group key', kind: 'password', secret: true, required: true },
+  ],
+  configSchema: z.object({
+    appToken: z.string().trim().optional(),
+    userKey: z.string().trim().optional(),
+  }),
+  maskedConfigSchema: z.object({
+    hasAppToken: z.boolean(),
+    hasUserKey: z.boolean(),
+  }),
+  secretFields: [
+    { field: 'appToken', maskedField: 'hasAppToken', required: true },
+    { field: 'userKey', maskedField: 'hasUserKey', required: true },
+  ],
+};
+
+// ---- Gotify -----------------------------------------------------------------
+// A self-hosted Gotify server. The server URL is admin-configured (NOT secret); the app
+// token authenticates via the X-Gotify-Key header and IS a secret.
+const gotify: NotifierTypeDef = {
+  type: 'gotify',
+  label: 'Gotify',
+  blurb: 'Send a message to a self-hosted Gotify server.',
+  fields: [
+    { key: 'serverUrl', label: 'Server URL', kind: 'url', placeholder: 'https://gotify.example.com', secret: false, required: true },
+    { key: 'appToken', label: 'Application token', kind: 'password', secret: true, required: true },
+  ],
+  configSchema: z.object({
+    serverUrl: httpUrl,
+    appToken: z.string().trim().optional(),
+  }),
+  maskedConfigSchema: z.object({
+    serverUrl: z.string(),
+    hasAppToken: z.boolean(),
+  }),
+  secretFields: [{ field: 'appToken', maskedField: 'hasAppToken', required: true }],
+};
+
+export const NOTIFIER_REGISTRY: Record<NotifierType, NotifierTypeDef> = {
+  ntfy,
+  email,
+  webhook,
+  discord,
+  slack,
+  telegram,
+  pushover,
+  gotify,
+};
 
 /** Type guard: is this stored `type` string a key in the registry? */
 export function isKnownNotifierType(type: string): type is NotifierType {

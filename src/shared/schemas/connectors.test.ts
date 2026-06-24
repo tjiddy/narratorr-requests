@@ -90,7 +90,7 @@ describe('createNotifierBodySchema / notifierTestBodySchema', () => {
   });
 
   it('rejects an out-of-registry type, empty events, whitespace-only name, and unknown keys', () => {
-    expect(createNotifierBodySchema.safeParse({ ...base, type: 'discord' }).success).toBe(false);
+    expect(createNotifierBodySchema.safeParse({ ...base, type: 'apprise' }).success).toBe(false);
     expect(createNotifierBodySchema.safeParse({ ...base, events: [] }).success).toBe(false);
     expect(createNotifierBodySchema.safeParse({ ...base, name: '   ' }).success).toBe(false);
     expect(createNotifierBodySchema.safeParse({ ...base, bogus: 1 }).success).toBe(false);
@@ -119,9 +119,9 @@ describe('createNotifierBodySchema / notifierTestBodySchema', () => {
 
 describe('storedNotifierSchema — type-lenient persistence boundary', () => {
   it('parses a row whose type is NOT in the registry (round-trips, type: string)', () => {
-    const row = { id: 'nf_x', name: 'Legacy', type: 'telegram', enabled: true, events: ['user.pending'], config: { token: 'enc:v1:abc' } };
+    const row = { id: 'nf_x', name: 'Legacy', type: 'apprise', enabled: true, events: ['user.pending'], config: { token: 'enc:v1:abc' } };
     const parsed = storedNotifierSchema.parse(row);
-    expect(parsed.type).toBe('telegram');
+    expect(parsed.type).toBe('apprise');
     expect(parsed.config).toEqual({ token: 'enc:v1:abc' });
   });
 });
@@ -145,12 +145,12 @@ describe('notifierDtoSchema — discriminated known | unknown', () => {
   });
 
   it('accepts an unknown-type DTO (disabled, deletable, no config)', () => {
-    const dto = { id: 'nf_3', name: 'Legacy', type: 'telegram', enabled: false, events: ['user.pending'], unknown: true };
+    const dto = { id: 'nf_3', name: 'Legacy', type: 'apprise', enabled: false, events: ['user.pending'], unknown: true };
     expect(notifierDtoSchema.safeParse(dto).success).toBe(true);
   });
 
   it('rejects an unknown-type DTO that claims enabled: true', () => {
-    const dto = { id: 'nf_4', name: 'Legacy', type: 'telegram', enabled: true, events: [], unknown: true };
+    const dto = { id: 'nf_4', name: 'Legacy', type: 'apprise', enabled: true, events: [], unknown: true };
     expect(notifierDtoSchema.safeParse(dto).success).toBe(false);
   });
 });
@@ -162,7 +162,7 @@ describe('connectorSettingsDtoSchema', () => {
       narratorr: { host: 'narratorr.example.com', port: 443, useSsl: true, urlBase: '/lib', hasApiKey: true },
       notifiers: [
         { id: 'nf_1', name: 'Phone', type: 'ntfy', enabled: true, events: ['request.created'], config: { url: 'https://ntfy.sh', topic: 't', hasToken: false, priority: null } },
-        { id: 'nf_2', name: 'Legacy', type: 'telegram', enabled: false, events: ['user.pending'], unknown: true },
+        { id: 'nf_2', name: 'Legacy', type: 'apprise', enabled: false, events: ['user.pending'], unknown: true },
       ],
     };
     expect(connectorSettingsDtoSchema.safeParse(dto).success).toBe(true);

@@ -22,8 +22,30 @@ describe('newNotifierForm', () => {
     expect(f.fields).toEqual({ url: '', topic: '', token: '', priority: '' });
   });
 
-  it('seeds checkbox fields as false (email.secure)', () => {
+  it('seeds checkbox fields as false (email.secure) when no defaultValue', () => {
     expect(newNotifierForm('email').fields.secure).toBe(false);
+  });
+
+  it('seeds a checkbox from its registry defaultValue — Discord includeCover starts ON', () => {
+    expect(newNotifierForm('discord').fields.includeCover).toBe(true);
+  });
+});
+
+describe('checkbox default — registry-driven (Discord includeCover)', () => {
+  it('an untouched new Discord form carries includeCover:true in the config + test payloads', () => {
+    const form = { ...newNotifierForm('discord'), name: 'Disc', fields: { ...newNotifierForm('discord').fields, webhookUrl: 'https://discord.com/api/webhooks/1/a' } };
+    expect(buildNotifierBody(form).config.includeCover).toBe(true);
+    expect(buildNotifierTestBody(form, null)?.config.includeCover).toBe(true);
+  });
+
+  it('unticking includeCover carries includeCover:false', () => {
+    const base = newNotifierForm('discord');
+    const form = { ...base, name: 'Disc', fields: { ...base.fields, webhookUrl: 'https://discord.com/api/webhooks/1/a', includeCover: false } };
+    expect(buildNotifierBody(form).config.includeCover).toBe(false);
+  });
+
+  it('a checkbox WITHOUT a defaultValue (email.secure) still starts false', () => {
+    expect(buildNotifierBody({ ...newNotifierForm('email'), name: 'M', fields: { ...newNotifierForm('email').fields, host: 'h', from: 'a@x', to: 'b@x' } }).config.secure).toBe(false);
   });
 });
 

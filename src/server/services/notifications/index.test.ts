@@ -41,8 +41,17 @@ describe('buildNotifierChannel (adapter map)', () => {
     expect(buildNotifierChannel('webhook', { url: 'https://x/hook' })?.name).toBe('webhook');
   });
 
+  it('builds a live channel for each new (parity-pack) type from runtime config', () => {
+    expect(buildNotifierChannel('discord', { webhookUrl: 'https://discord.com/api/webhooks/1/abc', includeCover: true })?.name).toBe('discord');
+    expect(buildNotifierChannel('slack', { webhookUrl: 'https://hooks.slack.com/services/x' })?.name).toBe('slack');
+    expect(buildNotifierChannel('telegram', { botToken: '123:abc', chatId: '42' })?.name).toBe('telegram');
+    expect(buildNotifierChannel('pushover', { appToken: 'a', userKey: 'u' })?.name).toBe('pushover');
+    expect(buildNotifierChannel('gotify', { serverUrl: 'https://gotify.x', appToken: 't' })?.name).toBe('gotify');
+  });
+
   it('returns null for an unknown type', () => {
-    expect(buildNotifierChannel('telegram', {})).toBeNull();
+    // `apprise` is not in the registry (telegram/discord are now known types).
+    expect(buildNotifierChannel('apprise', {})).toBeNull();
   });
 
   it('throws when the runtime config fails the type schema (e.g. an undecryptable required secret)', () => {
@@ -79,7 +88,7 @@ describe('buildNotifier', () => {
 
   it('skips an unknown type with a warn, never throwing', () => {
     const { log, warn } = fakeLog();
-    const n = buildNotifier({ publicUrl: null, notifiers: [ntfyRuntime({ type: 'telegram', config: {} })] }, log);
+    const n = buildNotifier({ publicUrl: null, notifiers: [ntfyRuntime({ type: 'apprise', config: {} })] }, log);
     expect(n.enabled).toBe(false);
     expect(warn).toHaveBeenCalled();
   });

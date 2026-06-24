@@ -40,10 +40,13 @@ export interface NotifierFormState {
 
 const ALL_EVENT_KEYS = NOTIFICATION_EVENTS.map((e) => e.key);
 
-/** Blank initial field values for a type — checkbox → false, everything else → ''. */
+/**
+ * Blank initial field values for a type — a checkbox seeds from its registry `defaultValue`
+ * (so Discord `includeCover` starts ON) falling back to `false`; everything else → ''.
+ */
 function blankFields(def: NotifierTypeDef): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
-  for (const f of def.fields) out[f.key] = f.kind === 'checkbox' ? false : '';
+  for (const f of def.fields) out[f.key] = f.kind === 'checkbox' ? (f.defaultValue ?? false) : '';
   return out;
 }
 
