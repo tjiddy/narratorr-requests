@@ -66,7 +66,7 @@ export async function hashPassword(password: string): Promise<string> {
 // leak which usernames exist (anti-enumeration). Computed once, synchronously, at import.
 const DUMMY_HASH = (() => {
   const salt = Buffer.alloc(SALT_BYTES, 0x2a);
-  const derived = scryptSync('narratorr-request-dummy', salt, KEYLEN, { N, r: R, p: P });
+  const derived = scryptSync('narratorr-requests-dummy', salt, KEYLEN, { N, r: R, p: P });
   return `scrypt$${N}$${R}$${P}$${salt.toString('base64')}$${derived.toString('base64')}`;
 })();
 
