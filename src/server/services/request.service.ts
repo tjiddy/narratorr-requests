@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, or, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
 import { requests, users, type RequestRow } from '../../db/schema.js';
 import type { Notifier } from './notifications/index.js';
@@ -318,12 +318,17 @@ export class RequestService {
   }
 
   /**
-   * Atomically claim the non-`failed` → `failed` edge and emit `request.failed` EXACTLY
-   * once. The `WHERE status != 'failed'` guard means two racing callers can't both win —
-   * the loser's UPDATE returns no row and emits nothing. Returns the updated row when THIS
-   * caller performed the transition, else null (already failed, or row gone). `extra`
-   * carries path-specific fields to preserve (e.g. `narratorrBookId` on the handoff path,
-   * which a status-only write would drop).
+   * Atomically claim the `row.status` → `failed` edge and emit `request.failed` EXACTLY
+   * once. The `WHERE status = row.status` guard asserts the OBSERVED source state — not merely
+   * "not failed" — so two racing callers can't both win (the loser's row has already moved off
+   * the observed state, its UPDATE returns no row, it emits nothing) AND a stale caller can't
+   * clobber a NEWER terminal state: a row that moved on to `available`/`denied` behind the
+   * caller's back no longer matches, so the claim lands zero rows and the newer state stands.
+   * All callers pass a row in a live non-`failed` state (handoff: `approved`; applyBook/poller:
+   * `acquiring`), so the failed edge is reachable. Returns the updated row when THIS caller
+   * performed the transition, else null (moved on, already failed, or row gone). `extra` carries
+   * path-specific fields to preserve (e.g. `narratorrBookId` on the handoff path, which a
+   * status-only write would drop).
    */
   private async transitionToFailed(
     row: RequestRow,
@@ -333,7 +338,7 @@ export class RequestService {
     const [updated] = await this.db
       .update(requests)
       .set({ status: 'failed', userCausedFailure: false, failureReason: reason, ...extra })
-      .where(and(eq(requests.id, row.id), ne(requests.status, 'failed')))
+      .where(and(eq(requests.id, row.id), eq(requests.status, row.status)))
       .returning();
     if (!updated) return null;
     this.emitFailed(updated, reason);

@@ -27,6 +27,14 @@ describe('registry shape', () => {
     // A type not in the registry (a legacy/renamed type) is a stranger.
     expect(isKnownNotifierType('apprise')).toBe(false);
   });
+
+  it('isKnownNotifierType rejects inherited Object.prototype keys (own-property check, not `in`)', () => {
+    // A malformed stored `type` of a prototype member must be a stranger — otherwise it would
+    // resolve a prototype object as a "def" and brick the GET / dispatcher (never-brick #57).
+    for (const proto of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
+      expect(isKnownNotifierType(proto), proto).toBe(false);
+    }
+  });
 });
 
 describe('ntfy configSchema', () => {

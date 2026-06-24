@@ -69,8 +69,11 @@ const ADAPTERS: Record<NotifierType, AdapterBuilder> = {
  * type's runtime schema (e.g. a required secret that wouldn't decrypt).
  */
 export function buildNotifierChannel(type: string, config: Record<string, unknown>): NotificationChannel | null {
-  const builder = ADAPTERS[type as NotifierType];
-  return builder ? builder(config) : null;
+  // Own-property check (not `ADAPTERS[type]` directly): a stored `type` is a lenient string, so a
+  // malformed row of `__proto__`/`constructor`/`toString` must NOT resolve a prototype member as a
+  // "builder" (→ "builder is not a function"). An inherited key degrades to an unknown type → null.
+  if (!Object.hasOwn(ADAPTERS, type)) return null;
+  return ADAPTERS[type as NotifierType](config);
 }
 
 /**

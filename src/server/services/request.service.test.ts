@@ -424,6 +424,38 @@ describe('request.failed notification (#60)', () => {
     await vi.waitFor(() => expect(h.notify).toHaveBeenCalledTimes(1));
   });
 
+  it('two concurrent failed-claims on the same acquiring row: exactly one wins and emits once', async () => {
+    const h = harness();
+    const admin = await insertUser(db, { role: 'admin', username: 'todd' });
+    const svc = new RequestService(db, client, policy(), h.deps());
+    const { row } = await svc.create(admin.id, body('B1')); // admin auto-approve → handoff → acquiring
+    expect(row.status).toBe('acquiring');
+
+    const [a, b] = await Promise.all([svc.markFailed(row, 'gone'), svc.markFailed(row, 'gone')]);
+    expect([a, b].filter(Boolean)).toHaveLength(1);
+    await vi.waitFor(() => expect(h.notify).toHaveBeenCalledTimes(1));
+    const [fresh] = await db.select().from(requests).where(eq(requests.id, row.id));
+    expect(fresh?.status).toBe('failed');
+  });
+
+  it('a stale failed-claim does NOT clobber a row that moved on to a newer terminal state (no emit)', async () => {
+    const h = harness();
+    const admin = await insertUser(db, { role: 'admin', username: 'todd' });
+    const svc = new RequestService(db, client, policy(), h.deps());
+    const { row } = await svc.create(admin.id, body('B1')); // acquiring, narratorrBookId set
+    expect(row.status).toBe('acquiring');
+
+    // The row moves on to a NEWER terminal state behind the stale caller's back.
+    await db.update(requests).set({ status: 'available' }).where(eq(requests.id, row.id));
+
+    // The stale caller still holds the `acquiring` row and tries to fail it → claims zero rows.
+    await expect(svc.markFailed(row, 'gone')).resolves.toBe(false);
+    const [fresh] = await db.select().from(requests).where(eq(requests.id, row.id));
+    expect(fresh?.status).toBe('available'); // newer terminal state preserved, not clobbered to failed
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.notify).not.toHaveBeenCalled(); // no request.failed emitted
+  });
+
   it('dispatches through the LIVE notifier after a reconfiguration (no stale capture)', async () => {
     const h = harness();
     const user = await insertUser(db, { role: 'user', username: 'todd' });

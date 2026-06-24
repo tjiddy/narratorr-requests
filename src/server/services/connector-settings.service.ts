@@ -194,7 +194,7 @@ export class ConnectorSettingsService {
   /** Create a notifier (required secrets enforced — no stored value to fall back to). */
   async createNotifier(body: CreateNotifierBody): Promise<StoredNotifier> {
     const def = NOTIFIER_REGISTRY[body.type];
-    const config = this.resolveNotifierConfig(def, this.parseConfig(def, body.config), undefined, true);
+    const config = this.resolveNotifierConfig(def, this.parseConfig(def, body.config), undefined);
     const notifier: StoredNotifier = {
       id: publicId('nf'),
       name: body.name,
@@ -222,15 +222,11 @@ export class ConnectorSettingsService {
       throw badRequest('NOTIFIER_TYPE_LOCKED', 'Cannot change the type of an unrecognized notifier — delete it instead.');
     }
     const def = NOTIFIER_REGISTRY[body.type];
-    // If the type changed, the stored secret has a different shape → no omit-to-keep base,
-    // so required secrets must be present (treated like a create).
+    // If the type changed, the stored secret has a different shape → no omit-to-keep base, so a
+    // required secret of the new type must be supplied. Same type → omit-to-keep against the
+    // stored config (but explicitly clearing a required secret is still rejected — see resolveNotifierConfig).
     const existingConfig = existing.type === body.type ? existing.config : undefined;
-    const config = this.resolveNotifierConfig(
-      def,
-      this.parseConfig(def, body.config),
-      existingConfig,
-      existingConfig === undefined,
-    );
+    const config = this.resolveNotifierConfig(def, this.parseConfig(def, body.config), existingConfig);
     const updated: StoredNotifier = {
       id,
       name: body.name,
@@ -360,19 +356,24 @@ export class ConnectorSettingsService {
     }
   }
 
-  /** Build the stored config: encrypt secrets (enforce required on create); store non-secrets. */
+  /**
+   * Build the stored config: encrypt secrets, store non-secrets. Required secrets are enforced
+   * AFTER resolution, symmetrically on create and update: omitting one (`undefined`) keeps the
+   * existing encrypted value (so a required secret survives an unrelated edit), but explicitly
+   * clearing one (`''`, which resolves to `null`) on a `sf.required` field is rejected — a
+   * required secret can never be left empty-but-enabled (which would be unbuildable at runtime).
+   */
   private resolveNotifierConfig(
     def: NotifierTypeDef,
     parsed: Record<string, unknown>,
     existing: Record<string, unknown> | undefined,
-    isCreate: boolean,
   ): Record<string, unknown> {
     const out: Record<string, unknown> = {};
     for (const f of def.fields) {
       const sf = def.secretFields.find((s) => s.field === f.key);
       if (sf) {
         const resolved = this.resolveSecret(parsed[f.key] as string | undefined, existing?.[f.key] as string | null | undefined);
-        if (isCreate && sf.required && !resolved) {
+        if (sf.required && !resolved) {
           throw badRequest('NOTIFIER_SECRET_REQUIRED', `${def.label} requires ${f.label}.`);
         }
         out[f.key] = resolved;

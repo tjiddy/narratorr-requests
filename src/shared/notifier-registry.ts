@@ -310,9 +310,14 @@ export const NOTIFIER_REGISTRY: Record<NotifierType, NotifierTypeDef> = {
   gotify,
 };
 
-/** Type guard: is this stored `type` string a key in the registry? */
+/**
+ * Type guard: is this stored `type` string an OWN key of the registry? Uses `Object.hasOwn`,
+ * not `in`, so an inherited `Object.prototype` key (`constructor`, `toString`, `__proto__`, …)
+ * in a malformed stored row is a stranger — not misclassified as a known type, which would
+ * resolve a prototype member instead of a real def and brick the Settings GET / dispatcher.
+ */
 export function isKnownNotifierType(type: string): type is NotifierType {
-  return type in NOTIFIER_REGISTRY;
+  return Object.hasOwn(NOTIFIER_REGISTRY, type);
 }
 
 /** All registry entries (stable order), for building the DTO union / iterating types. */
