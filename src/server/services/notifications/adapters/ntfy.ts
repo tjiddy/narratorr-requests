@@ -29,8 +29,10 @@ export class NtfyChannel implements NotificationChannel {
     if (this.cfg.token) headers.Authorization = `Bearer ${this.cfg.token}`;
     if (this.cfg.priority) headers.Priority = this.cfg.priority;
     if (message.url) headers.Click = message.url;
-    // Only request events carry a cover; user.pending has no image to attach.
-    if (payload.event === 'request.created' && payload.request.coverUrl) {
+    // Branch on DATA PRESENCE (a request-shaped payload's coverUrl), not the event literal,
+    // so a future request-shaped event (e.g. request.failed, #60) attaches its cover with no
+    // edit here — mirrors the Discord adapter's coverUrl() guard. user.pending has no request.
+    if ('request' in payload && payload.request.coverUrl) {
       headers.Icon = payload.request.coverUrl;
     }
 
