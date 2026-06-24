@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0]
+## [1.0.0] - 2026-06-24
 
 Initial public release.
 
@@ -26,9 +26,10 @@ Initial public release.
   and set per-user request quota + auto-approve.
 - Per-user request quotas (rolling 30-day window) with an app-wide default
   (`DEFAULT_REQUEST_QUOTA`) and per-user overrides.
-- In-app Settings for the narratorr connection and admin notification channels (ntfy / email /
-  webhook) — fired on a new request and a new-user signup — stored encrypted at rest with
-  AES-256-GCM; secrets are masked in API responses.
+- In-app Settings (admin) to connect narratorr and add any number of notifiers — ntfy, email
+  (SMTP), webhook, Discord, Slack, Telegram, Pushover, and Gotify — each firing on the events it
+  subscribes to: a new request, a new signup, or a failed request. Notifier secrets are stored
+  encrypted at rest with AES-256-GCM and masked in API responses.
 - Request-lifecycle polling that reconciles narratorr book status to `available` / `failed`.
 - Contract-first narratorr integration: the consumed `/api/v1` surface is vendored as Zod
   schemas; a non-conforming response surfaces as `502 CONTRACT_MISMATCH`.

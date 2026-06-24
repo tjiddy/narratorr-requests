@@ -14,8 +14,8 @@ the impact you observed.
 
 ## Supported Versions
 
-narratorr-requests is pre-1.0 until the first tagged `v1.0.0` release. Security fixes land
-on the latest released tag; there is no back-porting to older tags.
+The latest tagged release receives security fixes; there is no back-porting to older tags.
+(`v1.0.0` is the initial stable release.)
 
 ## Security Model
 
@@ -70,8 +70,9 @@ per-IP buckets (and the `Secure` cookie attribute) degrade.
 
 ### Secrets at rest
 
-Connector secrets — the narratorr API key, the SMTP password, and the ntfy token — are
-**encrypted at rest** with **AES-256-GCM** (per-value random 12-byte IV, 16-byte auth tag),
+Connector secrets — the narratorr API key and all notifier credentials (the SMTP password, the
+ntfy / Telegram / Gotify / Pushover tokens & keys, and the Discord / Slack / generic-webhook
+capability URLs) — are **encrypted at rest** with **AES-256-GCM** (per-value random 12-byte IV, 16-byte auth tag),
 stored as `enc:v1:<base64(iv|tag|ciphertext)>`. The 32-byte key is derived via **HKDF-SHA256**
 from `SETTINGS_KEY` (opt-in) or, by default, the existing `SESSION_SECRET`. Decryption fails
 *soft* (returns null → the connector reads as "unconfigured") rather than crashing boot, so a
