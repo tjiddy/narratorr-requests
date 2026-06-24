@@ -17,6 +17,17 @@ export function render(payload: NotificationPayload, baseUrl: string | null): Re
         url: baseUrl ? `${baseUrl}/admin` : null,
       };
     }
+    case 'request.failed': {
+      const { request, reason } = payload;
+      const by = request.author ? ` by ${request.author}` : '';
+      const because = reason ? `: ${reason}` : '';
+      return {
+        title: 'Request failed',
+        body: `“${request.title}” failed to acquire${by}${because}`,
+        // The admin intervenes (manual search / deny / refund) from the request queue.
+        url: baseUrl ? `${baseUrl}/admin` : null,
+      };
+    }
     case 'user.pending': {
       const { user } = payload;
       // Local signups have no IdP to name; OIDC users do.

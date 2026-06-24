@@ -45,6 +45,13 @@ function samplePayload(event: NotificationEvent): NotificationPayload {
         request: { publicId: 'rq_test', title: 'Test notification', author: 'narratorr-request', asin: 'TEST', coverUrl: null },
         requester: { username: '(settings test)' },
       };
+    case 'request.failed':
+      return {
+        event: 'request.failed',
+        request: { publicId: 'rq_test', title: 'Test notification', author: 'narratorr-request', asin: 'TEST', coverUrl: null },
+        requester: { username: '(settings test)' },
+        reason: 'This is a test failure reason.',
+      };
     case 'user.pending':
       return {
         event: 'user.pending',

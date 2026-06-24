@@ -46,6 +46,22 @@ const userCtx: SendContext = {
   },
 };
 
+// A request.failed event is request-shaped (carries request + requester) PLUS a reason —
+// adapters must serialize it like request.created (not as a `user` shape) and attach its cover.
+const failedCtx: SendContext = {
+  payload: {
+    event: 'request.failed',
+    request: { publicId: 'rq_9', title: 'Dune', author: 'Frank Herbert', asin: 'B9', coverUrl: 'https://x/c.jpg' },
+    requester: { username: 'todd' },
+    reason: 'No source found upstream.',
+  },
+  message: {
+    title: 'Request failed',
+    body: '“Dune” failed to acquire by Frank Herbert: No source found upstream.',
+    url: 'https://req.example.com/admin',
+  },
+};
+
 describe('NtfyChannel', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   beforeEach(() => {
@@ -83,6 +99,14 @@ describe('NtfyChannel', () => {
     expect(init.headers.Icon).toBeUndefined();
     expect(init.headers.Click).toBe('https://req.example.com/users');
   });
+
+  it('attaches the cover Icon for a request.failed event (request-shaped, via data presence)', async () => {
+    const ch = new NtfyChannel({ url: 'https://ntfy.sh', topic: 'narr', token: null, priority: null });
+    await ch.send(failedCtx);
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(init.headers.Icon).toBe('https://x/c.jpg');
+    expect(init.headers.Title).toBe('Request failed');
+  });
 });
 
 describe('WebhookChannel', () => {
@@ -116,6 +140,18 @@ describe('WebhookChannel', () => {
     expect(body.event).toBe('user.pending');
     expect(body.user.username).toBe('newbie');
     expect(body.request).toBeUndefined();
+  });
+
+  it('carries request + requester + reason for a request.failed event (not a user shape)', async () => {
+    const ch = new WebhookChannel({ url: 'https://discord/webhook' });
+    await ch.send(failedCtx);
+
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body);
+    expect(body.event).toBe('request.failed');
+    expect(body.request.asin).toBe('B9');
+    expect(body.requester.username).toBe('todd');
+    expect(body.reason).toBe('No source found upstream.');
+    expect(body.user).toBeUndefined();
   });
 });
 
@@ -260,6 +296,15 @@ describe('DiscordChannel', () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 400 }));
     const ch = new DiscordChannel({ webhookUrl: 'https://discord.com/api/webhooks/1/abc', includeCover: true });
     await expect(ch.send(ctx)).rejects.toThrow(/400/);
+  });
+
+  it('colours a request.failed embed with its own EVENT_COLOR and attaches the cover', async () => {
+    const ch = new DiscordChannel({ webhookUrl: 'https://discord.com/api/webhooks/1/abc', includeCover: true });
+    await ch.send(failedCtx);
+    const embed = JSON.parse(fetchMock.mock.calls[0]![1].body).embeds[0];
+    expect(embed.title).toBe('Request failed');
+    expect(embed.color).toBe(0xe74c3c); // request.failed entry, NOT the default blue
+    expect(embed.thumbnail).toEqual({ url: 'https://x/c.jpg' }); // cover attaches via 'request' in payload
   });
 });
 

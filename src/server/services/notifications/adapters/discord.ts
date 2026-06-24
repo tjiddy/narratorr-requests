@@ -8,9 +8,11 @@ export interface DiscordConfig {
   includeCover: boolean;
 }
 
-// Embed accent colour per event — blue for a new request, amber for a pending user.
+// Embed accent colour per event — blue for a new request, red for a failed one, amber
+// for a pending user. Kept a full Record so the exhaustiveness check guards future events.
 const EVENT_COLOR: Record<NotificationPayload['event'], number> = {
   'request.created': 0x3498db,
+  'request.failed': 0xe74c3c,
   'user.pending': 0xf1c40f,
 };
 const DEFAULT_COLOR = 0x3498db;

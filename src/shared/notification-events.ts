@@ -19,6 +19,7 @@ import { z } from 'zod';
 /** Every event a notifier can subscribe to, with its human label (checkbox text). */
 export const NOTIFICATION_EVENTS = [
   { key: 'request.created', label: 'New request' },
+  { key: 'request.failed', label: 'Request failed' },
   { key: 'user.pending', label: 'New signup' },
 ] as const;
 

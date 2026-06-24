@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { RequestService, type RequestPolicy } from './request.service.js';
+import { RequestService, type RequestPolicy, type RequestFailureNotifyDeps } from './request.service.js';
 import { NarratorrError, type INarratorrClient } from './narratorr-client.js';
+import { UserService } from './user.service.js';
+import type { Notifier, NotificationPayload } from './notifications/index.js';
 import { createTestDb, insertUser } from '../test-support/db.js';
 import { requests } from '../../db/schema.js';
 import type { Db } from '../../db/client.js';
@@ -327,6 +329,138 @@ describe('handoff failure reasons (friendly per-code add-handoff errors)', () =>
     expect(row.status).toBe('failed');
     const [fresh] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
     expect(fresh?.failureReason).toBe('No source found upstream.');
+  });
+});
+
+describe('request.failed notification (#60)', () => {
+  // A recording notifier behind a mutable holder, so a test can swap the live notifier
+  // and prove the failed-emission reads it at dispatch time (no stale capture).
+  function harness() {
+    const notify = vi.fn(async (_p: NotificationPayload) => {});
+    const holder = { current: { notify } as unknown as Notifier };
+    const swapped = vi.fn(async (_p: NotificationPayload) => {});
+    return {
+      notify,
+      holder,
+      swapped,
+      /** Wiring with the real UserService (resolves the inserted requester's username). */
+      deps: (): RequestFailureNotifyDeps => ({ getNotifier: () => holder.current, users: new UserService(db) }),
+      /** Wiring whose user lookup always misses (deleted-account case). */
+      depsNoRequester: (): RequestFailureNotifyDeps => ({
+        getNotifier: () => holder.current,
+        users: { getById: async () => undefined },
+      }),
+    };
+  }
+
+  const failedPayload = (notify: ReturnType<typeof vi.fn>): NotificationPayload =>
+    notify.mock.calls.find((c) => (c[0] as NotificationPayload).event === 'request.failed')?.[0] as NotificationPayload;
+
+  it('emits request.failed once on a TERMINAL handoff error, and still rethrows', async () => {
+    const h = harness();
+    const admin = await insertUser(db, { role: 'admin', username: 'todd' });
+    client.throwOnAdd = new NarratorrError(422, 'asin_not_resolved', 'nope');
+    const svc = new RequestService(db, client, policy(), h.deps());
+
+    await expect(svc.create(admin.id, body('B1'))).rejects.toBeInstanceOf(NarratorrError); // rethrow preserved
+    await vi.waitFor(() => expect(h.notify).toHaveBeenCalledTimes(1));
+    expect(failedPayload(h.notify)).toMatchObject({
+      event: 'request.failed',
+      request: { asin: 'B1', title: 'A Book', author: 'Author' },
+      requester: { username: 'todd' },
+      reason: "Couldn't find this book in the catalog.",
+    });
+    const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+    expect(row?.status).toBe('failed');
+  });
+
+  it('emits once on a handoff that resolves a terminal-failed book AND preserves narratorrBookId', async () => {
+    const h = harness();
+    const admin = await insertUser(db, { role: 'admin', username: 'todd' });
+    client.status = 'missing'; // addBook resolves a book already terminal-failed → mapBookStatus → failed
+    const svc = new RequestService(db, client, policy(), h.deps());
+
+    const { row } = await svc.create(admin.id, body('B1'));
+    expect(row.status).toBe('failed');
+    expect(row.narratorrBookId).toBe('bk_1'); // book linkage NOT dropped by the failed transition
+    await vi.waitFor(() => expect(h.notify).toHaveBeenCalledTimes(1));
+    expect(failedPayload(h.notify)).toMatchObject({ event: 'request.failed', reason: 'No source found upstream.' });
+  });
+
+  it('emits once via applyBook (poller reconciliation) when a polled book goes failed', async () => {
+    const h = harness();
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const svc = new RequestService(db, client, policy(), h.deps());
+    const { row } = await svc.create(user.id, body('B1'));
+
+    const book: V1Book = { id: 'bk_1', title: 't', authors: [], narrators: [], status: 'failed' };
+    const next = await svc.applyBook(row, book);
+    expect(next).toBe('failed');
+    await vi.waitFor(() => expect(h.notify).toHaveBeenCalledTimes(1));
+    expect(failedPayload(h.notify)).toMatchObject({
+      event: 'request.failed',
+      reason: 'Download failed upstream.',
+      requester: { username: 'todd' },
+    });
+
+    // Re-applying the already-failed book is not a transition → no re-emit.
+    const again = await svc.applyBook(row, book);
+    expect(again).toBeNull();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits exactly once when two callers race the same non-failed row (atomic claim)', async () => {
+    const h = harness();
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const svc = new RequestService(db, client, policy(), h.deps());
+    const { row } = await svc.create(user.id, body('B1'));
+
+    const [a, b] = await Promise.all([
+      svc.markFailed(row, 'gone'),
+      svc.markFailed(row, 'gone'),
+    ]);
+    expect([a, b].filter(Boolean)).toHaveLength(1); // only one caller performed the transition
+    await vi.waitFor(() => expect(h.notify).toHaveBeenCalledTimes(1));
+  });
+
+  it('dispatches through the LIVE notifier after a reconfiguration (no stale capture)', async () => {
+    const h = harness();
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const svc = new RequestService(db, client, policy(), h.deps());
+    const { row } = await svc.create(user.id, body('B1'));
+
+    // Simulate settings.ts reassigning deps.notifier to a freshly-built dispatcher.
+    h.holder.current = { notify: h.swapped } as unknown as Notifier;
+    await svc.markFailed(row, 'gone');
+
+    await vi.waitFor(() => expect(h.swapped).toHaveBeenCalledTimes(1)); // rebuilt notifier got it
+    expect(h.notify).not.toHaveBeenCalled(); // original (stale) instance did NOT
+  });
+
+  it('still emits with a fallback username when the requester lookup misses, without throwing', async () => {
+    // depsNoRequester.getById always returns undefined — the deleted-account case. (Deleting
+    // the user row itself would cascade-delete the request, so we drive the lookup miss directly.)
+    const h = harness();
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const svc = new RequestService(db, client, policy(), h.depsNoRequester());
+    const { row } = await svc.create(user.id, body('B1'));
+
+    await expect(svc.markFailed(row, 'gone')).resolves.toBe(true); // transition lands, no throw
+    await vi.waitFor(() => expect(h.notify).toHaveBeenCalledTimes(1));
+    expect(failedPayload(h.notify)).toMatchObject({
+      event: 'request.failed',
+      requester: { username: '(unknown requester)' },
+    });
+  });
+
+  it('does not emit when constructed without notify deps (backward-compatible)', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    const svc = new RequestService(db, client, policy()); // 3-arg, no notifier
+    const { row } = await svc.create(user.id, body('B1'));
+    await expect(svc.markFailed(row, 'gone')).resolves.toBe(true); // no throw, transition still lands
+    const [fresh] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+    expect(fresh?.status).toBe('failed');
   });
 });
 

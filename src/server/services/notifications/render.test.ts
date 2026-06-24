@@ -1,0 +1,43 @@
+import { describe, it, expect } from 'vitest';
+import { render } from './render.js';
+import type { NotificationPayload } from './types.js';
+
+const failed = (over: Partial<{ author: string | null; reason: string | null; title: string }> = {}): NotificationPayload => ({
+  event: 'request.failed',
+  request: {
+    publicId: 'rq_9',
+    title: over.title ?? 'Dune',
+    author: over.author === undefined ? 'Frank Herbert' : over.author,
+    asin: 'B9',
+    coverUrl: null,
+  },
+  requester: { username: 'todd' },
+  reason: over.reason === undefined ? 'No source found upstream.' : over.reason,
+});
+
+describe('render — request.failed (#60)', () => {
+  it('titles "Request failed" and deep-links to /admin', () => {
+    const msg = render(failed(), 'https://req.example.com');
+    expect(msg.title).toBe('Request failed');
+    expect(msg.url).toBe('https://req.example.com/admin');
+  });
+
+  it('includes the author and reason in the body', () => {
+    const msg = render(failed(), 'https://req.example.com');
+    expect(msg.body).toBe('“Dune” failed to acquire by Frank Herbert: No source found upstream.');
+  });
+
+  it('omits the reason clause when reason is null', () => {
+    const msg = render(failed({ reason: null }), 'https://req.example.com');
+    expect(msg.body).toBe('“Dune” failed to acquire by Frank Herbert');
+  });
+
+  it('omits the "by <author>" clause when author is null (reason still rendered)', () => {
+    const msg = render(failed({ author: null }), 'https://req.example.com');
+    expect(msg.body).toBe('“Dune” failed to acquire: No source found upstream.');
+  });
+
+  it('renders url: null when no public base URL is configured', () => {
+    expect(render(failed(), null).url).toBeNull();
+  });
+});

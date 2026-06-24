@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { StatusPoller } from './status-poller.js';
-import { RequestService } from './request.service.js';
+import { RequestService, BOOK_VANISHED_REASON } from './request.service.js';
 import { NarratorrError, type INarratorrClient } from './narratorr-client.js';
+import { UserService } from './user.service.js';
+import type { Notifier, NotificationPayload } from './notifications/index.js';
 import { createTestDb, insertUser } from '../test-support/db.js';
 import { requests } from '../../db/schema.js';
 import type { Db } from '../../db/client.js';
@@ -355,5 +357,61 @@ describe('StatusPoller.pollOnce reconciliation edges', () => {
     // dropped Math.floor that toHaveBeenCalled() would miss.
     expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 50);
     expect(summary).toMatchObject({ checked: 1 });
+  });
+});
+
+// The poller 404 path is part of issue #60's exactly-once notification contract — the
+// reconciliation tests above only assert the DB edge (status/reason) on a request service
+// with no notify deps. These wire the production-shaped notify deps (live-notifier accessor
+// + UserService) into the request service the poller drives, and assert the request.failed
+// dispatch flows through pollOnce's 404 branch — once, and not again on a repeated poll.
+describe('StatusPoller 404 path — request.failed emission (#60)', () => {
+  // Emission is fire-and-forget (resolves the requester via getById, then dispatches), so the
+  // test awaits a deferred the notify spy settles — NOT a setTimeout flush. The fixed-clock
+  // suites above install fake timers, so a timer-based flush is unreliable here; awaiting the
+  // microtask-chained dispatch directly avoids depending on timers at all.
+  function notifyHarness() {
+    let settle!: (p: NotificationPayload) => void;
+    const dispatched = new Promise<NotificationPayload>((resolve) => {
+      settle = resolve;
+    });
+    const notify = vi.fn(async (p: NotificationPayload) => {
+      settle(p);
+    });
+    const holder = { current: { notify } as unknown as Notifier };
+    const notifyingSvc = new RequestService(
+      db,
+      client,
+      { defaultQuota: 10, windowDays: 30, autoApproveRoles: ['admin'] },
+      { getNotifier: () => holder.current, users: new UserService(db) },
+    );
+    return { notify, notifyingSvc, dispatched };
+  }
+
+  it('dispatches request.failed once (BOOK_VANISHED_REASON) when the book 404s, and not again on a repeated poll', async () => {
+    const { notify, notifyingSvc, dispatched } = notifyHarness();
+    const p = new StatusPoller({ requests: notifyingSvc, client, logger: noopLogger, jitterMs: 0 });
+    const seeded = await seedAcquiring('A1');
+    client.error = new NarratorrError(404, 'NOT_FOUND', 'gone');
+
+    const summary = await p.pollOnce();
+    expect(summary).toMatchObject({ checked: 1, transitioned: 1 });
+
+    const payload = await dispatched; // resolves when the (fire-and-forget) emission dispatches
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(payload).toMatchObject({
+      event: 'request.failed',
+      request: { publicId: seeded.publicId, asin: 'A1' },
+      requester: { username: 'tester' },
+      reason: BOOK_VANISHED_REASON,
+    });
+
+    // The row is now `failed`; findAcquiring won't return it, so a second poll observes
+    // nothing to transition (checked: 0) — markFailed/emitFailed are never reached, so there
+    // is no second dispatch to wait for. A microtask flush confirms the count stays at one.
+    const again = await p.pollOnce();
+    expect(again).toMatchObject({ checked: 0, transitioned: 0 });
+    await Promise.resolve();
+    expect(notify).toHaveBeenCalledTimes(1);
   });
 });
