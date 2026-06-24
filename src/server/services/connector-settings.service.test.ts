@@ -348,6 +348,15 @@ describe('ConnectorSettingsService — Discord/Slack create-time required secret
         svc.createNotifier({ name: type, type, enabled: true, events: ['request.created'], config: {} }),
       ).rejects.toMatchObject({ statusCode: 400, code: 'NOTIFIER_SECRET_REQUIRED' });
     });
+
+    it(`create ${type} with an explicit blank webhookUrl ('') → 400 NOTIFIER_SECRET_REQUIRED`, async () => {
+      // The registry schema intentionally ACCEPTS '' (httpUrl.or(z.literal('')).optional()) — the
+      // blank rejection lives in resolveNotifierConfig (resolveSecret('') → null → required). This
+      // pins that branch: an omitted-only test would still pass if the resolver guard were removed.
+      await expect(
+        svc.createNotifier({ name: type, type, enabled: true, events: ['request.created'], config: { webhookUrl: '' } }),
+      ).rejects.toMatchObject({ statusCode: 400, code: 'NOTIFIER_SECRET_REQUIRED' });
+    });
   }
 
   it('create discord with includeCover but no webhookUrl → 400 NOTIFIER_SECRET_REQUIRED', async () => {
