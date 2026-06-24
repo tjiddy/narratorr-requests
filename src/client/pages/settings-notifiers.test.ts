@@ -18,7 +18,7 @@ describe('newNotifierForm', () => {
   it('seeds blank fields, all events, enabled by default', () => {
     const f = newNotifierForm('ntfy');
     expect(f).toMatchObject({ id: null, type: 'ntfy', enabled: true });
-    expect(f.events).toEqual(['request.created', 'user.pending']);
+    expect(f.events).toEqual(['request.created', 'request.failed', 'user.pending']);
     expect(f.fields).toEqual({ url: '', topic: '', token: '', priority: '' });
   });
 
@@ -171,7 +171,7 @@ describe('buildConfigPayload — omit-to-keep secret encoding', () => {
 describe('buildNotifierBody / buildNotifierTestBody', () => {
   it('builds a create body with a trimmed name', () => {
     const f = { ...newNotifierForm('ntfy'), name: '  Phone  ', fields: { url: 'https://ntfy.sh', topic: 'reqs', token: '', priority: '' } };
-    expect(buildNotifierBody(f)).toMatchObject({ name: 'Phone', type: 'ntfy', events: ['request.created', 'user.pending'] });
+    expect(buildNotifierBody(f)).toMatchObject({ name: 'Phone', type: 'ntfy', events: ['request.created', 'request.failed', 'user.pending'] });
   });
 
   it('test body carries id when editing and publicUrl when set; omits publicUrl when null', () => {

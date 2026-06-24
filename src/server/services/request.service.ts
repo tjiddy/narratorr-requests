@@ -1,6 +1,8 @@
-import { and, desc, eq, gte, inArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, ne, or, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
 import { requests, users, type RequestRow } from '../../db/schema.js';
+import type { Notifier } from './notifications/index.js';
+import type { UserService } from './user.service.js';
 import type {
   CreateRequestBody,
   DecisionBody,
@@ -34,11 +36,31 @@ export interface QuotaUsage {
   windowDays: number;
 }
 
+/**
+ * Wiring for the admin-facing `request.failed` notification (issue #60). Optional — when
+ * absent the service simply doesn't emit (existing call-sites that don't care about
+ * notifications keep their 3-arg construction).
+ */
+export interface RequestFailureNotifyDeps {
+  /**
+   * Reads the CURRENT notifier at call time. MUST be an accessor, not a captured
+   * instance: the live notifier is rebuilt and reassigned on every notifier-settings
+   * change, so capturing it would dispatch failed-notifications through a stale channel set.
+   */
+  getNotifier: () => Notifier;
+  /** Resolves `requester.username`; an absent row falls back to a stable placeholder. */
+  users: Pick<UserService, 'getById'>;
+}
+
+/** Username used when the requester row is gone (e.g. deleted account) — the admin still hears it failed. */
+const UNKNOWN_REQUESTER = '(unknown requester)';
+
 export class RequestService {
   constructor(
     private readonly db: Db,
     private readonly client: INarratorrClient,
     private readonly policy: RequestPolicy,
+    private readonly notifyDeps?: RequestFailureNotifyDeps,
   ) {}
 
   // --- reads -----------------------------------------------------------------
@@ -272,27 +294,80 @@ export class RequestService {
     try {
       const book = await this.client.addBook(row.asin);
       const next = this.mapBookStatus(book.status);
+      // The book itself came back terminal-failed: claim the failed edge atomically
+      // (emits request.failed once) while preserving the resolved book linkage.
+      if (next === 'failed') {
+        const failed = await this.transitionToFailed(row, bookStatusFailureReason(book.status), {
+          narratorrBookId: book.id,
+        });
+        return failed ?? row;
+      }
       const [updated] = await this.db
         .update(requests)
-        .set({
-          narratorrBookId: book.id,
-          status: next,
-          ...(next === 'failed'
-            ? { userCausedFailure: false, failureReason: bookStatusFailureReason(book.status) }
-            : {}),
-        })
+        .set({ narratorrBookId: book.id, status: next })
         .where(eq(requests.id, row.id))
         .returning();
       return updated ?? row;
     } catch (err) {
       if (!isTerminalHandoffError(err)) throw err; // transient — stays `approved`, poller retries
-      const reason = handoffFailureReason(err);
-      await this.db
-        .update(requests)
-        .set({ status: 'failed', userCausedFailure: false, failureReason: reason })
-        .where(eq(requests.id, row.id));
+      // Terminal handoff failure: claim the failed edge (emits request.failed once) and
+      // PRESERVE the existing rethrow — callers/tests depend on the error surfacing.
+      await this.transitionToFailed(row, handoffFailureReason(err));
       throw err;
     }
+  }
+
+  /**
+   * Atomically claim the non-`failed` → `failed` edge and emit `request.failed` EXACTLY
+   * once. The `WHERE status != 'failed'` guard means two racing callers can't both win —
+   * the loser's UPDATE returns no row and emits nothing. Returns the updated row when THIS
+   * caller performed the transition, else null (already failed, or row gone). `extra`
+   * carries path-specific fields to preserve (e.g. `narratorrBookId` on the handoff path,
+   * which a status-only write would drop).
+   */
+  private async transitionToFailed(
+    row: RequestRow,
+    reason: string,
+    extra: { narratorrBookId?: string | null } = {},
+  ): Promise<RequestRow | null> {
+    const [updated] = await this.db
+      .update(requests)
+      .set({ status: 'failed', userCausedFailure: false, failureReason: reason, ...extra })
+      .where(and(eq(requests.id, row.id), ne(requests.status, 'failed')))
+      .returning();
+    if (!updated) return null;
+    this.emitFailed(updated, reason);
+    return updated;
+  }
+
+  /**
+   * Fire-and-forget `request.failed` emission. NEVER throws into the request/poll path:
+   * the failed transition is already committed, so a missing requester or a dispatch
+   * hiccup must not unwind it. Resolves the requester via the live UserService and
+   * dispatches through the LIVE notifier (read at call time). A missing requester row
+   * still emits with a stable placeholder username — the admin needs to hear it failed.
+   */
+  private emitFailed(row: RequestRow, reason: string | null): void {
+    const deps = this.notifyDeps;
+    if (!deps) return;
+    void (async () => {
+      const requester = await deps.users.getById(row.userId);
+      void deps.getNotifier().notify({
+        event: 'request.failed',
+        request: {
+          publicId: row.publicId,
+          title: row.title,
+          author: row.author,
+          asin: row.asin,
+          coverUrl: row.coverUrl,
+        },
+        requester: { username: requester?.username ?? UNKNOWN_REQUESTER },
+        reason,
+      });
+    })().catch(() => {
+      // Defensive: getById could theoretically reject (DB fault). The failed transition
+      // already landed; swallow so it never propagates into the request/poll flow.
+    });
   }
 
   // --- reconciliation (poller) ----------------------------------------------
@@ -337,25 +412,30 @@ export class RequestService {
     const next = this.mapBookStatus(book.status);
     const bookId = book.id ?? row.narratorrBookId;
     if (next === 'acquiring' && bookId === row.narratorrBookId) return null; // no change worth persisting
+    // A polled book that went terminal-failed claims the failed edge atomically (emits
+    // request.failed once), preserving the book linkage. null = another caller already
+    // failed it → no transition to report.
+    if (next === 'failed') {
+      const failed = await this.transitionToFailed(row, bookStatusFailureReason(book.status), {
+        narratorrBookId: bookId,
+      });
+      return failed ? 'failed' : null;
+    }
     await this.db
       .update(requests)
-      .set({
-        status: next,
-        narratorrBookId: bookId,
-        ...(next === 'failed'
-          ? { userCausedFailure: false, failureReason: bookStatusFailureReason(book.status) }
-          : {}),
-      })
+      .set({ status: next, narratorrBookId: bookId })
       .where(eq(requests.id, row.id));
     return next === row.status ? null : next;
   }
 
-  /** Mark a request failed when its book can no longer be found (404 on poll). */
-  async markFailed(row: RequestRow, reason: string): Promise<void> {
-    await this.db
-      .update(requests)
-      .set({ status: 'failed', userCausedFailure: false, failureReason: reason })
-      .where(eq(requests.id, row.id));
+  /**
+   * Mark a request failed when its book can no longer be found (404 on poll). Thin wrapper
+   * over the atomic failed-transition helper. Returns whether THIS call performed the
+   * transition, so the poller counts/logs the edge exactly once (and doesn't re-emit on a
+   * book that was already failed).
+   */
+  async markFailed(row: RequestRow, reason: string): Promise<boolean> {
+    return (await this.transitionToFailed(row, reason)) !== null;
   }
 
   private mapBookStatus(status: V1Book['status']): RequestStatus {

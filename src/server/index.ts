@@ -65,11 +65,18 @@ async function main(): Promise<void> {
     app.log.warn('narratorr is not configured — search and requests will fail until it is set on the Settings page');
   }
 
-  const requests = new RequestService(db, narratorr, {
-    defaultQuota: settingsRow.defaultQuota,
-    windowDays: config.quotaWindowDays,
-    autoApproveRoles: settingsRow.autoApproveRoles as Role[],
-  });
+  const requests = new RequestService(
+    db,
+    narratorr,
+    {
+      defaultQuota: settingsRow.defaultQuota,
+      windowDays: config.quotaWindowDays,
+      autoApproveRoles: settingsRow.autoApproveRoles as Role[],
+    },
+    // Live-notifier accessor (NOT a captured instance): the settings route reassigns
+    // deps.notifier on every notifier-config save, so read it at dispatch time.
+    { getNotifier: () => deps.notifier, users },
+  );
   const search = new SearchService(narratorr);
   // One OidcService per configured provider, keyed by id. Authorization is the approval
   // queue (no per-provider gate), so the mapped profile flows straight to upsertFromOidc.

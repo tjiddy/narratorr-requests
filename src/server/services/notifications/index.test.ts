@@ -33,6 +33,12 @@ const userEvent: NotificationPayload = {
   event: 'user.pending',
   user: { publicId: 'us_1', username: 'newbie', email: null, authProvider: 'local' },
 };
+const failedEvent: NotificationPayload = {
+  event: 'request.failed',
+  request: { publicId: 'rq_9', title: 'Dune', author: null, asin: 'B9', coverUrl: null },
+  requester: { username: 'todd' },
+  reason: 'No source found upstream.',
+};
 
 describe('buildNotifierChannel (adapter map)', () => {
   it('builds a live channel for each known type from runtime config', () => {
@@ -112,6 +118,18 @@ describe('buildNotifier', () => {
 
     await n.notify(userEvent);
     expect(fetchMock).toHaveBeenCalledOnce(); // user.pending subscribed
+  });
+
+  it('event filter: a request.failed-only notifier fires on failed but not on created/pending', async () => {
+    const { log } = fakeLog();
+    const n = buildNotifier({ publicUrl: null, notifiers: [ntfyRuntime({ events: ['request.failed'] })] }, log);
+
+    await n.notify(requestEvent); // request.created — not subscribed
+    await n.notify(userEvent); // user.pending — not subscribed
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await n.notify(failedEvent); // request.failed — subscribed
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it('two notifiers of the same type each receive a subscribed event', async () => {

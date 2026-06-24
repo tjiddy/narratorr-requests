@@ -121,9 +121,12 @@ export class StatusPoller {
         }
       } catch (err) {
         if (err instanceof NarratorrError && err.upstreamStatus === 404) {
-          await this.requests.markFailed(row, BOOK_VANISHED_REASON);
-          transitioned += 1;
-          this.logger.warn({ request: row.publicId }, 'book vanished upstream — marked failed');
+          // markFailed claims the edge atomically; only count/log when THIS call transitioned
+          // it (a row another caller already failed returns false → no double count/emit).
+          if (await this.requests.markFailed(row, BOOK_VANISHED_REASON)) {
+            transitioned += 1;
+            this.logger.warn({ request: row.publicId }, 'book vanished upstream — marked failed');
+          }
         } else {
           upstreamErrors += 1;
           this.logger.warn({ request: row.publicId, err }, 'poll failed for request');

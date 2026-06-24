@@ -31,6 +31,19 @@ export type NotificationPayload =
       requester: { username: string };
     }
   | {
+      event: 'request.failed';
+      request: {
+        publicId: string;
+        title: string;
+        author: string | null;
+        asin: string;
+        coverUrl: string | null;
+      };
+      requester: { username: string };
+      /** Friendly failure reason, or null when genuinely absent. */
+      reason: string | null;
+    }
+  | {
       event: 'user.pending';
       user: {
         publicId: string;

@@ -23,9 +23,16 @@ export class WebhookChannel implements NotificationChannel {
     const content = [message.title, message.body, message.url].filter(Boolean).join('\n');
     // `content` works for Discord (it renders that and ignores the rest); the
     // event-specific fields give a generic consumer the structured data.
+    // Branch on DATA PRESENCE, not the event literal, so any request-shaped event
+    // (request.created, request.failed, …) serializes its request/requester payload
+    // with no further edits here. A request.failed payload also carries a `reason`.
     const structured =
-      payload.event === 'request.created'
-        ? { request: payload.request, requester: payload.requester }
+      'request' in payload
+        ? {
+            request: payload.request,
+            requester: payload.requester,
+            ...('reason' in payload && { reason: payload.reason }),
+          }
         : { user: payload.user };
     const res = await fetch(this.cfg.url, {
       method: 'POST',

@@ -357,6 +357,24 @@ describe('settings routes — notifier test (always 200)', () => {
     );
   });
 
+  it('event-aware test: request.failed renders the failed sample (request-shaped, with a reason) (#60)', async () => {
+    sendMail.mockResolvedValue({ messageId: 'x' });
+    const res = await test({
+      type: 'email',
+      config: { host: 'smtp.example.com', from: 'a@b.c', to: 'd@e.f' },
+      publicUrl: 'https://app.example.com',
+      event: 'request.failed',
+    });
+    expect(res.json()).toMatchObject({ success: true });
+    expect(sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subject: 'Request failed',
+        // The sample carries a reason, rendered into the body, and deep-links to /admin.
+        text: expect.stringContaining('This is a test failure reason.'),
+      }),
+    );
+  });
+
   it('edit-by-id reuses the STORED secret (omit-to-keep) in the probe', async () => {
     const created = (await createNotifier(ntfyCreate({ config: { url: 'https://ntfy.sh', topic: 'reqs', token: 'stored-token' } }))).json();
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));

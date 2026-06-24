@@ -97,7 +97,11 @@ describe('createNotifierBodySchema / notifierTestBodySchema', () => {
   });
 
   it('rejects an unknown event key in events', () => {
-    expect(createNotifierBodySchema.safeParse({ ...base, events: ['request.failed'] }).success).toBe(false);
+    expect(createNotifierBodySchema.safeParse({ ...base, events: ['request.bogus'] }).success).toBe(false);
+  });
+
+  it('accepts request.failed as a known event key (#60)', () => {
+    expect(createNotifierBodySchema.safeParse({ ...base, events: ['request.failed'] }).success).toBe(true);
   });
 
   it('notifier test body carries type + config, optional id + publicUrl', () => {
@@ -113,7 +117,9 @@ describe('createNotifierBodySchema / notifierTestBodySchema', () => {
     expect(notifierTestBodySchema.parse({ type: 'ntfy', config: {}, event: 'request.created' }).event).toBe('request.created');
     // Omitted → legacy request.created sample, preserving today's probe.
     expect(notifierTestBodySchema.parse({ type: 'ntfy', config: {} }).event).toBe('request.created');
-    expect(notifierTestBodySchema.safeParse({ type: 'ntfy', config: {}, event: 'request.failed' }).success).toBe(false);
+    // request.failed is now a known event (#60); a still-unknown key is rejected.
+    expect(notifierTestBodySchema.parse({ type: 'ntfy', config: {}, event: 'request.failed' }).event).toBe('request.failed');
+    expect(notifierTestBodySchema.safeParse({ type: 'ntfy', config: {}, event: 'request.bogus' }).success).toBe(false);
   });
 });
 
