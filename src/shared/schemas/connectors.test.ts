@@ -83,7 +83,7 @@ describe('testConnectorResultSchema', () => {
 });
 
 describe('createNotifierBodySchema / notifierTestBodySchema', () => {
-  const base = { name: 'My phone', type: 'ntfy', enabled: true, events: ['request.created'], config: {} };
+  const base = { name: 'My phone', type: 'ntfy', events: ['request.created'], config: {} };
 
   it('accepts a valid envelope (config validated server-side, opaque here)', () => {
     expect(createNotifierBodySchema.safeParse(base).success).toBe(true);
@@ -125,7 +125,7 @@ describe('createNotifierBodySchema / notifierTestBodySchema', () => {
 
 describe('storedNotifierSchema — type-lenient persistence boundary', () => {
   it('parses a row whose type is NOT in the registry (round-trips, type: string)', () => {
-    const row = { id: 'nf_x', name: 'Legacy', type: 'apprise', enabled: true, events: ['user.pending'], config: { token: 'enc:v1:abc' } };
+    const row = { id: 'nf_x', name: 'Legacy', type: 'apprise', events: ['user.pending'], config: { token: 'enc:v1:abc' } };
     const parsed = storedNotifierSchema.parse(row);
     expect(parsed.type).toBe('apprise');
     expect(parsed.config).toEqual({ token: 'enc:v1:abc' });
@@ -138,7 +138,6 @@ describe('notifierDtoSchema — discriminated known | unknown', () => {
       id: 'nf_1',
       name: 'Phone',
       type: 'ntfy',
-      enabled: true,
       events: ['request.created'],
       config: { url: 'https://ntfy.sh', topic: 't', hasToken: true, priority: null },
     };
@@ -146,18 +145,13 @@ describe('notifierDtoSchema — discriminated known | unknown', () => {
   });
 
   it('accepts a webhook DTO masked to a host hint (no plaintext url)', () => {
-    const dto = { id: 'nf_2', name: 'Discord', type: 'webhook', enabled: true, events: ['request.created'], config: { hasUrl: true, urlHint: 'discord.com/…' } };
+    const dto = { id: 'nf_2', name: 'Discord', type: 'webhook', events: ['request.created'], config: { hasUrl: true, urlHint: 'discord.com/…' } };
     expect(notifierDtoSchema.safeParse(dto).success).toBe(true);
   });
 
-  it('accepts an unknown-type DTO (disabled, deletable, no config)', () => {
-    const dto = { id: 'nf_3', name: 'Legacy', type: 'apprise', enabled: false, events: ['user.pending'], unknown: true };
+  it('accepts an unknown-type DTO (deletable, no config)', () => {
+    const dto = { id: 'nf_3', name: 'Legacy', type: 'apprise', events: ['user.pending'], unknown: true };
     expect(notifierDtoSchema.safeParse(dto).success).toBe(true);
-  });
-
-  it('rejects an unknown-type DTO that claims enabled: true', () => {
-    const dto = { id: 'nf_4', name: 'Legacy', type: 'apprise', enabled: true, events: [], unknown: true };
-    expect(notifierDtoSchema.safeParse(dto).success).toBe(false);
   });
 });
 
@@ -167,8 +161,8 @@ describe('connectorSettingsDtoSchema', () => {
       publicUrl: 'https://requests.example.com',
       narratorr: { host: 'narratorr.example.com', port: 443, useSsl: true, urlBase: '/lib', hasApiKey: true },
       notifiers: [
-        { id: 'nf_1', name: 'Phone', type: 'ntfy', enabled: true, events: ['request.created'], config: { url: 'https://ntfy.sh', topic: 't', hasToken: false, priority: null } },
-        { id: 'nf_2', name: 'Legacy', type: 'apprise', enabled: false, events: ['user.pending'], unknown: true },
+        { id: 'nf_1', name: 'Phone', type: 'ntfy', events: ['request.created'], config: { url: 'https://ntfy.sh', topic: 't', hasToken: false, priority: null } },
+        { id: 'nf_2', name: 'Legacy', type: 'apprise', events: ['user.pending'], unknown: true },
       ],
     };
     expect(connectorSettingsDtoSchema.safeParse(dto).success).toBe(true);

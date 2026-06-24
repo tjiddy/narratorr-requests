@@ -12,8 +12,7 @@ import { NOTIFIER_DEFS, NOTIFIER_TYPES, type NotifierType } from '../notifier-re
 //   • Create/Update/Test notifier bodies — per-notifier CRUD.
 //
 // Notifiers are a generalized list (Sonarr/Radarr-style Connections): each has a name,
-// a type (from the shared registry), an enabled flag, the events it fires on, and
-// type-specific config. The registry (src/shared/notifier-registry.ts) is the single
+// a type (from the shared registry), the events it fires on, and type-specific config. The registry (src/shared/notifier-registry.ts) is the single
 // source of truth for field metadata + config/masked schemas + secret metadata.
 // =============================================================================
 
@@ -51,7 +50,6 @@ export interface StoredNotifier {
   id: string;
   name: string;
   type: string;
-  enabled: boolean;
   events: NotificationEvent[];
   config: Record<string, unknown>;
 }
@@ -64,7 +62,6 @@ export const storedNotifierSchema = z.object({
   id: z.string(),
   name: z.string(),
   type: z.string(),
-  enabled: z.boolean(),
   events: z.array(notificationEventSchema),
   config: z.record(z.string(), z.unknown()),
 });
@@ -81,15 +78,14 @@ export interface StoredConnectors {
 
 // ---- Masked notifier DTO (GET) ----------------------------------------------
 // Discriminated so an unknown stored type is PRESERVED end-to-end, not 500'd:
-//   • Known: { id, name, type: <registry key>, enabled, events, config: <masked> }
-//   • Unknown: { id, name, type: <raw string>, enabled: false, events, unknown: true }
-//     — no config, rendered disabled + deletable.
+//   • Known: { id, name, type: <registry key>, events, config: <masked> }
+//   • Unknown: { id, name, type: <raw string>, events, unknown: true }
+//     — no config, rendered deletable.
 const knownNotifierDtoSchemas = NOTIFIER_DEFS.map((def) =>
   z.object({
     id: z.string(),
     name: z.string(),
     type: z.literal(def.type),
-    enabled: z.boolean(),
     events: z.array(notificationEventSchema),
     config: def.maskedConfigSchema,
   }),
@@ -99,7 +95,6 @@ export const unknownNotifierDtoSchema = z.object({
   id: z.string(),
   name: z.string(),
   type: z.string(),
-  enabled: z.literal(false),
   events: z.array(notificationEventSchema),
   unknown: z.literal(true),
 });
@@ -117,16 +112,14 @@ export interface KnownNotifierDto {
   id: string;
   name: string;
   type: NotifierType;
-  enabled: boolean;
   events: NotificationEvent[];
   config: Record<string, unknown>;
 }
-/** A stored notifier whose type is no longer in the registry — disabled, deletable, no config. */
+/** A stored notifier whose type is no longer in the registry — deletable, no config. */
 export interface UnknownNotifierDto {
   id: string;
   name: string;
   type: string;
-  enabled: false;
   events: NotificationEvent[];
   unknown: true;
 }
@@ -194,7 +187,7 @@ export const testConnectorResultSchema = z.object({
 export type TestConnectorResult = z.infer<typeof testConnectorResultSchema>;
 
 // ---- Notifier CRUD bodies ----------------------------------------------------
-// The envelope is validated here (name/type/enabled/events); the type-specific `config`
+// The envelope is validated here (name/type/events); the type-specific `config`
 // is validated server-side against the registry's per-type `configSchema` (the type is
 // only known at runtime). `config` stays opaque at this layer.
 // Bounds are proportionate (admin-only, single JSON row): a sane `name` ceiling and a
@@ -207,7 +200,6 @@ const notifierWriteBodySchema = z
   .object({
     name: z.string().trim().min(1).max(NOTIFIER_NAME_MAX),
     type: z.enum(NOTIFIER_TYPES),
-    enabled: z.boolean(),
     events: z.array(notificationEventSchema).min(1).max(NOTIFIER_EVENTS_MAX),
     config: z.record(z.string(), z.unknown()),
   })

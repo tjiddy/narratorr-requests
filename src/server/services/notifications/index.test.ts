@@ -18,7 +18,6 @@ const ntfyRuntime = (over: Partial<RuntimeNotifier> = {}): RuntimeNotifier => ({
   id: 'nf_ntfy',
   name: 'phone',
   type: 'ntfy',
-  enabled: true,
   events: ['request.created', 'user.pending'],
   config: { url: 'https://ntfy.sh', topic: 'narr', token: null, priority: null },
   ...over,
@@ -80,7 +79,7 @@ describe('buildNotifier', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it('includes one channel per enabled, known notifier and logs the set once', () => {
+  it('includes one channel per known notifier and logs the set once', () => {
     const { log, info } = fakeLog();
     const cfg: NotificationsConfig = {
       publicUrl: 'https://req.example.com',
@@ -90,12 +89,6 @@ describe('buildNotifier', () => {
     expect(n.enabled).toBe(true);
     expect(info).toHaveBeenCalledOnce();
     expect(info.mock.calls[0]![0]).toEqual({ channels: ['ntfy:one', 'ntfy:two'] });
-  });
-
-  it('skips disabled notifiers', () => {
-    const { log } = fakeLog();
-    const n = buildNotifier({ publicUrl: null, notifiers: [ntfyRuntime({ enabled: false })] }, log);
-    expect(n.enabled).toBe(false);
   });
 
   it('skips an unknown type with a warn, never throwing', () => {

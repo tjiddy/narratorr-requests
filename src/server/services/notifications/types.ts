@@ -3,7 +3,7 @@
  * notifier in spirit (fire-and-forget fan-out to N channels). The config it runs on is
  * the decrypted connector settings from ConnectorSettingsService.getNotificationsConfig()
  * (edited in the admin Settings UI, secrets stored encrypted); buildNotifier assembles a
- * channel per enabled notifier — see ./index.ts.
+ * channel per notifier — see ./index.ts.
  */
 import type { NotificationEvent } from '../../../shared/notification-events.js';
 
@@ -102,7 +102,6 @@ export interface RuntimeNotifier {
   id: string;
   name: string;
   type: string;
-  enabled: boolean;
   events: NotificationEvent[];
   config: Record<string, unknown>;
 }

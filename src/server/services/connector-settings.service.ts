@@ -199,7 +199,6 @@ export class ConnectorSettingsService {
       id: publicId('nf'),
       name: body.name,
       type: body.type,
-      enabled: body.enabled,
       events: body.events,
       config,
     };
@@ -231,7 +230,6 @@ export class ConnectorSettingsService {
       id,
       name: body.name,
       type: body.type,
-      enabled: body.enabled,
       events: body.events,
       config,
     };
@@ -272,7 +270,7 @@ export class ConnectorSettingsService {
   }
 
   /**
-   * Mask a stored notifier into its DTO — known → masked config; unknown → disabled+deletable.
+   * Mask a stored notifier into its DTO — known → masked config; unknown → deletable, no config.
    * NEVER-BRICK: a single row whose config OR events fail their response schema must not 500 the
    * whole Settings GET (the admin couldn't even load the page to delete the offending row). Both
    * independently-validated fields degrade: a config that fails masking falls back to the
@@ -287,16 +285,16 @@ export class ConnectorSettingsService {
     if (isKnownNotifierType(n.type)) {
       const config = this.tryMaskNotifierConfig(NOTIFIER_REGISTRY[n.type], n.config);
       if (config !== null) {
-        return { id: n.id, name: n.name, type: n.type, enabled: n.enabled, events, config };
+        return { id: n.id, name: n.name, type: n.type, events, config };
       }
-      // Masked config failed its schema → degrade to the unknown DTO (disabled, deletable, no
-      // config) so the row stays visible and removable instead of bricking the response.
+      // Masked config failed its schema → degrade to the unknown DTO (deletable, no config) so
+      // the row stays visible and removable instead of bricking the response.
       this.logger.warn(
         { notifier: n.id, type: n.type },
-        'notifier config could not be masked (malformed stored config) — degrading to a disabled, deletable row',
+        'notifier config could not be masked (malformed stored config) — degrading to a deletable row',
       );
     }
-    return { id: n.id, name: n.name, type: n.type, enabled: false, events, unknown: true };
+    return { id: n.id, name: n.name, type: n.type, events, unknown: true };
   }
 
   /** Response-safe events: valid keys pass through; a malformed set degrades to [] + WARN. */

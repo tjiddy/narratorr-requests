@@ -15,9 +15,9 @@ import { NOTIFIER_REGISTRY } from '@shared/notifier-registry';
 import type { KnownNotifierDto } from '@shared/schemas/connectors';
 
 describe('newNotifierForm', () => {
-  it('seeds blank fields, all events, enabled by default', () => {
+  it('seeds blank fields and all events', () => {
     const f = newNotifierForm('ntfy');
-    expect(f).toMatchObject({ id: null, type: 'ntfy', enabled: true });
+    expect(f).toMatchObject({ id: null, type: 'ntfy' });
     expect(f.events).toEqual(['request.created', 'request.failed', 'user.pending']);
     expect(f.fields).toEqual({ url: '', topic: '', token: '', priority: '' });
   });
@@ -55,12 +55,11 @@ describe('formFromDto', () => {
       id: 'nf_1',
       name: 'Phone',
       type: 'ntfy',
-      enabled: false,
       events: ['user.pending'],
       config: { url: 'https://ntfy.sh', topic: 'reqs', hasToken: true, priority: 'high' },
     };
     const f = formFromDto(dto);
-    expect(f).toMatchObject({ id: 'nf_1', name: 'Phone', enabled: false, events: ['user.pending'] });
+    expect(f).toMatchObject({ id: 'nf_1', name: 'Phone', events: ['user.pending'] });
     expect(f.fields).toMatchObject({ url: 'https://ntfy.sh', topic: 'reqs', token: '', priority: 'high' });
     expect(f.has.token).toBe(true);
   });
@@ -70,7 +69,6 @@ describe('formFromDto', () => {
       id: 'nf_2',
       name: 'Discord',
       type: 'webhook',
-      enabled: true,
       events: ['request.created'],
       config: { hasUrl: true, urlHint: 'discord.com/…' },
     };

@@ -77,7 +77,6 @@ const NOTIFIERS_URL = '/api/admin/settings/notifiers';
 const ntfyCreate = (over: Partial<CreateNotifierBody> = {}): CreateNotifierBody => ({
   name: 'Phone',
   type: 'ntfy',
-  enabled: true,
   events: ['request.created'],
   config: { url: 'https://ntfy.sh', topic: 'reqs' },
   ...over,
@@ -149,7 +148,7 @@ describe('settings routes — notifier CRUD + live reconfigure', () => {
   });
 
   it('create enforces a required secret (webhook url) → 400', async () => {
-    const res = await createNotifier({ name: 'D', type: 'webhook', enabled: true, events: ['request.created'], config: {} });
+    const res = await createNotifier({ name: 'D', type: 'webhook', events: ['request.created'], config: {} });
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe('NOTIFIER_SECRET_REQUIRED');
   });

@@ -24,7 +24,6 @@ export interface NotifierFormState {
   id: string | null;
   name: string;
   type: NotifierType;
-  enabled: boolean;
   events: NotificationEvent[];
   /** Field values keyed by field key — checkbox fields are booleans, the rest strings. */
   fields: Record<string, string | boolean>;
@@ -53,7 +52,7 @@ function blankFields(def: NotifierTypeDef): Record<string, string | boolean> {
 /** A fresh form for adding a notifier of `type` (defaults to all events selected). */
 export function newNotifierForm(type: NotifierType): NotifierFormState {
   const def = NOTIFIER_REGISTRY[type];
-  return { id: null, name: '', type, enabled: true, events: [...ALL_EVENT_KEYS], fields: blankFields(def), has: {}, clear: {} };
+  return { id: null, name: '', type, events: [...ALL_EVENT_KEYS], fields: blankFields(def), has: {}, clear: {} };
 }
 
 /** An edit form seeded from a known notifier DTO — secrets blank (omit-to-keep), `has*` carried. */
@@ -74,7 +73,7 @@ export function formFromDto(dto: KnownNotifierDto): NotifierFormState {
       fields[f.key] = config[f.key] == null ? '' : String(config[f.key]);
     }
   }
-  return { id: dto.id, name: dto.name, type: dto.type as NotifierType, enabled: dto.enabled, events: [...dto.events], fields, has, clear: {} };
+  return { id: dto.id, name: dto.name, type: dto.type as NotifierType, events: [...dto.events], fields, has, clear: {} };
 }
 
 /** Toggle one event key in the form's `events` list (preserving registry order). */
@@ -132,7 +131,6 @@ export function buildNotifierBody(state: NotifierFormState): CreateNotifierBody 
   return {
     name: state.name.trim(),
     type: state.type,
-    enabled: state.enabled,
     events: state.events,
     config: buildConfigPayload(def, state),
   };

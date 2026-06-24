@@ -81,7 +81,6 @@ describe('connectionFormKey — keyed on the connection slice, not the notifier 
     id,
     name: id,
     type: 'ntfy',
-    enabled: true,
     events: ['request.created'],
     config: { url: 'https://ntfy.sh', topic: 't', hasToken: false, priority: null },
   });

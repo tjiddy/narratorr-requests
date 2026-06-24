@@ -99,7 +99,6 @@ class EventFilteredChannel implements NotificationChannel {
 }
 
 function buildOne(nf: RuntimeNotifier, log: NotifierLogger): NotificationChannel | null {
-  if (!nf.enabled) return null;
   let inner: NotificationChannel | null;
   try {
     inner = buildNotifierChannel(nf.type, nf.config);
@@ -117,9 +116,9 @@ function buildOne(nf: RuntimeNotifier, log: NotifierLogger): NotificationChannel
 }
 
 /**
- * Assemble the dispatcher from the decrypted notifier list. Each enabled notifier of a
- * known type becomes an event-filtered channel; disabled / unknown / unbuildable ones
- * are skipped. An empty result yields a no-op Notifier — `notify()` returns immediately.
+ * Assemble the dispatcher from the decrypted notifier list. Each notifier of a known type
+ * becomes an event-filtered channel; unknown / unbuildable ones are skipped. An empty
+ * result yields a no-op Notifier — `notify()` returns immediately.
  */
 export function buildNotifier(cfg: NotificationsConfig, log: NotifierLogger): Notifier {
   const channels = cfg.notifiers
