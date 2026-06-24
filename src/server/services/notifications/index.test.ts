@@ -60,6 +60,12 @@ describe('buildNotifierChannel (adapter map)', () => {
     expect(buildNotifierChannel('apprise', {})).toBeNull();
   });
 
+  it('returns null for an inherited prototype key (own-property lookup, no "builder is not a function")', () => {
+    for (const proto of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+      expect(buildNotifierChannel(proto, {}), proto).toBeNull();
+    }
+  });
+
   it('throws when the runtime config fails the type schema (e.g. an undecryptable required secret)', () => {
     // webhook url revealed to null (decrypt failed) → runtime schema requires a string.
     expect(() => buildNotifierChannel('webhook', { url: null })).toThrow();
@@ -95,6 +101,13 @@ describe('buildNotifier', () => {
   it('skips an unknown type with a warn, never throwing', () => {
     const { log, warn } = fakeLog();
     const n = buildNotifier({ publicUrl: null, notifiers: [ntfyRuntime({ type: 'apprise', config: {} })] }, log);
+    expect(n.enabled).toBe(false);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('skips a notifier whose type is a prototype key (no "send is not a function")', () => {
+    const { log, warn } = fakeLog();
+    const n = buildNotifier({ publicUrl: null, notifiers: [ntfyRuntime({ type: '__proto__', config: {} })] }, log);
     expect(n.enabled).toBe(false);
     expect(warn).toHaveBeenCalled();
   });

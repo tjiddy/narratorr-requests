@@ -215,6 +215,24 @@ describe('ConnectorSettingsService — never-brick (undecryptable) + unknown typ
     expect(ok).toMatchObject({ id: 'nf_ok', type: 'ntfy', enabled: true, events: ['request.created'], config: { hasToken: false, topic: 'ok' } });
   });
 
+  it('a stored notifier whose type is an inherited prototype key degrades to a disabled, deletable unknown DTO (no 500)', async () => {
+    // `constructor`/`__proto__` would be `type in NOTIFIER_REGISTRY` === true (inherited), then
+    // resolve a prototype member as a "def" and throw on `def.fields` → 500 on the Settings GET.
+    // The own-property guard classifies them as unknown → never-brick degraded row.
+    for (const type of ['constructor', '__proto__']) {
+      await seedNotifiers([{ id: 'nf_proto', name: 'Proto', type, enabled: true, events: ['request.created'], config: {} }]);
+      const dto = await new ConnectorSettingsService(db, codec, { warn() {} }).getDto(); // must not throw
+      expect(dto.notifiers[0], type).toEqual({
+        id: 'nf_proto',
+        name: 'Proto',
+        type,
+        enabled: false,
+        events: ['request.created'],
+        unknown: true,
+      });
+    }
+  });
+
   it('a stored notifier whose type is not in the registry is preserved as a disabled, deletable UnknownNotifierDto', async () => {
     // Inject a stored row directly with an out-of-registry type (type-lenient persistence).
     await db
@@ -275,6 +293,67 @@ describe('ConnectorSettingsService — updateNotifier type change', () => {
     const runtime = (await svc.getNotificationsConfig()).notifiers[0]!;
     expect(runtime.config.url).toBe('https://discord.com/api/webhooks/1/abc');
     expect(runtime.config.topic).toBeUndefined();
+  });
+});
+
+describe('ConnectorSettingsService — required-secret symmetry on update', () => {
+  it('rejects clearing a required capability-URL secret on update (webhook url → "" → 400)', async () => {
+    const nf = await svc.createNotifier({
+      name: 'W',
+      type: 'webhook',
+      enabled: true,
+      events: ['request.created'],
+      config: { url: 'https://discord.com/api/webhooks/1/abc' },
+    });
+    await expect(
+      svc.updateNotifier(nf.id, { name: 'W', type: 'webhook', enabled: true, events: ['request.created'], config: { url: '' } }),
+    ).rejects.toMatchObject({ statusCode: 400, code: 'NOTIFIER_SECRET_REQUIRED' });
+  });
+
+  it('rejects clearing a required token secret on update (pushover appToken → "" → 400)', async () => {
+    const nf = await svc.createNotifier({
+      name: 'P',
+      type: 'pushover',
+      enabled: true,
+      events: ['request.created'],
+      config: { appToken: 'a-tok', userKey: 'u-key' },
+    });
+    await expect(
+      svc.updateNotifier(nf.id, { name: 'P', type: 'pushover', enabled: true, events: ['request.created'], config: { appToken: '', userKey: 'u-key' } }),
+    ).rejects.toMatchObject({ statusCode: 400, code: 'NOTIFIER_SECRET_REQUIRED' });
+  });
+
+  it('omitting a required secret on update keeps the stored secret (round-trips; has* stays true)', async () => {
+    const nf = await svc.createNotifier({
+      name: 'W',
+      type: 'webhook',
+      enabled: true,
+      events: ['request.created'],
+      config: { url: 'https://discord.com/api/webhooks/1/abc' },
+    });
+    // url omitted → keep the stored, encrypted secret.
+    await svc.updateNotifier(nf.id, { name: 'W2', type: 'webhook', enabled: true, events: ['request.created'], config: {} });
+    const stored = (await svc.getStored()).notifiers[0]!;
+    expect(codec.isEncrypted(stored.config.url as string)).toBe(true);
+    expect(((await svc.getDto()).notifiers[0] as KnownNotifierDto).config).toMatchObject({ hasUrl: true });
+    const runtime = (await svc.getNotificationsConfig()).notifiers[0]!;
+    expect(runtime.config.url).toBe('https://discord.com/api/webhooks/1/abc'); // round-trips
+  });
+});
+
+describe('ConnectorSettingsService — Discord/Slack create-time required secret', () => {
+  for (const type of ['discord', 'slack'] as const) {
+    it(`create ${type} with no webhookUrl → 400 NOTIFIER_SECRET_REQUIRED`, async () => {
+      await expect(
+        svc.createNotifier({ name: type, type, enabled: true, events: ['request.created'], config: {} }),
+      ).rejects.toMatchObject({ statusCode: 400, code: 'NOTIFIER_SECRET_REQUIRED' });
+    });
+  }
+
+  it('create discord with includeCover but no webhookUrl → 400 NOTIFIER_SECRET_REQUIRED', async () => {
+    await expect(
+      svc.createNotifier({ name: 'discord', type: 'discord', enabled: true, events: ['request.created'], config: { includeCover: true } }),
+    ).rejects.toMatchObject({ statusCode: 400, code: 'NOTIFIER_SECRET_REQUIRED' });
   });
 });
 
