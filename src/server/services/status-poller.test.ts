@@ -73,6 +73,30 @@ async function seedStranded(asin: string) {
   return row!;
 }
 
+/**
+ * Production-shaped notify deps wired into a RequestService the poller drives: a live-notifier
+ * accessor + the real UserService, plus a deferred the notify spy settles. Emission is
+ * fire-and-forget (resolve the requester via getById, then dispatch), so tests await the
+ * microtask-chained dispatch directly rather than a (fake-timer-unreliable) setTimeout flush.
+ */
+function notifyHarness() {
+  let settle!: (p: NotificationPayload) => void;
+  const dispatched = new Promise<NotificationPayload>((resolve) => {
+    settle = resolve;
+  });
+  const notify = vi.fn(async (p: NotificationPayload) => {
+    settle(p);
+  });
+  const holder = { current: { notify } as unknown as Notifier };
+  const notifyingSvc = new RequestService(
+    db,
+    client,
+    { defaultQuota: 10, windowDays: 30, autoApproveRoles: ['admin'] },
+    { getNotifier: () => holder.current, users: new UserService(db) },
+  );
+  return { notify, notifyingSvc, dispatched };
+}
+
 beforeEach(async () => {
   db = await createTestDb();
   client = new PollClient();
@@ -366,28 +390,6 @@ describe('StatusPoller.pollOnce reconciliation edges', () => {
 // + UserService) into the request service the poller drives, and assert the request.failed
 // dispatch flows through pollOnce's 404 branch — once, and not again on a repeated poll.
 describe('StatusPoller 404 path — request.failed emission (#60)', () => {
-  // Emission is fire-and-forget (resolves the requester via getById, then dispatches), so the
-  // test awaits a deferred the notify spy settles — NOT a setTimeout flush. The fixed-clock
-  // suites above install fake timers, so a timer-based flush is unreliable here; awaiting the
-  // microtask-chained dispatch directly avoids depending on timers at all.
-  function notifyHarness() {
-    let settle!: (p: NotificationPayload) => void;
-    const dispatched = new Promise<NotificationPayload>((resolve) => {
-      settle = resolve;
-    });
-    const notify = vi.fn(async (p: NotificationPayload) => {
-      settle(p);
-    });
-    const holder = { current: { notify } as unknown as Notifier };
-    const notifyingSvc = new RequestService(
-      db,
-      client,
-      { defaultQuota: 10, windowDays: 30, autoApproveRoles: ['admin'] },
-      { getNotifier: () => holder.current, users: new UserService(db) },
-    );
-    return { notify, notifyingSvc, dispatched };
-  }
-
   it('dispatches request.failed once (BOOK_VANISHED_REASON) when the book 404s, and not again on a repeated poll', async () => {
     const { notify, notifyingSvc, dispatched } = notifyHarness();
     const p = new StatusPoller({ requests: notifyingSvc, client, logger: noopLogger, jitterMs: 0 });
@@ -411,6 +413,46 @@ describe('StatusPoller 404 path — request.failed emission (#60)', () => {
     // is no second dispatch to wait for. A microtask flush confirms the count stays at one.
     const again = await p.pollOnce();
     expect(again).toMatchObject({ checked: 0, transitioned: 0 });
+    await Promise.resolve();
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The poller's stranded-`approved` recovery path is the one request.failed entry point that
+// was previously untested (the #60 suite only covered the acquiring-row 404 branch). A TERMINAL
+// handoff error here both emits request.failed once AND must be counted as a transition (issue
+// #68 AC4) — recoverHandoff resolves on terminal failure so the poller doesn't log it as an
+// upstream error and wrongly trip backoff. (The transient half — counted as an upstream error,
+// row left `approved` for retry — is pinned by 'AC#2 counts a transient stranded-handoff failure'.)
+describe('StatusPoller stranded-handoff terminal emission (#68)', () => {
+  it('emits request.failed once on a terminal stranded handoff, counts it as a transition (not an upstream error), and does not re-emit on the next poll', async () => {
+    const { notify, notifyingSvc, dispatched } = notifyHarness();
+    const p = new StatusPoller({ requests: notifyingSvc, client, logger: noopLogger, jitterMs: 0 });
+    const seeded = await seedStranded('A9');
+    // 422 asin_not_resolved is terminal per isTerminalHandoffError → handoff transitions the row
+    // to `failed`, emits once, and rethrows; recoverHandoff swallows the rethrow as a transition.
+    client.throwOnAdd = new NarratorrError(422, 'asin_not_resolved', 'unresolvable');
+
+    const summary = await p.pollOnce();
+    // No acquiring rows; the stranded terminal failure is counted as a transition, NOT an upstream
+    // error (which would wrongly back off even though the terminal transition actually succeeded).
+    expect(summary).toMatchObject({ checked: 0, transitioned: 1, upstreamErrors: 0 });
+
+    const payload = await dispatched; // resolves when the fire-and-forget emission dispatches
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(payload).toMatchObject({
+      event: 'request.failed',
+      request: { publicId: seeded.publicId, asin: 'A9' },
+      requester: { username: 'tester' },
+      reason: "Couldn't find this book in the catalog.", // friendly handoffFailureReason for asin_not_resolved
+    });
+    const [row] = await db.select().from(requests).where(eq(requests.asin, 'A9'));
+    expect(row?.status).toBe('failed');
+
+    // Second poll: the row is now `failed`, so findApprovedAwaitingHandoff won't return it —
+    // nothing transitions and no second request.failed is emitted.
+    const again = await p.pollOnce();
+    expect(again).toMatchObject({ checked: 0, transitioned: 0, upstreamErrors: 0 });
     await Promise.resolve();
     expect(notify).toHaveBeenCalledTimes(1);
   });

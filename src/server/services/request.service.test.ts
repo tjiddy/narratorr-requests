@@ -4,6 +4,7 @@ import { RequestService, type RequestPolicy, type RequestFailureNotifyDeps } fro
 import { NarratorrError, type INarratorrClient } from './narratorr-client.js';
 import { UserService } from './user.service.js';
 import type { Notifier, NotificationPayload } from './notifications/index.js';
+import type { NotifierLogger } from './notifications/types.js';
 import { createTestDb, insertUser } from '../test-support/db.js';
 import { requests } from '../../db/schema.js';
 import type { Db } from '../../db/client.js';
@@ -493,6 +494,79 @@ describe('request.failed notification (#60)', () => {
     await expect(svc.markFailed(row, 'gone')).resolves.toBe(true); // no throw, transition still lands
     const [fresh] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
     expect(fresh?.status).toBe('failed');
+  });
+});
+
+describe('request.failed emission diagnostics (#68: a lost notification is logged, never thrown)', () => {
+  // emitFailed is fire-and-forget: it must NEVER throw into the request/poll path, but a lost
+  // notification (rejected requester lookup or rejected dispatch) has to be diagnosable. These
+  // wire a warn spy as the deps logger and assert the redacted breadcrumb carries the request id.
+  function diagDeps(over: {
+    getById?: () => Promise<Awaited<ReturnType<UserService['getById']>>>;
+    notify?: (p: NotificationPayload) => Promise<void>;
+  }): { deps: RequestFailureNotifyDeps; warn: ReturnType<typeof vi.fn>; notify: ReturnType<typeof vi.fn> } {
+    const warn = vi.fn();
+    const logger: NotifierLogger = { info() {}, warn, error() {}, debug() {} };
+    const notify = vi.fn(over.notify ?? (async (_p: NotificationPayload) => {}));
+    const deps: RequestFailureNotifyDeps = {
+      getNotifier: () => ({ notify } as unknown as Notifier),
+      users: over.getById ? { getById: over.getById } : new UserService(db),
+      logger,
+    };
+    return { deps, warn, notify };
+  }
+
+  const warnFor = (warn: ReturnType<typeof vi.fn>, needle: string) =>
+    warn.mock.calls.find((c) => String(c[1]).includes(needle));
+
+  it('logs a redacted warn (carrying the request id) when the requester lookup REJECTS, still dispatches with the placeholder, and never throws', async () => {
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const { deps, warn, notify } = diagDeps({
+      getById: async () => {
+        throw new Error('db fault');
+      },
+    });
+    const svc = new RequestService(db, client, policy(), deps);
+    const { row } = await svc.create(user.id, body('B1'));
+
+    await expect(svc.markFailed(row, 'gone')).resolves.toBe(true); // transition lands, caller never throws
+
+    await vi.waitFor(() => expect(warnFor(warn, 'requester lookup failed')).toBeTruthy());
+    expect(warnFor(warn, 'requester lookup failed')?.[0]).toMatchObject({ request: row.publicId });
+    // The notification is NOT lost on a lookup fault — it still dispatches with the placeholder.
+    await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1));
+    expect(notify.mock.calls[0]![0]).toMatchObject({
+      event: 'request.failed',
+      requester: { username: '(unknown requester)' },
+    });
+  });
+
+  it('logs a redacted warn (carrying the request id) when the notifier dispatch REJECTS, with no propagation into the caller', async () => {
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const { deps, warn, notify } = diagDeps({
+      notify: async () => {
+        throw new Error('channel down');
+      },
+    });
+    const svc = new RequestService(db, client, policy(), deps);
+    const { row } = await svc.create(user.id, body('B1'));
+
+    await expect(svc.markFailed(row, 'gone')).resolves.toBe(true); // caller never sees the dispatch failure
+    await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(warnFor(warn, 'notifier dispatch failed')).toBeTruthy());
+    expect(warnFor(warn, 'notifier dispatch failed')?.[0]).toMatchObject({ request: row.publicId });
+  });
+
+  it('logs nothing at warn on the happy path (successful lookup + dispatch, emitted once)', async () => {
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const { deps, warn, notify } = diagDeps({});
+    const svc = new RequestService(db, client, policy(), deps);
+    const { row } = await svc.create(user.id, body('B1'));
+
+    await svc.markFailed(row, 'gone');
+    await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 10)); // let any stray breadcrumb settle
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 
