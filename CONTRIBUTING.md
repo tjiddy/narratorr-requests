@@ -1,4 +1,4 @@
-# Contributing to narratorr-request
+# Contributing to narratorr-requests
 
 Thanks for your interest! This is the request-manager sidecar to
 [narratorr](https://github.com/tjiddy/narratorr). If something here is thin or out of date,
@@ -7,8 +7,8 @@ open an issue or PR.
 ## Getting started
 
 ```bash
-git clone https://github.com/tjiddy/narratorr-request.git
-cd narratorr-request
+git clone https://github.com/tjiddy/narratorr-requests.git
+cd narratorr-requests
 pnpm install
 cp .env.example .env     # AUTH_BYPASS=1 by default — seeds a dev admin, loopback only
 pnpm db:migrate          # create/upgrade the local libSQL db
@@ -96,7 +96,7 @@ code exists is a bug, not coverage).
 
 > **Client tests are pure-logic only** (node env, no DOM) for now — React component/interaction
 > tests aren't set up yet. That's tracked in
-> [#7](https://github.com/tjiddy/narratorr-request/issues/7) and is a good first contribution.
+> [#7](https://github.com/tjiddy/narratorr-requests/issues/7) and is a good first contribution.
 > For now, test extractable hook/transform logic, not rendering.
 
 ## Security

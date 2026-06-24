@@ -264,7 +264,7 @@ describe('DiscordChannel', () => {
     expect(embed.description).toContain('Dune');
     expect(embed.url).toBe('https://req.example.com/admin');
     expect(embed.thumbnail).toEqual({ url: 'https://x/c.jpg' });
-    expect(embed.footer).toEqual({ text: 'narratorr-request' });
+    expect(embed.footer).toEqual({ text: 'narratorr-requests' });
   });
 
   it('always sends allowed_mentions even on a user.pending event (no thumbnail, no cover)', async () => {

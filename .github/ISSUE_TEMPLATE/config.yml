@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Questions & Discussion
-    url: https://github.com/tjiddy/narratorr-request/discussions
+    url: https://github.com/tjiddy/narratorr-requests/discussions
     about: Ask questions or share ideas — not a bug or feature request
   - name: Report a security vulnerability
-    url: https://github.com/tjiddy/narratorr-request/security/advisories/new
+    url: https://github.com/tjiddy/narratorr-requests/security/advisories/new
     about: Please report vulnerabilities privately, never as a public issue

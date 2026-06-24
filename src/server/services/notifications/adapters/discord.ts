@@ -45,7 +45,7 @@ export class DiscordChannel implements NotificationChannel {
       title: trunc(message.title, TITLE_MAX),
       description: trunc(message.body, DESCRIPTION_MAX),
       color: EVENT_COLOR[payload.event] ?? DEFAULT_COLOR,
-      footer: { text: 'narratorr-request' },
+      footer: { text: 'narratorr-requests' },
     };
     if (message.url) embed.url = message.url;
     const cover = coverUrl(payload);

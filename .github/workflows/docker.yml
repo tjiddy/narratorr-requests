@@ -13,7 +13,7 @@ on:
   workflow_dispatch: {}
 
 env:
-  IMAGE_NAME: narratorr/narratorr-request
+  IMAGE_NAME: narratorr/narratorr-requests
 
 jobs:
   quality-gates:

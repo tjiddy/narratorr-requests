@@ -42,13 +42,13 @@ function samplePayload(event: NotificationEvent): NotificationPayload {
     case 'request.created':
       return {
         event: 'request.created',
-        request: { publicId: 'rq_test', title: 'Test notification', author: 'narratorr-request', asin: 'TEST', coverUrl: null },
+        request: { publicId: 'rq_test', title: 'Test notification', author: 'narratorr-requests', asin: 'TEST', coverUrl: null },
         requester: { username: '(settings test)' },
       };
     case 'request.failed':
       return {
         event: 'request.failed',
-        request: { publicId: 'rq_test', title: 'Test notification', author: 'narratorr-request', asin: 'TEST', coverUrl: null },
+        request: { publicId: 'rq_test', title: 'Test notification', author: 'narratorr-requests', asin: 'TEST', coverUrl: null },
         requester: { username: '(settings test)' },
         reason: 'This is a test failure reason.',
       };

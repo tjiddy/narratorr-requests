@@ -160,7 +160,7 @@ async function main(): Promise<void> {
 
   await app.listen({ port: config.port, host: config.bindHost });
   app.log.info(
-    `narratorr-request on :${config.port} (auth=${config.authMode}, narratorr=${narratorr.configured ? 'configured' : 'unconfigured'})`,
+    `narratorr-requests on :${config.port} (auth=${config.authMode}, narratorr=${narratorr.configured ? 'configured' : 'unconfigured'})`,
   );
 
   // Reconcile in-flight acquisitions against narratorr. No-op while narratorr is

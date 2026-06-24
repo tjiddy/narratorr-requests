@@ -24,7 +24,7 @@ What actually happened. Include error messages, screenshots, or log output if av
 
 ## Environment
 
-- **narratorr-request version:** (git tag / image tag)
+- **narratorr-requests version:** (git tag / image tag)
 - **narratorr version:** (the connected narratorr instance)
 - **Installation method:** Docker / bare metal
 - **Auth method:** local / OIDC (which provider) / AUTH_BYPASS

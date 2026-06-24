@@ -1,4 +1,4 @@
-# narratorr-request
+# narratorr-requests
 
 An [Overseerr](https://overseerr.dev/)-style request manager for
 [Narratorr](https://github.com/tjiddy/narratorr) (Sonarr/Radarr for audiobooks). Family and friends sign in
@@ -105,17 +105,17 @@ In production the app **refuses to start** without a `SESSION_SECRET`, refuses `
 entirely, and requires at least one auth method (`LOCAL_AUTH` or an OIDC provider) — so a
 misconfigured deployment fails fast rather than exposing an open admin. The build is a 3-stage
 `node:24-slim` image that runs as the non-root `node` user; the DB persists in the
-`narratorr-request-data` volume (`/data`).
+`narratorr-requests-data` volume (`/data`).
 
 > **Upgrading:** migrations apply automatically on boot and are **forward-only** (no
 > down-migrations). Before upgrading a populated instance, **snapshot the
-> `narratorr-request-data` volume**; to roll back, restore that snapshot and redeploy the
+> `narratorr-requests-data` volume**; to roll back, restore that snapshot and redeploy the
 > previous image (an older image can't run against a newer schema).
 
 ### Published images
 
 CI (`.github/workflows/docker.yml`) builds a multi-arch (amd64/arm64) image and pushes to
-**Docker Hub `narratorr/narratorr-request`** and **GHCR `ghcr.io/tjiddy/narratorr-request`**:
+**Docker Hub `narratorr/narratorr-requests`** and **GHCR `ghcr.io/tjiddy/narratorr-requests`**:
 
 - **Release** — push a semver tag on `main` (`git tag v1.0.0 && git push origin v1.0.0`) → `:latest`,
   `:1.0.0`, `:1.0` + a GitHub Release.

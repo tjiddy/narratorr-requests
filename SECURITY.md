@@ -4,7 +4,7 @@
 
 **Please do not open a public issue for security vulnerabilities.**
 
-Report privately via GitHub's **[private vulnerability reporting](https://github.com/tjiddy/narratorr-request/security/advisories/new)**
+Report privately via GitHub's **[private vulnerability reporting](https://github.com/tjiddy/narratorr-requests/security/advisories/new)**
 (the repository's *Security → Report a vulnerability* tab), or contact the maintainer
 directly. You'll get an acknowledgement, and a fix or mitigation will be coordinated
 before any public disclosure.
@@ -14,12 +14,12 @@ the impact you observed.
 
 ## Supported Versions
 
-narratorr-request is pre-1.0 until the first tagged `v1.0.0` release. Security fixes land
+narratorr-requests is pre-1.0 until the first tagged `v1.0.0` release. Security fixes land
 on the latest released tag; there is no back-porting to older tags.
 
 ## Security Model
 
-narratorr-request is a **self-hosted** app intended to run on a private network as a
+narratorr-requests is a **self-hosted** app intended to run on a private network as a
 contract-first sidecar to [narratorr](https://github.com/tjiddy/narratorr). It talks to
 narratorr only over narratorr's public `/api/v1` using a server-held API key. The browser
 only ever calls **our** `/api/*` — it never reaches narratorr directly and never receives

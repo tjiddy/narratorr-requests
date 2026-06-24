@@ -1,6 +1,6 @@
 # Learnings
 
-Curated, durable engineering wisdom for narratorr-request. `/elaborate` reads this file
+Curated, durable engineering wisdom for narratorr-requests. `/elaborate` reads this file
 and injects entries whose `files`/`tags` match an issue's scope. One `## slug` heading per
 entry (slug must contain a hyphen), metadata, `---`, then free-form body.
 

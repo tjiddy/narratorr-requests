@@ -113,7 +113,7 @@ const email: NotifierTypeDef = {
     { key: 'secure', label: 'Implicit TLS (port 465) — leave off for STARTTLS (e.g. 587)', kind: 'checkbox', secret: false, required: false },
     { key: 'user', label: 'Username', kind: 'text', hint: 'Optional for open relays.', secret: false, required: false },
     { key: 'pass', label: 'Password', kind: 'password', secret: true, required: false },
-    { key: 'from', label: 'From', kind: 'text', placeholder: 'narratorr-request@example.com', secret: false, required: true },
+    { key: 'from', label: 'From', kind: 'text', placeholder: 'narratorr-requests@example.com', secret: false, required: true },
     { key: 'to', label: 'To (admin)', kind: 'text', placeholder: 'you@example.com', secret: false, required: true },
   ],
   configSchema: z.object({

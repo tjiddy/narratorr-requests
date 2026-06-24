@@ -61,8 +61,8 @@ const envSchema = z.object({
 
   DATABASE_PATH: z
     .string()
-    .default('./narratorr-request.db')
-    .transform((v) => resolveFromRoot(v || './narratorr-request.db')),
+    .default('./narratorr-requests.db')
+    .transform((v) => resolveFromRoot(v || './narratorr-requests.db')),
 
   SESSION_SECRET: z.string().optional(),
   // Optional: dedicated key for encrypting connector secrets at rest. When unset,

@@ -39,7 +39,7 @@ USER node
 
 ENV PORT=3000 \
     BIND_HOST=0.0.0.0 \
-    DATABASE_PATH=/data/narratorr-request.db
+    DATABASE_PATH=/data/narratorr-requests.db
 EXPOSE 3000
 VOLUME ["/data"]
 
