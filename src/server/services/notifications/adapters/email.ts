@@ -19,9 +19,12 @@ export interface EmailConfig {
  */
 export class EmailChannel implements NotificationChannel {
   readonly name = 'email';
+  // The SMTP password (when set) is the secret — exposed for dispatcher-log redaction.
+  readonly secrets: readonly string[];
   private readonly transport: Transporter;
 
   constructor(private readonly cfg: EmailConfig) {
+    this.secrets = cfg.pass ? [cfg.pass] : [];
     this.transport = nodemailer.createTransport({
       host: cfg.host,
       port: cfg.port,

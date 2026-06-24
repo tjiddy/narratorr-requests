@@ -85,6 +85,11 @@ class EventFilteredChannel implements NotificationChannel {
     readonly name: string,
   ) {}
 
+  /** Forward the wrapped channel's secrets so the dispatcher can redact them from a log line. */
+  get secrets(): readonly string[] {
+    return this.inner.secrets ?? [];
+  }
+
   async send(ctx: SendContext): Promise<void> {
     if (this.events.has(ctx.payload.event)) await this.inner.send(ctx);
   }

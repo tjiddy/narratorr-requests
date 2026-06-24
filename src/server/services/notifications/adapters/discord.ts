@@ -32,7 +32,11 @@ function coverUrl(payload: NotificationPayload): string | null {
 
 export class DiscordChannel implements NotificationChannel {
   readonly name = 'discord';
-  constructor(private readonly cfg: DiscordConfig) {}
+  // The webhook URL is the capability secret — exposed for dispatcher-log redaction.
+  readonly secrets: readonly string[];
+  constructor(private readonly cfg: DiscordConfig) {
+    this.secrets = [cfg.webhookUrl];
+  }
 
   async send({ payload, message }: SendContext): Promise<void> {
     const embed: Record<string, unknown> = {

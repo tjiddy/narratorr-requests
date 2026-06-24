@@ -245,11 +245,15 @@ describe('DiscordChannel', () => {
     expect(JSON.parse(fetchMock.mock.calls[0]![1].body).embeds[0].thumbnail).toBeUndefined();
   });
 
-  it('truncates an over-limit title to 256 chars', async () => {
+  it('truncates an over-limit title to 256 and description to 4096 chars', async () => {
     const ch = new DiscordChannel({ webhookUrl: 'https://discord.com/api/webhooks/1/abc', includeCover: true });
-    const longTitle = 'x'.repeat(300);
-    await ch.send({ payload: ctx.payload, message: { ...ctx.message, title: longTitle } });
-    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).embeds[0].title).toHaveLength(256);
+    await ch.send({
+      payload: ctx.payload,
+      message: { ...ctx.message, title: 'x'.repeat(300), body: 'y'.repeat(5000) },
+    });
+    const embed = JSON.parse(fetchMock.mock.calls[0]![1].body).embeds[0];
+    expect(embed.title).toHaveLength(256);
+    expect(embed.description).toHaveLength(4096);
   });
 
   it('throws on a non-2xx response', async () => {

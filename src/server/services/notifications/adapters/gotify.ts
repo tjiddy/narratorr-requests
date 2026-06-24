@@ -11,7 +11,12 @@ export interface GotifyConfig {
 
 export class GotifyChannel implements NotificationChannel {
   readonly name = 'gotify';
-  constructor(private readonly cfg: GotifyConfig) {}
+  // The app token (X-Gotify-Key header) is the secret — exposed for dispatcher-log redaction.
+  // The server URL is admin-configured and NOT secret, so it is not listed.
+  readonly secrets: readonly string[];
+  constructor(private readonly cfg: GotifyConfig) {
+    this.secrets = [cfg.appToken];
+  }
 
   async send({ message }: SendContext): Promise<void> {
     // Normalize the trailing slash so a pasted base ("https://gotify/") doesn't double it.

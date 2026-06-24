@@ -18,7 +18,11 @@ export interface NtfyConfig {
  */
 export class NtfyChannel implements NotificationChannel {
   readonly name = 'ntfy';
-  constructor(private readonly cfg: NtfyConfig) {}
+  // The access token (when set) is the secret — exposed for dispatcher-log redaction.
+  readonly secrets: readonly string[];
+  constructor(private readonly cfg: NtfyConfig) {
+    this.secrets = cfg.token ? [cfg.token] : [];
+  }
 
   async send({ payload, message }: SendContext): Promise<void> {
     const headers: Record<string, string> = { Title: message.title };

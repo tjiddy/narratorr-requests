@@ -14,7 +14,11 @@ function escapeSlack(s: string): string {
 
 export class SlackChannel implements NotificationChannel {
   readonly name = 'slack';
-  constructor(private readonly cfg: SlackConfig) {}
+  // The webhook URL is the capability secret — exposed for dispatcher-log redaction.
+  readonly secrets: readonly string[];
+  constructor(private readonly cfg: SlackConfig) {
+    this.secrets = [cfg.webhookUrl];
+  }
 
   async send({ message }: SendContext): Promise<void> {
     // The URL is our own constructed origin — left raw (escaping it would break the link).

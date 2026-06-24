@@ -17,7 +17,11 @@ const trunc = (s: string, max: number): string => (s.length > max ? s.slice(0, m
 
 export class PushoverChannel implements NotificationChannel {
   readonly name = 'pushover';
-  constructor(private readonly cfg: PushoverConfig) {}
+  // Both the app token and user key are secrets (sent in the body) — exposed for dispatcher-log redaction.
+  readonly secrets: readonly string[];
+  constructor(private readonly cfg: PushoverConfig) {
+    this.secrets = [cfg.appToken, cfg.userKey];
+  }
 
   async send({ message }: SendContext): Promise<void> {
     const body = {

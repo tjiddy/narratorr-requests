@@ -16,7 +16,11 @@ function escapeHtml(s: string): string {
 
 export class TelegramChannel implements NotificationChannel {
   readonly name = 'telegram';
-  constructor(private readonly cfg: TelegramConfig) {}
+  // The bot token is the secret (rides in the request URL path) — exposed for dispatcher-log redaction.
+  readonly secrets: readonly string[];
+  constructor(private readonly cfg: TelegramConfig) {
+    this.secrets = [cfg.botToken];
+  }
 
   async send({ message }: SendContext): Promise<void> {
     // The URL is our own constructed origin (no HTML metacharacters) — left raw.

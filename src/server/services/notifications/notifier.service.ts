@@ -29,9 +29,11 @@ export class Notifier {
           this.log.debug({ channel: ch.name, event: payload.event }, 'notification sent');
         } catch (err) {
           // redact() before logging: a fetch/network error can embed a capability webhook
-          // URL or the Telegram bot-token-in-path — never let it reach the log line raw.
+          // URL, the Telegram bot-token-in-path, or a value-class token/key — never let it
+          // reach the log line raw. The channel exposes its secrets for exact-match scrubbing
+          // (the dispatcher has no config); pattern scrubbing covers URL-embedded secrets.
           this.log.warn(
-            { channel: ch.name, event: payload.event, err: redact(err) },
+            { channel: ch.name, event: payload.event, err: redact(err, ch.secrets ?? []) },
             'notification failed',
           );
         }
