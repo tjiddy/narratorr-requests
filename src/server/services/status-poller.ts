@@ -98,9 +98,17 @@ export class StatusPoller {
     const stranded = await this.requests.findApprovedAwaitingHandoff(this.batchSize);
     for (const row of stranded) {
       try {
-        await this.requests.handoff(row);
+        const outcome = await this.requests.recoverHandoff(row);
+        // Both a recovery and a TERMINAL failure are real reconciliations (the request reached
+        // its correct state and, for `failed`, emitted request.failed once) — count them as
+        // transitions, NOT upstream errors, so the backoff signal stays honest. Only a TRANSIENT
+        // failure (recoverHandoff re-throws) is an upstream error worth retrying/backing off on.
         transitioned += 1;
-        this.logger.info({ request: row.publicId }, 'recovered stranded approved request via handoff');
+        if (outcome === 'failed') {
+          this.logger.warn({ request: row.publicId }, 'stranded approved request failed terminally during handoff recovery');
+        } else {
+          this.logger.info({ request: row.publicId }, 'recovered stranded approved request via handoff');
+        }
       } catch (err) {
         upstreamErrors += 1;
         this.logger.warn({ request: row.publicId, err }, 'handoff recovery failed');

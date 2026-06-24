@@ -149,12 +149,6 @@ export async function buildRouteApp(opts: BuildRouteAppOpts): Promise<RouteHarne
   // RequestService and SearchService, so an unconfigured holder surfaces NOT_CONFIGURED
   // through both paths, and the health route can read `deps.narratorr.configured`.
   const narratorrHolder = new NarratorrClientHolder((opts.narratorrConfigured ?? true) ? narratorr : null);
-  const requests = new RequestService(db, narratorrHolder, {
-    defaultQuota: 10,
-    windowDays: 30,
-    autoApproveRoles: ['admin'],
-    ...opts.policy,
-  });
   const search = new SearchService(narratorrHolder);
   // A real Notifier (no channels → inert) with its `notify` swapped for a spy, so route tests
   // can assert dispatch without a structural cast. Building the genuine type means a new required
@@ -163,6 +157,20 @@ export async function buildRouteApp(opts: BuildRouteAppOpts): Promise<RouteHarne
   const notifierLog: NotifierLogger = { info() {}, warn() {}, error() {}, debug() {} };
   const notifier = new Notifier([], null, notifierLog);
   notifier.notify = notify;
+  // Wire the request.failed notify deps the way production does (src/server/index.ts): a LIVE
+  // accessor over the notifier (not a captured instance) plus the real UserService, so a terminal
+  // handoff failure reached at the route boundary dispatches request.failed through the same spy.
+  const requests = new RequestService(
+    db,
+    narratorrHolder,
+    {
+      defaultQuota: 10,
+      windowDays: 30,
+      autoApproveRoles: ['admin'],
+      ...opts.policy,
+    },
+    { getNotifier: () => notifier, users, logger: notifierLog },
+  );
   // Full AppConfig (not a partial cast): adding a required config field fails to compile here.
   const config: AppConfig = {
     port: 3000,

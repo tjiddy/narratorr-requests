@@ -2,6 +2,8 @@ import { and, desc, eq, gte, inArray, or, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
 import { requests, users, type RequestRow } from '../../db/schema.js';
 import type { Notifier } from './notifications/index.js';
+import { redact } from './notifications/redact.js';
+import type { NotifierLogger } from './notifications/types.js';
 import type { UserService } from './user.service.js';
 import type {
   CreateRequestBody,
@@ -50,6 +52,12 @@ export interface RequestFailureNotifyDeps {
   getNotifier: () => Notifier;
   /** Resolves `requester.username`; an absent row falls back to a stable placeholder. */
   users: Pick<UserService, 'getById'>;
+  /**
+   * Optional log sink for fire-and-forget emission faults (a requester lookup that rejects, or a
+   * notifier dispatch that rejects). Without it a lost `request.failed` is undiagnosable; the
+   * emission stays non-blocking either way — these are breadcrumbs, never thrown to the caller.
+   */
+  logger?: NotifierLogger;
 }
 
 /** Username used when the requester row is gone (e.g. deleted account) — the admin still hears it failed. */
@@ -318,6 +326,26 @@ export class RequestService {
   }
 
   /**
+   * Poller-facing stranded-`approved` handoff recovery. Differs from the user-facing {@link handoff}
+   * in how it treats a TERMINAL failure: there it is a SUCCESSFUL reconciliation — the request
+   * reaches its correct `failed` state and emits `request.failed` once — so it RESOLVES instead of
+   * re-throwing, letting the poller count it as a transition rather than an upstream error (which
+   * would wrongly trip backoff even though the terminal transition actually succeeded). TRANSIENT
+   * failures still throw, so the poller counts an upstream error and retries on the next pass.
+   * Returns `'recovered'` when the request advanced (→ acquiring/available) and `'failed'` when it
+   * landed terminal (the added book came back failed, or a terminal handoff error).
+   */
+  async recoverHandoff(row: RequestRow): Promise<'recovered' | 'failed'> {
+    try {
+      const result = await this.handoff(row);
+      return result.status === 'failed' ? 'failed' : 'recovered';
+    } catch (err) {
+      if (!isTerminalHandoffError(err)) throw err; // transient — poller counts an upstream error & retries
+      return 'failed'; // terminal: handoff already claimed `failed` and emitted once — a real transition
+    }
+  }
+
+  /**
    * Atomically claim the `row.status` → `failed` edge and emit `request.failed` EXACTLY
    * once. The `WHERE status = row.status` guard asserts the OBSERVED source state — not merely
    * "not failed" — so two racing callers can't both win (the loser's row has already moved off
@@ -356,22 +384,48 @@ export class RequestService {
     const deps = this.notifyDeps;
     if (!deps) return;
     void (async () => {
-      const requester = await deps.users.getById(row.userId);
-      void deps.getNotifier().notify({
-        event: 'request.failed',
-        request: {
-          publicId: row.publicId,
-          title: row.title,
-          author: row.author,
-          asin: row.asin,
-          coverUrl: row.coverUrl,
-        },
-        requester: { username: requester?.username ?? UNKNOWN_REQUESTER },
-        reason,
-      });
-    })().catch(() => {
-      // Defensive: getById could theoretically reject (DB fault). The failed transition
-      // already landed; swallow so it never propagates into the request/poll flow.
+      // A requester lookup fault (DB fault) must NOT lose the notification — the admin still
+      // needs to hear it failed. Log a redacted breadcrumb and fall back to the placeholder.
+      let requester: { username: string } | undefined;
+      try {
+        requester = await deps.users.getById(row.userId);
+      } catch (err) {
+        // redact() before logging: a lookup fault's error text could embed a secret-bearing
+        // value, and the breadcrumb must never carry one raw (URL-pattern scrub; no per-channel
+        // secrets to exact-match here — those live inside the dispatcher).
+        deps.logger?.warn(
+          { err: redact(err), request: row.publicId },
+          'request.failed: requester lookup failed; emitting with placeholder username',
+        );
+      }
+      try {
+        await deps.getNotifier().notify({
+          event: 'request.failed',
+          request: {
+            publicId: row.publicId,
+            title: row.title,
+            author: row.author,
+            asin: row.asin,
+            coverUrl: row.coverUrl,
+          },
+          requester: { username: requester?.username ?? UNKNOWN_REQUESTER },
+          reason,
+        });
+      } catch (err) {
+        // A lost notification must be diagnosable — without this breadcrumb a dropped
+        // request.failed is invisible. The failed transition already committed; never propagate.
+        // redact() before logging: a dispatch error can embed a capability webhook URL or a
+        // token-in-path (the very reason the dispatcher redacts), so scrub it here too.
+        deps.logger?.warn(
+          { err: redact(err), request: row.publicId },
+          'request.failed: notifier dispatch failed; notification lost',
+        );
+      }
+    })().catch((err) => {
+      // Final backstop: both awaits above are individually guarded, so this only fires on a
+      // truly unexpected throw. The failed transition already landed; swallow into a (redacted)
+      // breadcrumb.
+      deps.logger?.warn({ err: redact(err), request: row.publicId }, 'request.failed: emission failed unexpectedly');
     });
   }
 

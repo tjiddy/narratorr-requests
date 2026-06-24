@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { buildRouteApp, type RouteHarness } from '../test-support/route-harness.js';
 import { insertUser } from '../test-support/db.js';
 import { registerRequestRoutes } from './requests.js';
+import { NarratorrError, type INarratorrClient } from '../services/narratorr-client.js';
+import type { V1Book } from '../../shared/schemas/v1/books.js';
 
 let h: RouteHarness;
 beforeEach(async () => {
@@ -52,6 +54,60 @@ describe('POST /api/requests — create', () => {
     expect(res.json().status).toBe('acquiring'); // handoff resolved via the successful fake client
     expect(h.narratorr.added).toEqual(['B01']);
     expect(h.notify).not.toHaveBeenCalled();
+  });
+});
+
+// A terminal handoff failure at the create boundary (admin self-request auto-approves → hands off →
+// addBook 422 → terminal → row `failed` + request.failed emitted, error rethrown). This exercises the
+// route↔service↔notifier wiring for the failed path end-to-end — previously untested at the boundary
+// because the harness built RequestService without notify deps (issue #68 AC1).
+describe('POST /api/requests — terminal handoff failure emits request.failed', () => {
+  /** Auto-approve handoff hits addBook → throws a TERMINAL NarratorrError (422 unresolvable ASIN). */
+  class TerminalAddClient implements INarratorrClient {
+    async searchMetadata(): Promise<[]> {
+      return [];
+    }
+    async addBook(): Promise<V1Book> {
+      throw new NarratorrError(422, 'asin_not_resolved', 'unresolvable');
+    }
+    async getBook(id: string): Promise<V1Book> {
+      return { id, title: 'A Book', authors: [], narrators: [], status: 'searching' };
+    }
+  }
+
+  it('admin self-request whose handoff fails terminally → 502 error response AND a single request.failed dispatch', async () => {
+    const fh = await buildRouteApp({ register: registerRequestRoutes, narratorr: new TerminalAddClient() });
+    try {
+      const admin = await insertUser(fh.db, { role: 'admin', status: 'active', username: 'todd' });
+      const res = await fh.app.inject({
+        method: 'POST',
+        url: '/api/requests',
+        cookies: fh.cookieFor(admin),
+        payload: { asin: 'B01', title: 'A Book' },
+      });
+
+      // The terminal handoff error surfaces — NarratorrError maps to a 502 NARRATORR_UPSTREAM envelope.
+      expect(res.statusCode).toBe(502);
+      expect(res.json().error.code).toBe('NARRATORR_UPSTREAM');
+
+      // …and the admin-facing request.failed fires exactly once with the friendly reason. Emission
+      // is fire-and-forget, so the dispatch may settle after the response — wait for it.
+      await vi.waitFor(() => expect(fh.notify).toHaveBeenCalledTimes(1));
+      expect(fh.notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'request.failed',
+          request: expect.objectContaining({ asin: 'B01', title: 'A Book' }),
+          requester: { username: 'todd' },
+          reason: "Couldn't find this book in the catalog.",
+        }),
+      );
+
+      // The persisted row reflects the terminal failure.
+      const failed = await fh.requests.getByPublicId(fh.notify.mock.calls[0]![0].request.publicId);
+      expect(failed?.status).toBe('failed');
+    } finally {
+      await fh.app.close();
+    }
   });
 });
 

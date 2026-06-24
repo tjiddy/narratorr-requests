@@ -74,8 +74,9 @@ async function main(): Promise<void> {
       autoApproveRoles: settingsRow.autoApproveRoles as Role[],
     },
     // Live-notifier accessor (NOT a captured instance): the settings route reassigns
-    // deps.notifier on every notifier-config save, so read it at dispatch time.
-    { getNotifier: () => deps.notifier, users },
+    // deps.notifier on every notifier-config save, so read it at dispatch time. The app
+    // logger makes a lost request.failed (rejected lookup/dispatch) diagnosable.
+    { getNotifier: () => deps.notifier, users, logger: app.log },
   );
   const search = new SearchService(narratorr);
   // One OidcService per configured provider, keyed by id. Authorization is the approval
