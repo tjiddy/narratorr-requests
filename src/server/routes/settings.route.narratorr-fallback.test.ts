@@ -73,14 +73,14 @@ afterEach(async () => {
 
 describe('settings routes — narratorr generic (non-NarratorrError) fallback', () => {
   it('falls through to err.message when ping() throws a plain Error', async () => {
-    await connectorSettings.update({ narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'k' } });
+    await connectorSettings.update({ narratorr: { url: 'https://n.example.com:443', apiKey: 'k' } });
     const res = await app.inject({
       method: 'POST',
       url: '/api/admin/settings/connectors/test',
       headers: { 'x-test-role': 'admin' },
       // Candidate mirrors the stored connection (key omitted → resolves to the stored one),
       // so buildCandidateNarratorrConfig yields a config and the mocked ping() runs.
-      payload: { channel: 'narratorr', narratorr: { host: 'n.example.com', port: 443, useSsl: true } },
+      payload: { channel: 'narratorr', narratorr: { url: 'https://n.example.com:443' } },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ success: false, message: 'boom' });

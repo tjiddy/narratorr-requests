@@ -34,28 +34,45 @@ describe('ConnectorSettingsService — narratorr (unchanged behavior)', () => {
     expect(await svc.getNarratorrConfig()).toBeNull();
   });
 
-  it('stores the key encrypted, exposes it decrypted, composes the URL', async () => {
-    await svc.update({ narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'secret-key' } });
+  it('stores the key encrypted, exposes it decrypted, reads the url back directly', async () => {
+    await svc.update({ narratorr: { url: 'https://n.example.com:443', apiKey: 'secret-key' } });
     const stored = await svc.getStored();
     expect(codec.isEncrypted(stored.narratorr!.apiKey)).toBe(true);
     expect(stored.narratorr!.apiKey).not.toContain('secret-key');
     expect(await svc.getNarratorrConfig()).toEqual({ url: 'https://n.example.com:443', apiKey: 'secret-key' });
   });
 
-  it('brackets a bare IPv6 host', async () => {
-    await svc.update({ narratorr: { host: '::1', port: 3000, useSsl: false, apiKey: 'k' } });
+  it('round-trips an IPv6-literal url through the single field', async () => {
+    await svc.update({ narratorr: { url: 'http://[::1]:3000', apiKey: 'k' } });
     expect((await svc.getNarratorrConfig())?.url).toBe('http://[::1]:3000');
   });
 
+  it('getDto masks to { url, hasApiKey } — never the plaintext key', async () => {
+    await svc.update({ narratorr: { url: 'http://n:3000', apiKey: 'secret-key' } });
+    const dto = await svc.getDto();
+    expect(dto.narratorr).toEqual({ url: 'http://n:3000', hasApiKey: true });
+    expect(JSON.stringify(dto)).not.toContain('secret-key');
+  });
+
   it('omit-to-keep apiKey; rejects clearing the required key; null clears the connection', async () => {
-    await svc.update({ narratorr: { host: 'n', port: 3000, useSsl: false, apiKey: 'orig' } });
-    await svc.update({ narratorr: { host: 'n2', port: 9000, useSsl: true } });
+    await svc.update({ narratorr: { url: 'http://n:3000', apiKey: 'orig' } });
+    await svc.update({ narratorr: { url: 'https://n2:9000' } });
     expect(await svc.getNarratorrConfig()).toEqual({ url: 'https://n2:9000', apiKey: 'orig' });
 
-    await expect(svc.update({ narratorr: { host: 'n2', port: 9000, useSsl: true, apiKey: '' } })).rejects.toMatchObject({ statusCode: 400 });
+    await expect(svc.update({ narratorr: { url: 'https://n2:9000', apiKey: '' } })).rejects.toMatchObject({ statusCode: 400 });
 
     await svc.update({ narratorr: null });
     expect(await svc.getNarratorrConfig()).toBeNull();
+  });
+
+  it('buildCandidateNarratorrConfig probes the UNSAVED candidate url, resolving the omitted key from storage', async () => {
+    // Stored URL A + key; the unsaved candidate sends a DIFFERENT URL B with apiKey omitted —
+    // exactly an admin editing Server URL and clicking Test before saving. The probe must target
+    // B (not the stored A), while the omitted key resolves to the stored, decrypted secret.
+    // Non-vacuous: were this to read `stored.narratorr.url`, cfg.url would be A and this fails.
+    await svc.update({ narratorr: { url: 'http://stored-a:3000', apiKey: 'stored-key' } });
+    const cfg = await svc.buildCandidateNarratorrConfig({ url: 'http://candidate-b:9000' });
+    expect(cfg).toEqual({ url: 'http://candidate-b:9000', apiKey: 'stored-key' });
   });
 
   it('leaves the notifier list untouched on a narratorr PUT', async () => {

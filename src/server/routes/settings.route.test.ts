@@ -112,7 +112,7 @@ describe('settings routes — auth gating', () => {
 
 describe('settings routes — GET/PUT connectors', () => {
   it('GET returns the masked DTO with the notifier list; never the secret value', async () => {
-    await connectorSettings.update({ narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'super-secret-key' } });
+    await connectorSettings.update({ narratorr: { url: 'https://n.example.com:443', apiKey: 'super-secret-key' } });
     await connectorSettings.createNotifier(ntfyCreate({ config: { url: 'https://ntfy.sh', topic: 'reqs', token: 'ntfy-secret' } }));
     const res = await app.inject({ method: 'GET', url: CONNECTORS_URL, headers: asAdmin });
     expect(res.statusCode).toBe(200);
@@ -125,7 +125,7 @@ describe('settings routes — GET/PUT connectors', () => {
 
   it('PUT persists narratorr, masks the response, rebuilds the live narratorr client', async () => {
     expect(narratorr.configured).toBe(false);
-    const res = await app.inject({ method: 'PUT', url: CONNECTORS_URL, headers: asAdmin, payload: { narratorr: { host: 'n', port: 3000, useSsl: false, apiKey: 'k' } } });
+    const res = await app.inject({ method: 'PUT', url: CONNECTORS_URL, headers: asAdmin, payload: { narratorr: { url: 'http://n:3000', apiKey: 'k' } } });
     expect(res.statusCode).toBe(200);
     expect(res.json().narratorr.hasApiKey).toBe(true);
     expect(narratorr.configured).toBe(true);
@@ -261,7 +261,7 @@ describe('settings routes — Test probes do not hold the write mutex', () => {
     // Configure narratorr so the probe builds a real client and reaches ping(); ping() uses the
     // global fetch, which we stall. With the lock held across ping() the concurrent create would
     // deadlock behind it — releasing the lock before ping() lets the write land.
-    await connectorSettings.update({ narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'k' } });
+    await connectorSettings.update({ narratorr: { url: 'https://n.example.com:443', apiKey: 'k' } });
 
     let releaseFetch: (v: Response) => void = () => {};
     const fetchCalled = new Promise<void>((resolveCalled) => {
@@ -278,7 +278,7 @@ describe('settings routes — Test probes do not hold the write mutex', () => {
       method: 'POST',
       url: `${CONNECTORS_URL}/test`,
       headers: asAdmin,
-      payload: { channel: 'narratorr', narratorr: { host: 'n.example.com', port: 443, useSsl: true } },
+      payload: { channel: 'narratorr', narratorr: { url: 'https://n.example.com:443' } },
     });
 
     // Wait until the probe is INSIDE the hung ping() before issuing the write — by now the lock is
@@ -420,15 +420,15 @@ describe('settings routes — notifier test (always 200)', () => {
 
 describe('settings routes — narratorr test endpoint (unchanged)', () => {
   it('reports not-configured without throwing (always 200)', async () => {
-    const res = await app.inject({ method: 'POST', url: `${CONNECTORS_URL}/test`, headers: asAdmin, payload: { channel: 'narratorr', narratorr: { host: 'n', port: 3000, useSsl: true } } });
+    const res = await app.inject({ method: 'POST', url: `${CONNECTORS_URL}/test`, headers: asAdmin, payload: { channel: 'narratorr', narratorr: { url: 'https://n:3000' } } });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ success: false, message: 'Narratorr is not configured.' });
   });
 
   it('success — a reachable 404 healthcheck proves URL + key', async () => {
-    await connectorSettings.update({ narratorr: { host: 'n.example.com', port: 443, useSsl: true, apiKey: 'k' } });
+    await connectorSettings.update({ narratorr: { url: 'https://n.example.com:443', apiKey: 'k' } });
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('{}', { status: 404 }))));
-    const res = await app.inject({ method: 'POST', url: `${CONNECTORS_URL}/test`, headers: asAdmin, payload: { channel: 'narratorr', narratorr: { host: 'n.example.com', port: 443, useSsl: true } } });
+    const res = await app.inject({ method: 'POST', url: `${CONNECTORS_URL}/test`, headers: asAdmin, payload: { channel: 'narratorr', narratorr: { url: 'https://n.example.com:443' } } });
     expect(res.json()).toMatchObject({ success: true });
   });
 });
