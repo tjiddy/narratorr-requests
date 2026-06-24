@@ -121,25 +121,13 @@ function NarratorrSection({
       <div>
         <p className="font-medium">Narratorr connection</p>
         <p className="text-xs text-muted-foreground/70">
-          The library this app sends approved requests to. Required for search and requests to work — blank the Host and
-          save to disconnect.
+          The library this app sends approved requests to. Required for search and requests to work — blank the Server
+          URL and save to disconnect.
         </p>
       </div>
       <div className="flex flex-col gap-3 border-t border-border/50 pt-4">
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Host" hint="Hostname or IP, no protocol (e.g. narratorr or 192.168.1.10).">
-            <input className={inputCls} value={state.host} onChange={(e) => patch({ host: e.target.value })} placeholder="narratorr" />
-          </Field>
-          <Field label="Port">
-            <input className={inputCls} type="number" value={state.port} onChange={(e) => patch({ port: e.target.value })} placeholder="3000" />
-          </Field>
-        </div>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" className="h-4 w-4 accent-primary" checked={state.useSsl} onChange={(e) => patch({ useSsl: e.target.checked })} />
-          <span>Use SSL (https)</span>
-        </label>
-        <Field label="URL Base" hint="Optional — only if narratorr is behind a reverse-proxy subpath (e.g. /lib).">
-          <input className={inputCls} value={state.urlBase} onChange={(e) => patch({ urlBase: e.target.value })} placeholder="/lib" />
+        <Field label="Server URL" hint="Full base URL, including scheme (e.g. http://narratorr:3000).">
+          <input className={inputCls} value={state.url} onChange={(e) => patch({ url: e.target.value })} placeholder="http://narratorr:3000" />
         </Field>
         <Field label="API key" hint={state.hasKey ? 'Leave blank to keep the current key.' : 'From narratorr → Settings → API.'}>
           <input className={inputCls} type="password" autoComplete="off" value={state.key} onChange={(e) => patch({ key: e.target.value })} placeholder={secretPlaceholder(state.hasKey, true)} />

@@ -16,26 +16,20 @@ import { NOTIFIER_DEFS, NOTIFIER_TYPES, type NotifierType } from '../notifier-re
 // source of truth for field metadata + config/masked schemas + secret metadata.
 // =============================================================================
 
-// narratorr Host: a bare hostname or IP only — no scheme, path, or whitespace. Port,
-// SSL, and URL Base are discrete fields; `getNarratorrConfig` composes the base URL
-// from them server-side. Internal/private hosts (`narratorr`, `localhost`, `10.x`) are
-// intentionally allowed — this is trusted server-to-server admin config, NOT the
-// public-only coverUrl SSRF guard (`isInternalHost` in request.ts).
-const narratorrHost = z
-  .string()
-  .trim()
-  .min(1)
-  .refine((v) => !/[\s/]/.test(v) && !v.includes('://'), 'enter a hostname or IP only, without http(s):// or a path');
-
-// narratorr URL Base: optional reverse-proxy subpath. Normalized to a single leading
-// slash and no trailing slash (`lib` → `/lib`, `/lib/` → `/lib`); blank → no subpath.
-const urlBase = z
-  .string()
-  .trim()
-  .transform((v) => {
-    const trimmed = v.replace(/^\/+/, '').replace(/\/+$/, '');
-    return trimmed ? `/${trimmed}` : null;
-  });
+// narratorr Server URL: the full base URL of the narratorr instance (`http://narratorr:3000`,
+// `http://[::1]:3000`, `http://host:3000/lib`). Reuses the shared `httpUrl` helper (scheme
+// required, trailing slashes stripped) plus a host-exists refinement so a bare `http://` with
+// no host is rejected. Internal/private hosts and IPv6 literals are intentionally allowed —
+// this is trusted server-to-server admin config, NOT the public-only coverUrl SSRF guard
+// (`isInternalHost` in request.ts). The refinement is narratorr-specific (not folded into the
+// shared `httpUrl`) so publicUrl/notifier fields keep their existing, looser behavior.
+const narratorrUrl = httpUrl.refine((v) => {
+  try {
+    return new URL(v).hostname !== '';
+  } catch {
+    return false;
+  }
+}, 'enter a valid http(s) URL including a host');
 
 // ---- Stored shape -----------------------------------------------------------
 /**
@@ -72,7 +66,7 @@ export const storedNotifierSchema = z.object({
  */
 export interface StoredConnectors {
   publicUrl: string | null;
-  narratorr: { host: string; port: number; useSsl: boolean; urlBase: string | null; apiKey: string } | null;
+  narratorr: { url: string; apiKey: string } | null;
   notifiers: StoredNotifier[];
 }
 
@@ -130,10 +124,7 @@ export const connectorSettingsDtoSchema = z.object({
   publicUrl: z.string().nullable(),
   narratorr: z
     .object({
-      host: z.string(),
-      port: z.number(),
-      useSsl: z.boolean(),
-      urlBase: z.string().nullable(),
+      url: z.string(),
       hasApiKey: z.boolean(),
     })
     .nullable(),
@@ -142,7 +133,7 @@ export const connectorSettingsDtoSchema = z.object({
 /** Hand-written (the runtime schema's `notifiers` infers `unknown[]`; this keeps it typed). */
 export interface ConnectorSettingsDto {
   publicUrl: string | null;
-  narratorr: { host: string; port: number; useSsl: boolean; urlBase: string | null; hasApiKey: boolean } | null;
+  narratorr: { url: string; hasApiKey: boolean } | null;
   notifiers: NotifierDto[];
 }
 
@@ -150,10 +141,7 @@ export interface ConnectorSettingsDto {
 // Non-`.strict()` per CLAUDE.md (tolerate provider/UI drift on unused nested keys) —
 // the .strict() guard lives on the top-level bodies only. Secrets optional (omit-to-keep).
 const narratorrConnectorSchema = z.object({
-  host: narratorrHost,
-  port: z.coerce.number().int().min(1).max(65535),
-  useSsl: z.boolean(),
-  urlBase: urlBase.nullable().optional(),
+  url: narratorrUrl,
   apiKey: z.string().trim().optional(),
 });
 

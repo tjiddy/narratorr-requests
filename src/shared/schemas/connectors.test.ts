@@ -32,25 +32,35 @@ describe('httpUrl (via publicUrl)', () => {
 
 describe('updateConnectorSettingsBodySchema — narratorr + publicUrl only', () => {
   const narr = (over: Record<string, unknown>) => ({
-    narratorr: { host: 'narratorr', port: 3000, useSsl: false, ...over },
+    narratorr: { url: 'http://narratorr:3000', ...over },
   });
 
-  it('accepts a full discrete narratorr object', () => {
-    const parsed = parse({ narratorr: { host: 'books.example.com', port: 443, useSsl: true, urlBase: '/lib', apiKey: 'k' } });
-    expect(parsed.narratorr).toEqual({ host: 'books.example.com', port: 443, useSsl: true, urlBase: '/lib', apiKey: 'k' });
+  it('accepts a narratorr object with url + apiKey', () => {
+    const parsed = parse({ narratorr: { url: 'http://books.example.com:443/lib', apiKey: 'k' } });
+    expect(parsed.narratorr).toEqual({ url: 'http://books.example.com:443/lib', apiKey: 'k' });
   });
 
-  it('rejects a host containing a scheme; accepts private/internal hosts', () => {
-    expect(accepts(narr({ host: 'http://narratorr', apiKey: 'k' }))).toBe(false);
-    for (const host of ['narratorr', 'localhost', '127.0.0.1', '10.0.0.5']) {
-      expect(accepts(narr({ host, apiKey: 'k' }))).toBe(true);
+  it('accepts plain, private, IPv6-literal and subpath URLs; strips the trailing slash', () => {
+    for (const url of [
+      'http://host:3000',
+      'http://192.168.1.10:3000',
+      'http://[::1]:3000',
+      'https://localhost',
+      'http://host:3000/lib',
+    ]) {
+      expect(parse(narr({ url, apiKey: 'k' })).narratorr?.url).toBe(url);
     }
+    expect(parse(narr({ url: 'http://host:3000/', apiKey: 'k' })).narratorr?.url).toBe('http://host:3000');
   });
 
-  it('normalizes urlBase and coerces port', () => {
-    expect(parse(narr({ urlBase: 'lib', apiKey: 'k' })).narratorr?.urlBase).toBe('/lib');
-    expect(parse(narr({ urlBase: '', apiKey: 'k' })).narratorr?.urlBase).toBeNull();
-    expect(parse(narr({ port: '8080', apiKey: 'k' })).narratorr?.port).toBe(8080);
+  it('rejects a scheme-less value and a bare http:// with no host', () => {
+    expect(accepts(narr({ url: 'narratorr:3000', apiKey: 'k' }))).toBe(false);
+    expect(accepts(narr({ url: 'http://', apiKey: 'k' }))).toBe(false);
+  });
+
+  it('apiKey is optional (omit-to-keep still parses)', () => {
+    expect(accepts(narr({}))).toBe(true);
+    expect(parse(narr({})).narratorr).toEqual({ url: 'http://narratorr:3000' });
   });
 
   it('is .strict() at the top level — the old ntfy/email/webhook slots are now rejected', () => {
@@ -65,7 +75,7 @@ describe('testConnectorBodySchema — narratorr only', () => {
   it('accepts a narratorr candidate', () => {
     expect(testConnectorBodySchema.parse({ channel: 'narratorr' }).channel).toBe('narratorr');
     expect(
-      testConnectorBodySchema.safeParse({ channel: 'narratorr', narratorr: { host: 'n', port: 3000, useSsl: false } }).success,
+      testConnectorBodySchema.safeParse({ channel: 'narratorr', narratorr: { url: 'http://n:3000' } }).success,
     ).toBe(true);
   });
 
@@ -159,7 +169,7 @@ describe('connectorSettingsDtoSchema', () => {
   it('accepts a representative masked payload with a notifier list', () => {
     const dto = {
       publicUrl: 'https://requests.example.com',
-      narratorr: { host: 'narratorr.example.com', port: 443, useSsl: true, urlBase: '/lib', hasApiKey: true },
+      narratorr: { url: 'https://narratorr.example.com/lib', hasApiKey: true },
       notifiers: [
         { id: 'nf_1', name: 'Phone', type: 'ntfy', events: ['request.created'], config: { url: 'https://ntfy.sh', topic: 't', hasToken: false, priority: null } },
         { id: 'nf_2', name: 'Legacy', type: 'apprise', events: ['user.pending'], unknown: true },

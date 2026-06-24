@@ -3,75 +3,51 @@ import { initNarratorr, buildNarratorr, connectionFormKey, type NarratorrState }
 import type { ConnectorSettingsDto, NotifierDto } from '@shared/schemas/connectors';
 
 const dto = (over: Partial<NonNullable<ConnectorSettingsDto['narratorr']>>): ConnectorSettingsDto['narratorr'] => ({
-  host: 'narratorr',
-  port: 3000,
-  useSsl: false,
-  urlBase: null,
+  url: 'http://narratorr:3000',
   hasApiKey: false,
   ...over,
 });
 
 const state = (over: Partial<NarratorrState>): NarratorrState => ({
-  host: 'narratorr',
-  port: '3000',
-  useSsl: false,
-  urlBase: '',
+  url: 'http://narratorr:3000',
   key: '',
   hasKey: false,
   ...over,
 });
 
 describe('initNarratorr', () => {
-  it('hydrates discrete fields from the DTO (key always blank, hasKey from hasApiKey)', () => {
-    expect(initNarratorr(dto({ host: 'books.example.com', port: 443, useSsl: true, urlBase: '/lib', hasApiKey: true }))).toEqual({
-      host: 'books.example.com',
-      port: '443',
-      useSsl: true,
-      urlBase: '/lib',
+  it('hydrates url from the DTO (key always blank, hasKey from hasApiKey)', () => {
+    expect(initNarratorr(dto({ url: 'https://books.example.com/lib', hasApiKey: true }))).toEqual({
+      url: 'https://books.example.com/lib',
       key: '',
       hasKey: true,
     });
   });
 
   it('defaults to an empty/unconfigured form when the connector is null', () => {
-    expect(initNarratorr(null)).toEqual({ host: '', port: '3000', useSsl: false, urlBase: '', key: '', hasKey: false });
+    expect(initNarratorr(null)).toEqual({ url: '', key: '', hasKey: false });
   });
 });
 
 describe('buildNarratorr', () => {
-  it('returns null when host is blank (the clear signal)', () => {
-    expect(buildNarratorr(state({ host: '' }))).toBeNull();
-    expect(buildNarratorr(state({ host: '   ' }))).toBeNull();
+  it('returns null when url is blank (the clear signal)', () => {
+    expect(buildNarratorr(state({ url: '' }))).toBeNull();
+    expect(buildNarratorr(state({ url: '   ' }))).toBeNull();
   });
 
-  it('emits the discrete object, omitting apiKey when the key input is blank (keep masked key)', () => {
-    expect(buildNarratorr(state({ host: 'narratorr', port: '3000', useSsl: false, key: '' }))).toEqual({
-      host: 'narratorr',
-      port: 3000,
-      useSsl: false,
+  it('emits { url }, omitting apiKey when the key input is blank (keep masked key)', () => {
+    expect(buildNarratorr(state({ url: 'http://narratorr:3000', key: '' }))).toEqual({
+      url: 'http://narratorr:3000',
     });
   });
 
   it('includes apiKey (trimmed) when the admin typed a new one', () => {
-    expect(buildNarratorr(state({ host: 'narratorr', key: '  k  ' }))).toMatchObject({ apiKey: 'k' });
+    expect(buildNarratorr(state({ url: 'http://narratorr:3000', key: '  k  ' }))).toMatchObject({ apiKey: 'k' });
   });
 
-  it('includes urlBase only when non-blank', () => {
-    expect(buildNarratorr(state({ host: 'n', urlBase: '/lib' }))).toMatchObject({ urlBase: '/lib' });
-    expect(buildNarratorr(state({ host: 'n', urlBase: '' }))).not.toHaveProperty('urlBase');
-  });
-
-  it('falls back to the default port when the port input is non-numeric', () => {
-    expect(buildNarratorr(state({ host: 'n', port: '' }))).toMatchObject({ port: 3000 });
-  });
-
-  it('carries a non-default port and useSsl: true into the payload (not hardcoded defaults)', () => {
-    // Guards against buildNarratorr ignoring the parsed port or always sending useSsl:false —
-    // an admin saving 443 + SSL must persist exactly those, not the 3000/http defaults.
-    expect(buildNarratorr(state({ host: 'books.example.com', port: '443', useSsl: true }))).toMatchObject({
-      host: 'books.example.com',
-      port: 443,
-      useSsl: true,
+  it('trims the url before emitting it', () => {
+    expect(buildNarratorr(state({ url: '  https://books.example.com/lib  ' }))).toMatchObject({
+      url: 'https://books.example.com/lib',
     });
   });
 });
@@ -86,7 +62,7 @@ describe('connectionFormKey — keyed on the connection slice, not the notifier 
   });
   const settings = (over: Partial<ConnectorSettingsDto> = {}): ConnectorSettingsDto => ({
     publicUrl: 'https://app.example.com',
-    narratorr: dto({ host: 'narratorr', port: 3000 }),
+    narratorr: dto({ url: 'http://narratorr:3000' }),
     notifiers: [],
     ...over,
   });
@@ -100,7 +76,7 @@ describe('connectionFormKey — keyed on the connection slice, not the notifier 
   it('changes when the connection slice genuinely changes (real save → reseed)', () => {
     const before = settings();
     expect(connectionFormKey(settings({ publicUrl: 'https://moved.example.com' }))).not.toBe(connectionFormKey(before));
-    expect(connectionFormKey(settings({ narratorr: dto({ host: 'narratorr', port: 3000, hasApiKey: true }) }))).not.toBe(
+    expect(connectionFormKey(settings({ narratorr: dto({ url: 'http://narratorr:3000', hasApiKey: true }) }))).not.toBe(
       connectionFormKey(before),
     );
   });

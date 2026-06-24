@@ -33,28 +33,6 @@ const EMPTY: StoredConnectors = {
   notifiers: [],
 };
 
-/**
- * Bracket a bare IPv6 literal host so it survives `:port` interpolation — `::1` → `[::1]`.
- * Without brackets, `http://::1:3000` is rejected by `new URL()`. An IPv6 literal contains
- * `::` or ≥2 colons; the single-colon `host:port` typo (Port is its own field) and IPv4/
- * hostnames are left as-is, and already-bracketed input is idempotent.
- */
-function bracketIpv6Host(host: string): string {
-  if (host.startsWith('[')) return host; // already bracketed → leave as-is
-  const colons = (host.match(/:/g) ?? []).length;
-  return colons >= 2 ? `[${host}]` : host;
-}
-
-/**
- * Compose narratorr's effective base URL from the stored discrete fields:
- * `${scheme}://${host}:${port}${urlBase}` — a valid http(s) URL with no trailing
- * slash. e.g. {host:'narratorr',port:3000,useSsl:false,urlBase:null} → http://narratorr:3000.
- * A bare IPv6 host is bracketed (`::1` → `[::1]`) so the result stays parseable.
- */
-function composeNarratorrUrl(n: { host: string; port: number; useSsl: boolean; urlBase: string | null }): string {
-  return `${n.useSsl ? 'https' : 'http'}://${bracketIpv6Host(n.host)}:${n.port}${n.urlBase ?? ''}`;
-}
-
 /** Minimal structural logger (Fastify's pino logger satisfies it). */
 interface SettingsLogger {
   warn(obj: unknown, msg?: string): void;
@@ -106,9 +84,9 @@ export class ConnectorSettingsService {
     if (!c.narratorr) return null;
     const apiKey = this.reveal(c.narratorr.apiKey, 'narratorr.apiKey');
     if (!apiKey) return null;
-    // Compose the effective base URL from the discrete fields. NarratorrClient keeps
-    // consuming { url, apiKey }, so the host→URL composition lives entirely here.
-    return { url: composeNarratorrUrl(c.narratorr), apiKey };
+    // The full base URL is stored directly (the user types it); NarratorrClient consumes
+    // { url, apiKey } as-is.
+    return { url: c.narratorr.url, apiKey };
   }
 
   /** Notifications config (decrypted) in the shape buildNotifier expects. */
@@ -120,9 +98,9 @@ export class ConnectorSettingsService {
   /**
    * Build a narratorr runtime config from an UNSAVED candidate (the Settings "Test"
    * path), resolving an omitted/unchanged apiKey against the stored, decrypted secret.
-   * Mirrors getNarratorrConfig() but reads the candidate's discrete fields instead of the
-   * stored ones. NEVER writes — the stored secret is only decrypted in-memory. Returns null
-   * when the candidate is absent/blank or no usable key resolves (→ clean "not configured").
+   * Mirrors getNarratorrConfig() but reads the candidate's url instead of the stored one.
+   * NEVER writes — the stored secret is only decrypted in-memory. Returns null when the
+   * candidate is absent/blank or no usable key resolves (→ clean "not configured").
    */
   async buildCandidateNarratorrConfig(
     candidate: TestConnectorBody['narratorr'],
@@ -131,15 +109,7 @@ export class ConnectorSettingsService {
     const stored = await this.getStored();
     const apiKey = this.resolveCandidateSecret(candidate.apiKey, stored.narratorr?.apiKey, 'narratorr.apiKey');
     if (!apiKey) return null;
-    return {
-      url: composeNarratorrUrl({
-        host: candidate.host,
-        port: candidate.port,
-        useSsl: candidate.useSsl,
-        urlBase: candidate.urlBase ?? null,
-      }),
-      apiKey,
-    };
+    return { url: candidate.url, apiKey };
   }
 
   /**
@@ -165,10 +135,7 @@ export class ConnectorSettingsService {
       publicUrl: c.publicUrl,
       narratorr: c.narratorr
         ? {
-            host: c.narratorr.host,
-            port: c.narratorr.port,
-            useSsl: c.narratorr.useSsl,
-            urlBase: c.narratorr.urlBase,
+            url: c.narratorr.url,
             hasApiKey: Boolean(c.narratorr.apiKey),
           }
         : null,
@@ -431,7 +398,7 @@ export class ConnectorSettingsService {
     if (body === null) return null;
     const apiKey = this.resolveSecret(body.apiKey, cur?.apiKey);
     if (!apiKey) throw badRequest('NARRATORR_KEY_REQUIRED', 'Narratorr requires an API key.');
-    return { host: body.host, port: body.port, useSsl: body.useSsl, urlBase: body.urlBase ?? null, apiKey };
+    return { url: body.url, apiKey };
   }
 
   /**
