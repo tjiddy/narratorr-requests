@@ -65,6 +65,16 @@ describe('ConnectorSettingsService — narratorr (unchanged behavior)', () => {
     expect(await svc.getNarratorrConfig()).toBeNull();
   });
 
+  it('buildCandidateNarratorrConfig probes the UNSAVED candidate url, resolving the omitted key from storage', async () => {
+    // Stored URL A + key; the unsaved candidate sends a DIFFERENT URL B with apiKey omitted —
+    // exactly an admin editing Server URL and clicking Test before saving. The probe must target
+    // B (not the stored A), while the omitted key resolves to the stored, decrypted secret.
+    // Non-vacuous: were this to read `stored.narratorr.url`, cfg.url would be A and this fails.
+    await svc.update({ narratorr: { url: 'http://stored-a:3000', apiKey: 'stored-key' } });
+    const cfg = await svc.buildCandidateNarratorrConfig({ url: 'http://candidate-b:9000' });
+    expect(cfg).toEqual({ url: 'http://candidate-b:9000', apiKey: 'stored-key' });
+  });
+
   it('leaves the notifier list untouched on a narratorr PUT', async () => {
     await svc.createNotifier(ntfyBody());
     await svc.update({ publicUrl: 'https://app.example.com' });
