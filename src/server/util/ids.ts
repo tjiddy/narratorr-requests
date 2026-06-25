@@ -5,12 +5,17 @@ import { randomBytes } from 'node:crypto';
 // (users), `rq_` (requests), `nf_` (notifiers), and `aq_` (acquisitions, in standalone mock).
 const ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
+// Largest multiple of the alphabet that fits in a byte (7 * 36 = 252). Bytes ≥ this
+// map unevenly under modulo, so we reject and resample them — every symbol stays
+// equally likely (no modulo bias). Opaque IDs don't need this, but unbiased is free.
+const MAX_UNBIASED = Math.floor(256 / ALPHABET.length) * ALPHABET.length;
+
 export function publicId(prefix: string, length = 20): string {
-  const bytes = randomBytes(length);
   let token = '';
-  for (let i = 0; i < length; i++) {
-    // Modulo bias is negligible here (36 vs 256) and irrelevant for opaque IDs.
-    token += ALPHABET[bytes[i]! % ALPHABET.length];
+  while (token.length < length) {
+    for (const byte of randomBytes(length - token.length)) {
+      if (byte < MAX_UNBIASED) token += ALPHABET[byte % ALPHABET.length];
+    }
   }
   return `${prefix}_${token}`;
 }
