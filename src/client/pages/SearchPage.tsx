@@ -30,16 +30,16 @@ export function SearchPage() {
 
   return (
     <div>
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
-        <div>
+      <div className="mb-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">
             Request audiobooks
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Search the catalog and request what you want to listen to.
-          </p>
+          <QuotaMeter />
         </div>
-        <QuotaMeter />
+        <p className="mt-1 text-sm text-muted-foreground">
+          Search the catalog and request what you want to listen to.
+        </p>
       </div>
 
       <form onSubmit={onSubmit} className="flex gap-2">
