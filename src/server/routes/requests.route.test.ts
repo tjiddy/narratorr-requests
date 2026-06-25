@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { buildRouteApp, type RouteHarness } from '../test-support/route-harness.js';
 import { insertUser } from '../test-support/db.js';
 import { registerRequestRoutes } from './requests.js';
+import { registerSettingsRoutes } from './settings.js';
 import { NarratorrError, type INarratorrClient } from '../services/narratorr-client.js';
 import type { V1Book } from '../../shared/schemas/v1/books.js';
 
@@ -147,6 +148,45 @@ describe('POST /api/requests — validation', () => {
     const res = await post(h.cookieFor(capped), { asin: 'B01', title: 'A Book' });
     expect(res.statusCode).toBe(429);
     expect(res.json().error.code).toBe('QUOTA_EXCEEDED');
+  });
+});
+
+describe('default quota sourced from settings (live reconfigure)', () => {
+  it("changing the default in Settings changes a non-override user's effective limit on the next request", async () => {
+    // Register BOTH settings + request routes against one wired app so a real PUT /connectors
+    // flows through reconfigure() → RequestService.reconfigureQuota, then a create observes it.
+    const h2 = await buildRouteApp({
+      register: (app, deps) => {
+        registerSettingsRoutes(app, deps);
+        registerRequestRoutes(app, deps);
+      },
+      enableTestRoleOverride: true,
+      policy: { defaultQuota: 10, windowDays: 30 },
+    });
+    try {
+      const user = await insertUser(h2.db, { role: 'user', status: 'active' });
+      const cookie = h2.cookieFor(user);
+
+      // Tighten the app-wide default to 1 / 7-day window via the admin Settings PUT.
+      const put = await h2.app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings/connectors',
+        headers: h2.asRole('admin'),
+        payload: { defaultQuota: { limit: 1, windowDays: 7 } },
+      });
+      expect(put.statusCode).toBe(200);
+      expect(put.json().defaultQuota).toEqual({ limit: 1, windowDays: 7 });
+
+      // The non-override user now gets the new limit of 1: first create ok, second exceeds.
+      const create = (asin: string) =>
+        h2.app.inject({ method: 'POST', url: '/api/requests', cookies: cookie, payload: { asin, title: 'A Book' } });
+      expect((await create('B1')).statusCode).toBe(201);
+      const second = await create('B2');
+      expect(second.statusCode).toBe(429);
+      expect(second.json().error.code).toBe('QUOTA_EXCEEDED');
+    } finally {
+      await h2.app.close();
+    }
   });
 });
 

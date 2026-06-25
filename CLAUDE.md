@@ -64,7 +64,8 @@ libSQL (SQLite) · Zod everywhere · TypeScript (strict) · ESM · tsup (server 
   key derived from `SESSION_SECRET` or `SETTINGS_KEY`). The env surface is deliberately just
   auth + secrets — see `src/server/config.ts` for the authoritative list (`SESSION_SECRET`
   required in prod, `LOCAL_AUTH` default-on, `OIDC_PROVIDERS` + `OIDC_<ID>_*`, `BOOTSTRAP_ADMIN`,
-  `TRUSTED_PROXIES`, `BIND_HOST`, `DEFAULT_REQUEST_QUOTA`, …).
+  `TRUSTED_PROXIES`, `BIND_HOST`, …). The default request quota (limit + day/week/month window)
+  is admin-editable in Settings and stored in `app_settings`, not env.
 - **Request lifecycle:** `pending → approved → acquiring → available`, or `denied`/`failed`.
   `RequestService.handoff()` calls `addBook(asin)`; a `409` with `existingId` resolves to the
   existing book (idempotent by ASIN). The status poller drives `acquiring → available`;

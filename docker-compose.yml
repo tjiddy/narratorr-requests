@@ -30,7 +30,6 @@ services:
       BIND_HOST: 0.0.0.0
       DATABASE_PATH: /data/narratorr-requests.db
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
-      DEFAULT_REQUEST_QUOTA: ${DEFAULT_REQUEST_QUOTA:-10}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
 
       # AUTH_BYPASS makes every request the dev admin, so it's only safe on an isolated

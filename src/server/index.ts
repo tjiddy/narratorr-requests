@@ -36,7 +36,7 @@ async function main(): Promise<void> {
 
   const users = new UserService(db, { bootstrapAdmin: config.bootstrapAdmin });
   const settings = new SettingsService(db);
-  const settingsRow = await settings.ensure(config.defaultRequestQuota);
+  const settingsRow = await settings.ensure();
 
   // App (and its logger) first, so the connector service can WARN through it when a
   // stored secret can't be decrypted.
@@ -70,7 +70,7 @@ async function main(): Promise<void> {
     narratorr,
     {
       defaultQuota: settingsRow.defaultQuota,
-      windowDays: config.quotaWindowDays,
+      windowDays: settingsRow.defaultQuotaWindowDays,
       autoApproveRoles: settingsRow.autoApproveRoles as Role[],
     },
     // Live-notifier accessor (NOT a captured instance): the settings route reassigns

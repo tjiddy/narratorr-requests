@@ -14,7 +14,7 @@ let svc: ConnectorSettingsService;
 
 beforeEach(async () => {
   db = await createTestDb();
-  await new SettingsService(db).ensure(10); // create the singleton row update() targets
+  await new SettingsService(db).ensure(); // create the singleton row update() targets
   svc = new ConnectorSettingsService(db, codec);
 });
 
@@ -385,5 +385,35 @@ describe('ConnectorSettingsService — candidate test build (no DB write)', () =
   it('a freshly-typed secret overrides the stored one; no id → as-given', async () => {
     const candidate = await svc.buildCandidateNotifier({ type: 'ntfy', config: { url: 'https://ntfy.sh', topic: 'reqs', token: 'typed' } });
     expect(candidate.config.token).toBe('typed');
+  });
+});
+
+describe('ConnectorSettingsService — default quota (dedicated columns)', () => {
+  it('seeds limit 10 + window 30 on a fresh row (via SettingsService.ensure) and never a null window', async () => {
+    expect(await svc.getDefaultQuota()).toEqual({ limit: 10, windowDays: 30 });
+    expect((await svc.getDto()).defaultQuota).toEqual({ limit: 10, windowDays: 30 });
+  });
+
+  it('persists a new limit + window to the dedicated columns', async () => {
+    await svc.update({ defaultQuota: { limit: 3, windowDays: 7 } });
+    expect(await svc.getDefaultQuota()).toEqual({ limit: 3, windowDays: 7 });
+    expect(await db.query.appSettings.findFirst()).toMatchObject({ defaultQuota: 3, defaultQuotaWindowDays: 7 });
+  });
+
+  it('round-trips an unlimited default (limit: null)', async () => {
+    await svc.update({ defaultQuota: { limit: null, windowDays: 1 } });
+    expect(await svc.getDefaultQuota()).toEqual({ limit: null, windowDays: 1 });
+  });
+
+  it('omit-to-keep: a save that omits windowDays preserves the stored window', async () => {
+    await svc.update({ defaultQuota: { limit: 3, windowDays: 7 } });
+    await svc.update({ defaultQuota: { limit: 9 } }); // no windowDays
+    expect(await svc.getDefaultQuota()).toEqual({ limit: 9, windowDays: 7 }); // window not clobbered
+  });
+
+  it('leaves the quota columns untouched when defaultQuota is omitted from the body', async () => {
+    await svc.update({ defaultQuota: { limit: 3, windowDays: 7 } });
+    await svc.update({ publicUrl: 'https://app.example.com' }); // unrelated save
+    expect(await svc.getDefaultQuota()).toEqual({ limit: 3, windowDays: 7 });
   });
 });

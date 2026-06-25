@@ -21,6 +21,14 @@
           "notNull": false,
           "autoincrement": false
         },
+        "default_quota_window_days": {
+          "name": "default_quota_window_days",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 30
+        },
         "auto_approve_roles": {
           "name": "auto_approve_roles",
           "type": "text",

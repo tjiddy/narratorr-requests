@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Db } from '../../db/client.js';
 import { appSettings } from '../../db/schema.js';
 import { notificationEventSchema, type NotificationEvent } from '../../shared/notification-events.js';
+import { quotaWindowDaysSchema } from '../../shared/schemas/connectors.js';
 import type {
   StoredConnectors,
   StoredNotifier,
@@ -13,6 +14,7 @@ import type {
   CreateNotifierBody,
   UpdateNotifierBody,
   NotifierTestBody,
+  QuotaWindowDays,
 } from '../../shared/schemas/connectors.js';
 import {
   NOTIFIER_REGISTRY,
@@ -57,6 +59,21 @@ export class ConnectorSettingsService {
   async getStored(): Promise<StoredConnectors> {
     const row = await this.db.query.appSettings.findFirst({ where: eq(appSettings.id, SINGLETON_ID) });
     return row?.connectors ?? { ...EMPTY };
+  }
+
+  /**
+   * The app-wide default request quota, composed from the two dedicated columns
+   * (`default_quota` + `default_quota_window_days`) — NOT the encrypted `connectors` JSON blob.
+   * `limit: null` = unlimited; `windowDays` is the concrete rolling-window day count. Read at
+   * boot to seed the request policy and again on every settings save to reconfigure it live.
+   * The stored window is narrowed through `quotaWindowDaysSchema` so the value carries the
+   * allowed-set literal type (and a legacy/corrupt out-of-set value degrades to 30 rather than
+   * 502'ing the masked GET DTO that reuses the same constraint).
+   */
+  async getDefaultQuota(): Promise<{ limit: number | null; windowDays: QuotaWindowDays }> {
+    const row = await this.db.query.appSettings.findFirst({ where: eq(appSettings.id, SINGLETON_ID) });
+    const window = quotaWindowDaysSchema.safeParse(row?.defaultQuotaWindowDays);
+    return { limit: row?.defaultQuota ?? null, windowDays: window.success ? window.data : 30 };
   }
 
   /**
@@ -140,6 +157,7 @@ export class ConnectorSettingsService {
           }
         : null,
       notifiers: c.notifiers.map((n) => this.toNotifierDto(n)),
+      defaultQuota: await this.getDefaultQuota(),
     };
   }
 
@@ -153,6 +171,9 @@ export class ConnectorSettingsService {
     if (body.narratorr !== undefined) next.narratorr = this.resolveNarratorr(body.narratorr, cur.narratorr);
 
     await this.persist(next);
+    // The default quota lives in its own columns (not the connectors blob), so it's a
+    // separate write — omitted → keep both; `windowDays` omitted → keep the stored window.
+    if (body.defaultQuota !== undefined) await this.persistDefaultQuota(body.defaultQuota);
     return next;
   }
 
@@ -413,5 +434,24 @@ export class ConnectorSettingsService {
       .where(eq(appSettings.id, SINGLETON_ID))
       .returning();
     if (!row) throw new Error('app_settings singleton missing — connector update did not persist');
+  }
+
+  /**
+   * Persist the default quota to its dedicated columns. `limit` is already normalized by the
+   * schema (0/blank → null = unlimited). `windowDays` is omit-to-keep: when the body leaves it
+   * out we touch only the limit column, so a partial save never clobbers the stored window to
+   * null/default (the column stays NOT NULL with a concrete value either way).
+   */
+  private async persistDefaultQuota(q: NonNullable<UpdateConnectorSettingsBody['defaultQuota']>): Promise<void> {
+    const [row] = await this.db
+      .update(appSettings)
+      .set({
+        defaultQuota: q.limit,
+        ...(q.windowDays !== undefined && { defaultQuotaWindowDays: q.windowDays }),
+        updatedAt: new Date(),
+      })
+      .where(eq(appSettings.id, SINGLETON_ID))
+      .returning();
+    if (!row) throw new Error('app_settings singleton missing — default quota update did not persist');
   }
 }

@@ -140,7 +140,7 @@ export interface BuildRouteAppOpts {
 export async function buildRouteApp(opts: BuildRouteAppOpts): Promise<RouteHarness> {
   const db = await createTestDb();
   const settings = new SettingsService(db);
-  await settings.ensure(10);
+  await settings.ensure();
   const codec = new SecretCodec(deriveSettingsKey({ sessionSecret: SESSION_SECRET }));
   const connectorSettings = new ConnectorSettingsService(db, codec);
   const users = new UserService(db, {});
@@ -186,8 +186,6 @@ export async function buildRouteApp(opts: BuildRouteAppOpts): Promise<RouteHarne
     localAuth: true,
     oidcProviders: [],
     bootstrapAdmin: null,
-    defaultRequestQuota: 10,
-    quotaWindowDays: 30,
     ...opts.config,
   };
   // Genuinely-typed AppDeps: a new required dep field is a compile error here, not a runtime hole.

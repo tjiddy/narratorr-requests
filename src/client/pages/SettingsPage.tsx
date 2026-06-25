@@ -60,7 +60,7 @@ export function SettingsPage() {
           </nav>
 
           <div className="min-w-0 flex-1 animate-fade-in-up stagger-2">
-            {active === 'general' && <GeneralSection key={data.publicUrl ?? ''} saved={data.publicUrl} />}
+            {active === 'general' && <GeneralSection publicUrl={data.publicUrl} defaultQuota={data.defaultQuota} />}
             {active === 'narratorr' && <NarratorrSection key={JSON.stringify(data.narratorr)} saved={data.narratorr} />}
             {active === 'notifications' && <NotifiersSection notifiers={data.notifiers} publicUrl={data.publicUrl} />}
           </div>
