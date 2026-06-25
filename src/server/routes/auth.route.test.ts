@@ -172,6 +172,45 @@ describe('local signup', () => {
   });
 });
 
+describe('GET /api/me — resolved quota shape per mode (F1)', () => {
+  // The badge + "out of requests" UX read `me.quota`, so the resolved mode/limit/remaining
+  // contract is asserted at the route boundary — a regression in the blocked/unlimited branch of
+  // quotaUsage would leave request-create enforcement green while corrupting what /api/me reports.
+  const me = (cookies: Record<string, string>) => app.inject({ method: 'GET', url: '/api/me', cookies });
+
+  it('an admin reports unlimited (mode unlimited, limit/remaining null)', async () => {
+    const owner = await signup(app, 'owner@example.com'); // first user → admin → unlimited
+    const res = await me(sessionCookie(owner));
+    expect(res.json().quota).toEqual({ mode: 'unlimited', limit: null, used: 0, remaining: null, windowDays: 30 });
+  });
+
+  it('an inherit (non-override) user reports the limited app default', async () => {
+    await signup(app, 'owner@example.com'); // claim the admin slot
+    const guest = await signup(app, 'guest@example.com'); // role user, inherit → limited 10
+    expect((await me(sessionCookie(guest))).json().quota).toEqual({
+      mode: 'limited',
+      limit: 10,
+      used: 0,
+      remaining: 10,
+      windowDays: 30,
+    });
+  });
+
+  it('a blocked user reports mode=blocked with limit null / remaining 0 (NOT unlimited or 0/0)', async () => {
+    await signup(app, 'owner@example.com'); // claim the admin slot
+    const guest = await signup(app, 'guest@example.com');
+    const guestCookie = sessionCookie(guest);
+    const publicId = (await me(guestCookie)).json().publicId as string;
+    await usersSvc.updateUser(publicId, { requestQuota: { mode: 'blocked' } });
+
+    const res = await me(guestCookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().quota).toEqual({ mode: 'blocked', limit: null, used: 0, remaining: 0, windowDays: 30 });
+    // The raw per-user override is surfaced too, so the admin UI can seed the mode control.
+    expect(res.json().requestQuota).toEqual({ mode: 'blocked' });
+  });
+});
+
 describe('local login', () => {
   it('verifies the password and is generic on failure', async () => {
     await signup(app, 'todd@example.com', 'hunter2hunter2');

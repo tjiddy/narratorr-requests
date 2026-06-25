@@ -256,6 +256,52 @@ describe('GET /api/admin/users — no passwordHash leak', () => {
   });
 });
 
+// F2 — the two userDtoSchema-bearing surfaces (GET list + PATCH response) must carry the
+// mode-based `requestQuota` union, not the old nullable number. These assert the response BODY
+// shape at the route boundary so a regression to the old shape, a dropped `limit` on a limited
+// response, or a mis-serialized blocked/unlimited mode can't slip past green status-only checks.
+describe('admin user response — requestQuota mode DTO (F2)', () => {
+  it('GET /api/admin/users serializes every per-user mode into the union', async () => {
+    const admin = await insertUser(h.db, { role: 'admin', status: 'active', username: 'admin' });
+    await insertUser(h.db, { role: 'user', status: 'active', username: 'def' }); // inherit (no override)
+    await insertUser(h.db, { role: 'user', status: 'active', username: 'cap', requestQuota: { mode: 'limited', limit: 4 } });
+    await insertUser(h.db, { role: 'user', status: 'active', username: 'unl', requestQuota: { mode: 'unlimited' } });
+    await insertUser(h.db, { role: 'user', status: 'active', username: 'blk', requestQuota: { mode: 'blocked' } });
+
+    const res = await h.app.inject({ method: 'GET', url: '/api/admin/users', cookies: h.cookieFor(admin) });
+    expect(res.statusCode).toBe(200);
+    const byName: Record<string, { requestQuota: unknown }> = Object.fromEntries(
+      res.json().data.map((u: { username: string; requestQuota: unknown }) => [u.username, u]),
+    );
+    expect(byName.def!.requestQuota).toEqual({ mode: 'inherit' });
+    expect(byName.cap!.requestQuota).toEqual({ mode: 'limited', limit: 4 });
+    expect(byName.unl!.requestQuota).toEqual({ mode: 'unlimited' });
+    expect(byName.blk!.requestQuota).toEqual({ mode: 'blocked' });
+    // The old nullable-number shape is fully gone from the wire.
+    expect(res.payload).not.toMatch(/"requestQuota":\s*(null|\d)/);
+  });
+
+  it('PATCH /api/admin/users/:publicId returns the updated mode in the response body', async () => {
+    const admin = await insertUser(h.db, { role: 'admin', status: 'active' });
+    const target = await insertUser(h.db, { role: 'user', status: 'active', username: 'target' });
+    const cookie = h.cookieFor(admin);
+
+    const limited = await patchUser(cookie, target.publicId, { requestQuota: { mode: 'limited', limit: 6 } });
+    expect(limited.statusCode).toBe(200);
+    expect(limited.json().requestQuota).toEqual({ mode: 'limited', limit: 6 });
+
+    // Switching to a non-limited mode drops the limit on the response (CHECK-coherent persistence).
+    const blocked = await patchUser(cookie, target.publicId, { requestQuota: { mode: 'blocked' } });
+    expect(blocked.json().requestQuota).toEqual({ mode: 'blocked' });
+
+    const unlimited = await patchUser(cookie, target.publicId, { requestQuota: { mode: 'unlimited' } });
+    expect(unlimited.json().requestQuota).toEqual({ mode: 'unlimited' });
+
+    const inherit = await patchUser(cookie, target.publicId, { requestQuota: { mode: 'inherit' } });
+    expect(inherit.json().requestQuota).toEqual({ mode: 'inherit' });
+  });
+});
+
 // AC5 — a single user's request history.
 describe('GET /api/admin/users/:publicId/requests', () => {
   it('scopes results to the target user', async () => {
