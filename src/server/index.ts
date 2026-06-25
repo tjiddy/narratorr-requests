@@ -12,7 +12,7 @@ import { runMigrations } from '../db/migrate.js';
 import { createDb } from '../db/client.js';
 import { UserService } from './services/user.service.js';
 import { SettingsService } from './services/settings.service.js';
-import { RequestService } from './services/request.service.js';
+import { RequestService, resolveRequestPolicy } from './services/request.service.js';
 import { SearchService } from './services/search.service.js';
 import { StatusPoller } from './services/status-poller.js';
 import { NarratorrClient } from './services/narratorr-client.js';
@@ -65,18 +65,15 @@ async function main(): Promise<void> {
     app.log.warn('narratorr is not configured — search and requests will fail until it is set on the Settings page');
   }
 
-  // Seed the request policy from the SANITIZED quota (not the raw settingsRow columns), so boot
-  // enforcement and the Settings GET agree on the same narrowed values — a legacy/corrupt
-  // out-of-set window or non-positive limit degrades identically on both paths.
-  const defaultQuota = await connectorSettings.getDefaultQuota();
+  // Seed the request policy from the SANITIZED quota (not the raw settingsRow columns) via the
+  // shared resolveRequestPolicy seam, so boot enforcement and the Settings GET agree on the same
+  // narrowed values — a legacy/corrupt out-of-set window or non-positive limit degrades identically
+  // on both paths. The seam is unit-tested (connector-settings.service.test.ts) so a regression to
+  // the raw row fails a test rather than silently re-diverging.
   const requests = new RequestService(
     db,
     narratorr,
-    {
-      defaultQuota: defaultQuota.limit,
-      windowDays: defaultQuota.windowDays,
-      autoApproveRoles: settingsRow.autoApproveRoles as Role[],
-    },
+    await resolveRequestPolicy(connectorSettings, settingsRow.autoApproveRoles as Role[]),
     // Live-notifier accessor (NOT a captured instance): the settings route reassigns
     // deps.notifier on every notifier-config save, so read it at dispatch time. The app
     // logger makes a lost request.failed (rejected lookup/dispatch) diagnosable.

@@ -4,7 +4,7 @@ import { createTestDb } from '../test-support/db.js';
 import { FakeNarratorrClient } from '../test-support/route-harness.js';
 import { SettingsService } from './settings.service.js';
 import { ConnectorSettingsService } from './connector-settings.service.js';
-import { RequestService } from './request.service.js';
+import { RequestService, resolveRequestPolicy } from './request.service.js';
 import { SecretCodec, deriveSettingsKey } from '../util/secret-codec.js';
 import { appSettings } from '../../db/schema.js';
 import { connectorSettingsDtoSchema } from '../../shared/schemas/connectors.js';
@@ -452,19 +452,19 @@ describe('ConnectorSettingsService — quota storage-boundary sanitization (lega
     expect(await svc.getDefaultQuota()).toEqual({ limit: 7, windowDays: 7 });
   });
 
-  it('boot seeds RequestService from the SANITIZED quota, not the raw corrupt row', async () => {
-    // Reproduce the boot seam (src/server/index.ts): corrupt columns → getDefaultQuota() → policy.
-    // A regression that read the raw row would seed window 5 / limit 0 instead of the sanitized 30/null.
+  it('the boot seam (resolveRequestPolicy) seeds from the SANITIZED quota, not the raw corrupt row', async () => {
+    // resolveRequestPolicy is the exact function src/server/index.ts calls to seed RequestService.
+    // Asserting on its output directly — not an in-test reconstruction of the wiring — means a
+    // regression that read settingsRow.defaultQuota{,WindowDays} raw fails HERE (limit 0 / window 5
+    // would surface instead of the sanitized null / 30).
     await corrupt({ defaultQuota: 0, defaultQuotaWindowDays: 5 });
-    const quota = await svc.getDefaultQuota();
-    const requests = new RequestService(db, new FakeNarratorrClient(), {
-      defaultQuota: quota.limit,
-      windowDays: quota.windowDays,
-      autoApproveRoles: ['admin'],
-    });
-    // A non-admin's effective limit is the sanitized default (null = unlimited), not the raw 0.
+    const policy = await resolveRequestPolicy(svc, ['admin']);
+    expect(policy).toEqual({ defaultQuota: null, windowDays: 30, autoApproveRoles: ['admin'] });
+
+    // And the policy actually drives enforcement: a non-admin is unlimited (sanitized null), and
+    // the rolling window the service enforces is the sanitized 30.
+    const requests = new RequestService(db, new FakeNarratorrClient(), policy);
     expect(requests.resolveLimit({ role: 'user', requestQuota: null })).toBeNull();
-    // The rolling window the policy enforces is the sanitized 30, not the raw 5.
     expect((await requests.quotaUsage(1, null)).windowDays).toBe(30);
   });
 });
@@ -493,6 +493,21 @@ describe('ConnectorSettingsService — atomic settings write + single-read getDt
     ).rejects.toMatchObject({ statusCode: 400 });
     expect(await svc.getNarratorrConfig()).toEqual({ url: 'http://n:3000', apiKey: 'orig' });
     expect(await svc.getDefaultQuota()).toEqual({ limit: 4, windowDays: 7 }); // quota untouched
+  });
+
+  it('getDto reads the singleton row exactly ONCE for both the connector and quota DTOs', async () => {
+    // The single-read guarantee: the old implementation called getStored() + getDefaultQuota(),
+    // issuing two findFirst SELECTs against the same row. Counting the reads is what fails on a
+    // regression to that shape — a values-only round-trip assertion would pass either way.
+    await svc.update({ publicUrl: 'https://app.example.com', defaultQuota: { limit: 6, windowDays: 1 } });
+    const readSpy = vi.spyOn(db.query.appSettings, 'findFirst');
+    const dto = await svc.getDto();
+    expect(readSpy).toHaveBeenCalledTimes(1);
+    readSpy.mockRestore();
+
+    // …and the single read still maps both concerns correctly.
+    expect(dto.publicUrl).toBe('https://app.example.com');
+    expect(dto.defaultQuota).toEqual({ limit: 6, windowDays: 1 });
   });
 
   it('getDto round-trips both the connector and quota DTOs from a single read', async () => {

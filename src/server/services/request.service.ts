@@ -31,6 +31,23 @@ export interface RequestPolicy {
   autoApproveRoles: Role[];
 }
 
+/**
+ * Build the boot request policy from the SANITIZED default quota — the single seam boot uses to
+ * seed `RequestService` (see `src/server/index.ts`). Extracted (and structurally typed over just
+ * `getDefaultQuota()`, not the whole settings service) so the "seed from the sanitizer, not the
+ * raw `app_settings` columns" guarantee is directly testable: a regression that read the raw row
+ * instead of `getDefaultQuota()` fails the policy assertion rather than slipping through an
+ * in-test reconstruction of the wiring. `autoApproveRoles` stays sourced from the settings row
+ * (it isn't part of the quota narrowing).
+ */
+export async function resolveRequestPolicy(
+  source: { getDefaultQuota(): Promise<{ limit: number | null; windowDays: number }> },
+  autoApproveRoles: Role[],
+): Promise<RequestPolicy> {
+  const quota = await source.getDefaultQuota();
+  return { defaultQuota: quota.limit, windowDays: quota.windowDays, autoApproveRoles };
+}
+
 export interface QuotaUsage {
   limit: number | null;
   used: number;
