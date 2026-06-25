@@ -8,7 +8,14 @@ import { StatusBadge } from '../components/StatusBadge';
 import { EmptyState } from '../components/EmptyState';
 import { InboxIcon } from '../components/icons';
 import { requestFailureReason } from '../components/request-failure';
-import { parseQuota } from './parseQuota';
+import {
+  initRequestQuota,
+  buildRequestQuota,
+  isRequestQuotaValid,
+  isRequestQuotaDirty,
+  type RequestQuotaState,
+} from './parseQuota';
+import type { RequestQuotaMode } from '@shared/schemas/user';
 
 type UpdateUser = ReturnType<typeof useUpdateUser>;
 type UserRequests = ReturnType<typeof useUserRequests>;
@@ -144,14 +151,28 @@ function AutoApproveControl({ user, update }: { user: UserDto; update: UpdateUse
   );
 }
 
+// Mode-first per-user quota override: `Use app default` (inherit) | `Unlimited` | `Custom limit`
+// (a positive cap) | `Blocked` (a hard admin block, distinct from a cap of 0). Custom reveals the
+// positive-int input. Pure seed/validate/patch logic lives in parseQuota.ts. Admins are always
+// unlimited, so the control is disabled for them.
+const QUOTA_MODE_LABELS: Record<RequestQuotaMode, string> = {
+  inherit: 'Use app default',
+  unlimited: 'Unlimited',
+  limited: 'Custom limit',
+  blocked: 'Blocked',
+};
+
 function QuotaControl({ user, update }: { user: UserDto; update: UpdateUser }) {
   const isAdmin = user.role === 'admin';
   const saving = update.isPending && update.variables?.patch.requestQuota !== undefined;
-  const [quota, setQuota] = useState(user.requestQuota === null ? '' : String(user.requestQuota));
+  const initial = initRequestQuota(user.requestQuota);
+  const [quota, setQuota] = useState<RequestQuotaState>(initial);
+  const valid = isRequestQuotaValid(quota);
+  const dirty = isRequestQuotaDirty(quota, initial);
 
   const saveQuota = () => {
-    const value = parseQuota(quota);
-    if (value === undefined) return; // ignore junk input
+    const value = buildRequestQuota(quota);
+    if (value === undefined) return; // invalid Custom limit → no-op
     update.mutate({ publicId: user.publicId, patch: { requestQuota: value } });
   };
 
@@ -160,20 +181,36 @@ function QuotaControl({ user, update }: { user: UserDto; update: UpdateUser }) {
       <div>
         <p className="font-medium">Request quota</p>
         <p className="text-xs text-muted-foreground/70">
-          Max open requests in the rolling window. Blank = app default. Admins are unlimited.
+          Override the app default for this user. Custom caps open requests in the rolling window;
+          Blocked stops them entirely. Admins are always unlimited.
         </p>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <input
-          type="number"
-          min={0}
-          value={isAdmin ? '' : quota}
+        <select
+          value={isAdmin ? 'unlimited' : quota.mode}
           disabled={isAdmin}
-          placeholder={isAdmin ? '∞' : 'default'}
-          onChange={(e) => setQuota(e.target.value)}
-          className="w-24 rounded-lg border border-border bg-card px-2 py-1 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
-        />
-        <Button variant="secondary" size="sm" disabled={isAdmin} loading={saving} onClick={saveQuota}>
+          onChange={(e) => setQuota((s) => ({ ...s, mode: e.target.value as RequestQuotaMode }))}
+          aria-label="Request quota mode"
+          className="rounded-lg border border-border bg-card px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
+        >
+          {(Object.keys(QUOTA_MODE_LABELS) as RequestQuotaMode[]).map((m) => (
+            <option key={m} value={m}>
+              {QUOTA_MODE_LABELS[m]}
+            </option>
+          ))}
+        </select>
+        {!isAdmin && quota.mode === 'limited' && (
+          <input
+            type="text"
+            inputMode="numeric"
+            value={quota.limit}
+            placeholder="10"
+            aria-label="Custom request limit"
+            onChange={(e) => setQuota((s) => ({ ...s, limit: e.target.value }))}
+            className="w-20 rounded-lg border border-border bg-card px-2 py-1 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+        )}
+        <Button variant="secondary" size="sm" disabled={isAdmin || !valid || !dirty} loading={saving} onClick={saveQuota}>
           Save
         </Button>
       </div>

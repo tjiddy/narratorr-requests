@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { createTestDb } from '../test-support/db.js';
 import { FakeNarratorrClient } from '../test-support/route-harness.js';
 import { SettingsService } from './settings.service.js';
@@ -391,45 +391,58 @@ describe('ConnectorSettingsService — candidate test build (no DB write)', () =
   });
 });
 
-describe('ConnectorSettingsService — default quota (dedicated columns)', () => {
-  it('seeds limit 10 + window 30 on a fresh row (via SettingsService.ensure) and never a null window', async () => {
-    expect(await svc.getDefaultQuota()).toEqual({ limit: 10, windowDays: 30 });
-    expect((await svc.getDto()).defaultQuota).toEqual({ limit: 10, windowDays: 30 });
+describe('ConnectorSettingsService — default quota (mode/limit/window columns)', () => {
+  it('seeds limited/10/window 30 on a fresh row (via SettingsService.ensure)', async () => {
+    expect(await svc.getDefaultQuota()).toEqual({ mode: 'limited', limit: 10, windowDays: 30 });
+    expect((await svc.getDto()).defaultQuota).toEqual({ mode: 'limited', limit: 10, windowDays: 30 });
   });
 
-  it('persists a new limit + window to the dedicated columns', async () => {
-    await svc.update({ defaultQuota: { limit: 3, windowDays: 7 } });
-    expect(await svc.getDefaultQuota()).toEqual({ limit: 3, windowDays: 7 });
-    expect(await db.query.appSettings.findFirst()).toMatchObject({ defaultQuota: 3, defaultQuotaWindowDays: 7 });
+  it('persists a new limited cap + window to the dedicated columns', async () => {
+    await svc.update({ defaultQuota: { mode: 'limited', limit: 3, windowDays: 7 } });
+    expect(await svc.getDefaultQuota()).toEqual({ mode: 'limited', limit: 3, windowDays: 7 });
+    expect(await db.query.appSettings.findFirst()).toMatchObject({
+      defaultQuotaMode: 'limited',
+      defaultQuotaLimit: 3,
+      defaultQuotaWindowDays: 7,
+    });
   });
 
-  it('round-trips an unlimited default (limit: null)', async () => {
-    await svc.update({ defaultQuota: { limit: null, windowDays: 1 } });
-    expect(await svc.getDefaultQuota()).toEqual({ limit: null, windowDays: 1 });
+  it('round-trips an unlimited default (mode unlimited nulls the limit column)', async () => {
+    await svc.update({ defaultQuota: { mode: 'unlimited', windowDays: 1 } });
+    expect(await svc.getDefaultQuota()).toEqual({ mode: 'unlimited', windowDays: 1 });
+    expect(await db.query.appSettings.findFirst()).toMatchObject({
+      defaultQuotaMode: 'unlimited',
+      defaultQuotaLimit: null,
+      defaultQuotaWindowDays: 1,
+    });
   });
 
-  it('omit-to-keep: a save that omits windowDays preserves the stored window', async () => {
-    await svc.update({ defaultQuota: { limit: 3, windowDays: 7 } });
-    await svc.update({ defaultQuota: { limit: 9 } }); // no windowDays
-    expect(await svc.getDefaultQuota()).toEqual({ limit: 9, windowDays: 7 }); // window not clobbered
+  it('toggling unlimited → limited and back updates all three columns coherently', async () => {
+    await svc.update({ defaultQuota: { mode: 'limited', limit: 5, windowDays: 7 } });
+    await svc.update({ defaultQuota: { mode: 'unlimited', windowDays: 7 } });
+    expect(await svc.getDefaultQuota()).toEqual({ mode: 'unlimited', windowDays: 7 });
+    await svc.update({ defaultQuota: { mode: 'limited', limit: 2, windowDays: 30 } });
+    expect(await svc.getDefaultQuota()).toEqual({ mode: 'limited', limit: 2, windowDays: 30 });
   });
 
   it('leaves the quota columns untouched when defaultQuota is omitted from the body', async () => {
-    await svc.update({ defaultQuota: { limit: 3, windowDays: 7 } });
+    await svc.update({ defaultQuota: { mode: 'limited', limit: 3, windowDays: 7 } });
     await svc.update({ publicUrl: 'https://app.example.com' }); // unrelated save
-    expect(await svc.getDefaultQuota()).toEqual({ limit: 3, windowDays: 7 });
+    expect(await svc.getDefaultQuota()).toEqual({ mode: 'limited', limit: 3, windowDays: 7 });
   });
 });
 
 describe('ConnectorSettingsService — quota storage-boundary sanitization (legacy/corrupt rows)', () => {
-  // Inject corrupt quota columns the way a legacy / hand-edited / corrupt DB could hold them —
-  // the write path constrains these (NOT NULL DEFAULT 30 window, 0→null limit, schema-capped),
-  // so they're only reachable by writing the columns directly, exactly as done here.
-  const corrupt = (cols: { defaultQuota?: number | null; defaultQuotaWindowDays?: number }) =>
-    db.update(appSettings).set(cols).where(eq(appSettings.id, 1));
+  // Inject states the app can't produce. The CHECK constraint makes an incoherent mode↔limit row
+  // unwritable, so corruption is reachable only via columns the CHECK doesn't guard (windowDays) or
+  // an out-of-enum mode string — injected with raw SQL to bypass the typed column enum.
+  const corruptWindow = (windowDays: number) =>
+    db.update(appSettings).set({ defaultQuotaWindowDays: windowDays }).where(eq(appSettings.id, 1));
+  const corruptMode = (mode: string) =>
+    db.run(sql`UPDATE app_settings SET default_quota_mode = ${mode}, default_quota_limit = NULL WHERE id = 1`);
 
   it('degrades an out-of-set window to 30 — getDefaultQuota AND the GET DTO both stay valid', async () => {
-    await corrupt({ defaultQuotaWindowDays: 14 }); // not in {1,7,30}
+    await corruptWindow(14); // not in {1,7,30}
     expect((await svc.getDefaultQuota()).windowDays).toBe(30);
     // The masked GET must not 502: its defaultQuota validates against the response contract.
     const dto = await svc.getDto();
@@ -437,35 +450,34 @@ describe('ConnectorSettingsService — quota storage-boundary sanitization (lega
     expect(dto.defaultQuota.windowDays).toBe(30);
   });
 
-  it('degrades a non-positive limit (0, negative) to null — getDefaultQuota AND the GET DTO both stay valid', async () => {
-    for (const bad of [0, -5]) {
-      await corrupt({ defaultQuota: bad });
-      expect((await svc.getDefaultQuota()).limit).toBeNull();
-      const dto = await svc.getDto();
-      expect(connectorSettingsDtoSchema.safeParse(dto).success).toBe(true); // would 502 if limit stayed 0/-5
-      expect(dto.defaultQuota.limit).toBeNull();
-    }
+  it('degrades an unrecognized mode to unlimited — getDefaultQuota AND the GET DTO both stay valid', async () => {
+    await corruptMode('bogus');
+    expect(await svc.getDefaultQuota()).toEqual({ mode: 'unlimited', windowDays: 30 });
+    const dto = await svc.getDto();
+    expect(connectorSettingsDtoSchema.safeParse(dto).success).toBe(true); // would 502 on the illegal mode
+    expect(dto.defaultQuota.mode).toBe('unlimited');
   });
 
   it('passes a healthy stored quota through unchanged (degrade only touches corrupt values)', async () => {
-    await corrupt({ defaultQuota: 7, defaultQuotaWindowDays: 7 });
-    expect(await svc.getDefaultQuota()).toEqual({ limit: 7, windowDays: 7 });
+    await svc.update({ defaultQuota: { mode: 'limited', limit: 7, windowDays: 7 } });
+    expect(await svc.getDefaultQuota()).toEqual({ mode: 'limited', limit: 7, windowDays: 7 });
   });
 
   it('the boot seam (resolveRequestPolicy) seeds from the SANITIZED quota, not the raw corrupt row', async () => {
     // resolveRequestPolicy is the exact function src/server/index.ts calls to seed RequestService.
     // Asserting on its output directly — not an in-test reconstruction of the wiring — means a
-    // regression that read settingsRow.defaultQuota{,WindowDays} raw fails HERE (limit 0 / window 5
-    // would surface instead of the sanitized null / 30).
-    await corrupt({ defaultQuota: 0, defaultQuotaWindowDays: 5 });
+    // regression that read the raw columns fails HERE (a bogus mode / window 5 would surface
+    // instead of the sanitized unlimited / 30).
+    await corruptMode('bogus');
+    await corruptWindow(5);
     const policy = await resolveRequestPolicy(svc, ['admin']);
-    expect(policy).toEqual({ defaultQuota: null, windowDays: 30, autoApproveRoles: ['admin'] });
+    expect(policy).toEqual({ defaultQuota: { mode: 'unlimited' }, windowDays: 30, autoApproveRoles: ['admin'] });
 
-    // And the policy actually drives enforcement: a non-admin is unlimited (sanitized null), and
+    // And the policy actually drives enforcement: a non-admin inherits unlimited (sanitized), and
     // the rolling window the service enforces is the sanitized 30.
     const requests = new RequestService(db, new FakeNarratorrClient(), policy);
-    expect(requests.resolveLimit({ role: 'user', requestQuota: null })).toBeNull();
-    expect((await requests.quotaUsage(1, null)).windowDays).toBe(30);
+    expect(requests.resolveQuota({ role: 'user', requestQuotaMode: 'inherit', requestQuotaLimit: null })).toEqual({ mode: 'unlimited' });
+    expect((await requests.quotaUsage(1, { mode: 'unlimited' })).windowDays).toBe(30);
   });
 });
 
@@ -475,31 +487,31 @@ describe('ConnectorSettingsService — atomic settings write + single-read getDt
     // two statements, where a mid-way failure would half-apply the save). Counting writes is the
     // observable proxy for atomicity — two .update() calls is exactly the regression AC#5 closes.
     const updateSpy = vi.spyOn(db, 'update');
-    await svc.update({ publicUrl: 'https://app.example.com', defaultQuota: { limit: 4, windowDays: 7 } });
+    await svc.update({ publicUrl: 'https://app.example.com', defaultQuota: { mode: 'limited', limit: 4, windowDays: 7 } });
     expect(updateSpy).toHaveBeenCalledTimes(1);
     updateSpy.mockRestore();
 
     const row = await db.query.appSettings.findFirst();
     expect(row?.connectors?.publicUrl).toBe('https://app.example.com');
-    expect(row).toMatchObject({ defaultQuota: 4, defaultQuotaWindowDays: 7 });
+    expect(row).toMatchObject({ defaultQuotaMode: 'limited', defaultQuotaLimit: 4, defaultQuotaWindowDays: 7 });
   });
 
   it('a rejected body (missing required narratorr key) leaves BOTH the connector blob and quota columns intact', async () => {
-    await svc.update({ narratorr: { url: 'http://n:3000', apiKey: 'orig' }, defaultQuota: { limit: 4, windowDays: 7 } });
+    await svc.update({ narratorr: { url: 'http://n:3000', apiKey: 'orig' }, defaultQuota: { mode: 'limited', limit: 4, windowDays: 7 } });
     // A combined save whose narratorr clears the required key must 400 BEFORE any write — no
     // half-applied row where the quota changed but the connector validation failed.
     await expect(
-      svc.update({ narratorr: { url: 'http://n:3000', apiKey: '' }, defaultQuota: { limit: 9, windowDays: 1 } }),
+      svc.update({ narratorr: { url: 'http://n:3000', apiKey: '' }, defaultQuota: { mode: 'limited', limit: 9, windowDays: 1 } }),
     ).rejects.toMatchObject({ statusCode: 400 });
     expect(await svc.getNarratorrConfig()).toEqual({ url: 'http://n:3000', apiKey: 'orig' });
-    expect(await svc.getDefaultQuota()).toEqual({ limit: 4, windowDays: 7 }); // quota untouched
+    expect(await svc.getDefaultQuota()).toEqual({ mode: 'limited', limit: 4, windowDays: 7 }); // quota untouched
   });
 
   it('getDto reads the singleton row exactly ONCE for both the connector and quota DTOs', async () => {
     // The single-read guarantee: the old implementation called getStored() + getDefaultQuota(),
     // issuing two findFirst SELECTs against the same row. Counting the reads is what fails on a
     // regression to that shape — a values-only round-trip assertion would pass either way.
-    await svc.update({ publicUrl: 'https://app.example.com', defaultQuota: { limit: 6, windowDays: 1 } });
+    await svc.update({ publicUrl: 'https://app.example.com', defaultQuota: { mode: 'limited', limit: 6, windowDays: 1 } });
     const readSpy = vi.spyOn(db.query.appSettings, 'findFirst');
     const dto = await svc.getDto();
     expect(readSpy).toHaveBeenCalledTimes(1);
@@ -507,15 +519,15 @@ describe('ConnectorSettingsService — atomic settings write + single-read getDt
 
     // …and the single read still maps both concerns correctly.
     expect(dto.publicUrl).toBe('https://app.example.com');
-    expect(dto.defaultQuota).toEqual({ limit: 6, windowDays: 1 });
+    expect(dto.defaultQuota).toEqual({ mode: 'limited', limit: 6, windowDays: 1 });
   });
 
   it('getDto round-trips both the connector and quota DTOs from a single read', async () => {
     await svc.createNotifier(ntfyBody());
-    await svc.update({ publicUrl: 'https://app.example.com', defaultQuota: { limit: 6, windowDays: 1 } });
+    await svc.update({ publicUrl: 'https://app.example.com', defaultQuota: { mode: 'limited', limit: 6, windowDays: 1 } });
     const dto = await svc.getDto();
     expect(dto.publicUrl).toBe('https://app.example.com');
     expect(dto.notifiers).toHaveLength(1);
-    expect(dto.defaultQuota).toEqual({ limit: 6, windowDays: 1 });
+    expect(dto.defaultQuota).toEqual({ mode: 'limited', limit: 6, windowDays: 1 });
   });
 });

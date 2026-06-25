@@ -21,10 +21,13 @@ Initial public release.
 - Authorization via an in-app approval queue (`pending` / `active` / `rejected`), independent
   of authentication; the first user becomes admin, or pin one with `BOOTSTRAP_ADMIN`.
 - Admin user management: approve/reject pending users, promote/demote admins (self-guarded),
-  and set per-user request quota + auto-approve.
-- Per-user request quotas with an admin-configurable app-wide default — a limit plus a
-  day/week/month rolling window, set in the Settings UI and stored in `app_settings` (no
-  redeploy) — plus per-user overrides. Admins are unlimited; a fresh DB seeds 10 per 30 days.
+  and set a per-user request-quota mode + auto-approve.
+- Request quotas as explicit policy modes (no overloaded `0`/blank). The app-wide default is
+  either `unlimited` or a positive `limited` cap over a day/week/month rolling window, set in the
+  Settings UI and stored in `app_settings` (no redeploy). Per-user overrides are one of four
+  modes — inherit the default, unlimited, a custom limit, or blocked (a hard admin block that
+  returns `403 QUOTA_BLOCKED`, distinct from the at-cap `429 QUOTA_EXCEEDED`). Admins are always
+  unlimited; a fresh DB seeds a limit of 10 per 30 days.
 - In-app Settings (admin) to connect narratorr and add any number of notifiers — ntfy, email
   (SMTP), webhook, Discord, Slack, Telegram, Pushover, and Gotify — each firing on the events it
   subscribes to: a new request, a new signup, or a failed request. Notifier secrets are stored

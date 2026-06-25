@@ -35,33 +35,48 @@ const narratorrUrl = httpUrl.refine((v) => {
 // The app-wide default request quota, editable on the admin Settings page. It applies to
 // users without a per-user override (admins stay unlimited; per-user auto-approve users are
 // still capped). The window is exposed as friendly day/week/month units that map to a FIXED
-// rolling-window day count — no calendar period, no reset date. `limit: null` = unlimited.
+// rolling-window day count — no calendar period, no reset date. Quotas are explicit POLICY MODES
+// (discriminated unions), never an overloaded `number | null`: a number only ever means a positive
+// cap, and `0` is rejected everywhere on the write side.
 
-/** Allowed rolling-window sizes in days — the friendly day / week / month units. */
+/** Allowed rolling-window sizes in days — the friendly day / week / month units. The single
+ *  source of truth for the window: `quotaWindowDaysSchema` derives its literal union from this
+ *  tuple (#78), so the client window map and the schema can never hand-drift apart. */
 export const QUOTA_WINDOW_DAYS = [1, 7, 30] as const;
 export type QuotaWindowDays = (typeof QUOTA_WINDOW_DAYS)[number];
 
 /**
- * Upper bound on the default request quota limit. Mirrors the notifier-field cap precedent
- * (`NOTIFIER_NAME_MAX` / `NOTIFIER_EVENTS_MAX` below) on the same "admin-only JSON row, keep a
+ * Upper bound on a request quota limit. Mirrors the notifier-field cap precedent
+ * (`NOTIFIER_NAME_MAX` / `NOTIFIER_EVENTS_MAX` below) on the same "admin-only row, keep a
  * fat-fingered/abusive value from doing something silly" reasoning: a quota is requests-per-window,
- * so a six-figure cap is already far past any real ceiling. Shared by the server write schema and
- * the client `parseLimit` guard so the two can never drift. Without it, an absurdly long pasted
- * digit string parses to a value past `Number.MAX_SAFE_INTEGER` (or `Infinity`), which then
- * round-trips through `Number()`/`JSON.stringify` to `null` — silently *unlimited*, the wrong way. */
+ * so a six-figure cap is already far past any real ceiling. Shared by the server `quotaLimitSchema`
+ * and the client positive-int limit guard so the two can never drift. Without it, an absurdly long
+ * pasted digit string parses past `Number.MAX_SAFE_INTEGER` (or `Infinity`). Retained under the
+ * mode redesign — it's an existing unsafe-number guard, orthogonal to killing the overloaded `0`. */
 export const DEFAULT_QUOTA_LIMIT_MAX = 100_000;
 
 /** `windowDays` is constrained to the allowed set so the unit dropdown is the single source of
- *  truth. Exported so the server can narrow the stored column value to the literal union. */
-export const quotaWindowDaysSchema = z.union([z.literal(1), z.literal(7), z.literal(30)]);
+ *  truth. Derived from `QUOTA_WINDOW_DAYS` (Zod v4 literal-union) so there's no duplicated `{1,7,30}`.
+ *  Exported so the server can narrow the stored column value to the literal union. */
+export const quotaWindowDaysSchema = z.literal(QUOTA_WINDOW_DAYS);
 
-/** Masked GET shape: limit (positive int or null=unlimited) + the resolved rolling-window days.
- *  windowDays reuses the allowed-set schema so the GET/response contract rejects a window the UI
- *  cannot represent — the constraint holds on BOTH sides of the wire, not just the update body. */
-const defaultQuotaDtoSchema = z.object({
-  limit: z.number().int().positive().nullable(),
-  windowDays: quotaWindowDaysSchema,
-});
+/** A quota limit is ONLY ever a positive integer (no `0`, no `null`) capped at the shared ceiling.
+ *  The discriminated unions below put this on the `limited` arm exclusively, so a limit can never
+ *  ride a non-`limited` mode. */
+export const quotaLimitSchema = z.number().int().positive().max(DEFAULT_QUOTA_LIMIT_MAX);
+
+/**
+ * The app-wide default request quota as an explicit policy mode. Used for BOTH the update body
+ * (PUT /connectors) AND the masked GET DTO — one schema, both sides of the wire — so the mode-first
+ * editor can load existing state, not just save it. `windowDays` rides BOTH modes (it's the global
+ * rolling-window measurement, preserved when toggling unlimited). The discriminated union makes
+ * illegal states unrepresentable: no `limit` on `unlimited`, a required positive `limit` on `limited`.
+ */
+export const defaultQuotaSchema = z.discriminatedUnion('mode', [
+  z.strictObject({ mode: z.literal('unlimited'), windowDays: quotaWindowDaysSchema }),
+  z.strictObject({ mode: z.literal('limited'), limit: quotaLimitSchema, windowDays: quotaWindowDaysSchema }),
+]);
+export type DefaultQuota = z.infer<typeof defaultQuotaSchema>;
 
 // ---- Stored shape -----------------------------------------------------------
 /**
@@ -161,14 +176,14 @@ export const connectorSettingsDtoSchema = z.object({
     })
     .nullable(),
   notifiers: z.array(notifierDtoSchema),
-  defaultQuota: defaultQuotaDtoSchema,
+  defaultQuota: defaultQuotaSchema,
 });
 /** Hand-written (the runtime schema's `notifiers` infers `unknown[]`; this keeps it typed). */
 export interface ConnectorSettingsDto {
   publicUrl: string | null;
   narratorr: { url: string; hasApiKey: boolean } | null;
   notifiers: NotifierDto[];
-  defaultQuota: { limit: number | null; windowDays: QuotaWindowDays };
+  defaultQuota: DefaultQuota;
 }
 
 // ---- narratorr connector (shared by PUT + Test) -----------------------------
@@ -186,22 +201,11 @@ export const updateConnectorSettingsBodySchema = z
   .object({
     publicUrl: httpUrl.nullable().optional(),
     narratorr: narratorrConnectorSchema.nullable().optional(),
-    // Default request quota. `limit`: a positive int, or null=unlimited — 0 (and a blank
-    // input mapped client-side to 0/null) collapses to null so "blank/0 = unlimited" matches
-    // the old DEFAULT_REQUEST_QUOTA semantics. `windowDays`: constrained to the allowed set;
-    // omitted → keep the stored window. The whole object omitted → keep both columns.
-    defaultQuota: z
-      .object({
-        limit: z
-          .number()
-          .int()
-          .min(0)
-          .max(DEFAULT_QUOTA_LIMIT_MAX)
-          .nullable()
-          .transform((v) => (v === 0 ? null : v)),
-        windowDays: quotaWindowDaysSchema.optional(),
-      })
-      .optional(),
+    // Default request quota as an explicit mode (`unlimited` | `limited`). The mode-first editor
+    // always sends `windowDays` (the unit dropdown is the source of truth), so it rides both modes;
+    // a `limited` mode carries a required positive `limit`. The whole object omitted → keep the
+    // stored quota columns untouched.
+    defaultQuota: defaultQuotaSchema.optional(),
   })
   .strict();
 export type UpdateConnectorSettingsBody = z.infer<typeof updateConnectorSettingsBodySchema>;

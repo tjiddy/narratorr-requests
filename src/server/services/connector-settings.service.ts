@@ -14,7 +14,7 @@ import type {
   CreateNotifierBody,
   UpdateNotifierBody,
   NotifierTestBody,
-  QuotaWindowDays,
+  DefaultQuota,
 } from '../../shared/schemas/connectors.js';
 import {
   NOTIFIER_REGISTRY,
@@ -67,37 +67,39 @@ export class ConnectorSettingsService {
   }
 
   /**
-   * The app-wide default request quota, composed from the two dedicated columns
-   * (`default_quota` + `default_quota_window_days`) — NOT the encrypted `connectors` JSON blob.
-   * `limit: null` = unlimited; `windowDays` is the concrete rolling-window day count. Read at
-   * boot to seed the request policy and again on every settings save to reconfigure it live.
-   * Stays a standalone single-SELECT accessor (the boot/reconfigure callers want just the quota);
-   * `getDto()` maps the same sanitizer off the row it already fetched.
+   * The app-wide default request quota, composed from the dedicated mode/limit/window columns
+   * (`default_quota_mode` + `default_quota_limit` + `default_quota_window_days`) — NOT the encrypted
+   * `connectors` JSON blob. Returns the explicit policy mode (`unlimited` | `limited`). Read at boot
+   * to seed the request policy and again on every settings save to reconfigure it live. Stays a
+   * standalone single-SELECT accessor (the boot/reconfigure callers want just the quota); `getDto()`
+   * maps the same sanitizer off the row it already fetched.
    */
-  async getDefaultQuota(): Promise<{ limit: number | null; windowDays: QuotaWindowDays }> {
+  async getDefaultQuota(): Promise<DefaultQuota> {
     const row = await this.db.query.appSettings.findFirst({ where: eq(appSettings.id, SINGLETON_ID) });
     return this.sanitizeQuota(row);
   }
 
   /**
-   * Narrow the two raw quota columns into a value that ALWAYS satisfies `defaultQuotaDtoSchema`
-   * (`limit: positive-int | null`, `windowDays ∈ {1,7,30}`), so a legacy / hand-edited / corrupt
-   * row can never 502 the masked Settings GET (which reuses those same constraints) nor seed the
-   * boot request policy with a value the write path would reject. Both columns degrade
-   * symmetrically: `windowDays` falls back to 30 on an out-of-set value, and `limit` falls back to
-   * `null` (unlimited) when the stored `default_quota` is not a positive integer (`0`, negative, or
-   * non-finite) — fresh-DB values (`NOT NULL DEFAULT 30` window, `0 → null` limit) pass through
-   * byte-for-byte unchanged.
+   * Narrow the raw quota columns into a `DefaultQuota` that ALWAYS satisfies `defaultQuotaSchema`,
+   * so a legacy / hand-edited / incoherent row can never 502 the masked Settings GET (which reuses
+   * that schema) nor seed the boot request policy with a value the write path would reject. The
+   * CHECK constraints make incoherence unreachable through the app, but this still degrades sanely:
+   * `windowDays` falls back to 30 on an out-of-set value; a `limited` mode with a missing/non-positive
+   * limit (or any unrecognized mode) degrades to `unlimited` rather than emitting an illegal union
+   * member. A healthy fresh-DB row (`limited`/10/30) passes through unchanged.
    */
   private sanitizeQuota(
-    row: { defaultQuota: number | null; defaultQuotaWindowDays: number } | undefined,
-  ): { limit: number | null; windowDays: QuotaWindowDays } {
+    row:
+      | { defaultQuotaMode: string; defaultQuotaLimit: number | null; defaultQuotaWindowDays: number }
+      | undefined,
+  ): DefaultQuota {
     const window = quotaWindowDaysSchema.safeParse(row?.defaultQuotaWindowDays);
-    const limit = row?.defaultQuota ?? null;
-    return {
-      limit: limit !== null && Number.isInteger(limit) && limit > 0 ? limit : null,
-      windowDays: window.success ? window.data : 30,
-    };
+    const windowDays = window.success ? window.data : 30;
+    const limit = row?.defaultQuotaLimit ?? null;
+    if (row?.defaultQuotaMode === 'limited' && limit !== null && Number.isInteger(limit) && limit > 0) {
+      return { mode: 'limited', limit, windowDays };
+    }
+    return { mode: 'unlimited', windowDays };
   }
 
   /**
@@ -201,8 +203,10 @@ export class ConnectorSettingsService {
    * Per field: publicUrl omitted → keep, null → clear, value → set; narratorr omitted → keep, null →
    * clear, object → resolve & set (the notifier list is untouched by this body). The `connectors`
    * column is written only when a connector field is present; the quota columns only when
-   * `defaultQuota` is present, and `default_quota_window_days` only when `windowDays` is supplied
-   * (omit-to-keep), so a partial body never clobbers an untouched column.
+   * `defaultQuota` is present, in which case all three mode/limit/window columns are written together
+   * from the supplied mode (the mode-first editor always sends `windowDays`). The whole object
+   * omitted → quota columns untouched. `limited` writes the positive limit; `unlimited` nulls it,
+   * keeping the row CHECK-coherent.
    */
   async update(body: UpdateConnectorSettingsBody): Promise<StoredConnectors> {
     const cur = await this.getStored();
@@ -217,8 +221,11 @@ export class ConnectorSettingsService {
       .update(appSettings)
       .set({
         ...(hasConnectorFields && { connectors: next }),
-        ...(q !== undefined && { defaultQuota: q.limit }),
-        ...(q?.windowDays !== undefined && { defaultQuotaWindowDays: q.windowDays }),
+        ...(q !== undefined && {
+          defaultQuotaMode: q.mode,
+          defaultQuotaLimit: q.mode === 'limited' ? q.limit : null,
+          defaultQuotaWindowDays: q.windowDays,
+        }),
         updatedAt: new Date(),
       })
       .where(eq(appSettings.id, SINGLETON_ID))

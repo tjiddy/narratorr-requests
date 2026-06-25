@@ -72,41 +72,50 @@ describe('updateConnectorSettingsBodySchema — narratorr + publicUrl only', () 
   });
 });
 
-describe('updateConnectorSettingsBodySchema — defaultQuota', () => {
+describe('updateConnectorSettingsBodySchema — defaultQuota (mode-first)', () => {
   const quota = (q: unknown) => parse({ defaultQuota: q }).defaultQuota;
 
-  it('accepts a positive int limit + an allowed window', () => {
-    expect(quota({ limit: 3, windowDays: 7 })).toEqual({ limit: 3, windowDays: 7 });
-    expect(quota({ limit: 1, windowDays: 1 })).toEqual({ limit: 1, windowDays: 1 });
-    expect(quota({ limit: 50, windowDays: 30 })).toEqual({ limit: 50, windowDays: 30 });
+  it('accepts an unlimited mode (no limit) + an allowed window', () => {
+    expect(quota({ mode: 'unlimited', windowDays: 30 })).toEqual({ mode: 'unlimited', windowDays: 30 });
+    expect(quota({ mode: 'unlimited', windowDays: 1 })).toEqual({ mode: 'unlimited', windowDays: 1 });
   });
 
-  it('treats null and 0 as unlimited (limit → null)', () => {
-    expect(quota({ limit: null, windowDays: 30 })).toEqual({ limit: null, windowDays: 30 });
-    expect(quota({ limit: 0, windowDays: 30 })).toEqual({ limit: null, windowDays: 30 });
+  it('accepts a limited mode with a positive int limit + an allowed window', () => {
+    expect(quota({ mode: 'limited', limit: 3, windowDays: 7 })).toEqual({ mode: 'limited', limit: 3, windowDays: 7 });
+    expect(quota({ mode: 'limited', limit: 1, windowDays: 1 })).toEqual({ mode: 'limited', limit: 1, windowDays: 1 });
+    expect(quota({ mode: 'limited', limit: 50, windowDays: 30 })).toEqual({ mode: 'limited', limit: 50, windowDays: 30 });
   });
 
-  it('rejects a negative or non-integer limit', () => {
-    expect(accepts({ defaultQuota: { limit: -1, windowDays: 30 } })).toBe(false);
-    expect(accepts({ defaultQuota: { limit: 3.5, windowDays: 30 } })).toBe(false);
+  it('rejects a limit on the unlimited mode', () => {
+    expect(accepts({ defaultQuota: { mode: 'unlimited', limit: 5, windowDays: 30 } })).toBe(false);
   });
 
-  it('constrains windowDays to {1, 7, 30}; rejects others', () => {
+  it('rejects a missing / 0 / negative / non-integer limit on the limited mode', () => {
+    expect(accepts({ defaultQuota: { mode: 'limited', windowDays: 30 } })).toBe(false);
+    expect(accepts({ defaultQuota: { mode: 'limited', limit: 0, windowDays: 30 } })).toBe(false);
+    expect(accepts({ defaultQuota: { mode: 'limited', limit: -1, windowDays: 30 } })).toBe(false);
+    expect(accepts({ defaultQuota: { mode: 'limited', limit: 3.5, windowDays: 30 } })).toBe(false);
+  });
+
+  it('rejects an unknown mode and an out-of-set windowDays on either mode', () => {
+    expect(accepts({ defaultQuota: { mode: 'blocked', windowDays: 30 } })).toBe(false); // blocked is per-user only
     for (const bad of [5, 31, 0, -7, 14, 365]) {
-      expect(accepts({ defaultQuota: { limit: 3, windowDays: bad } })).toBe(false);
+      expect(accepts({ defaultQuota: { mode: 'unlimited', windowDays: bad } })).toBe(false);
+      expect(accepts({ defaultQuota: { mode: 'limited', limit: 3, windowDays: bad } })).toBe(false);
     }
   });
 
-  it('windowDays is omit-to-keep (optional); the whole object is optional too', () => {
-    expect(quota({ limit: 3 })).toEqual({ limit: 3 }); // no windowDays → keep stored, server-side
+  it('windowDays is required on both modes; the whole object stays optional', () => {
+    expect(accepts({ defaultQuota: { mode: 'limited', limit: 3 } })).toBe(false); // windowDays now required
+    expect(accepts({ defaultQuota: { mode: 'unlimited' } })).toBe(false);
     expect(accepts({})).toBe(true); // defaultQuota omitted entirely
   });
 
   it('caps the limit at DEFAULT_QUOTA_LIMIT_MAX (accepts the boundary, rejects past it)', () => {
-    expect(quota({ limit: DEFAULT_QUOTA_LIMIT_MAX, windowDays: 30 })).toEqual({ limit: DEFAULT_QUOTA_LIMIT_MAX, windowDays: 30 });
-    expect(accepts({ defaultQuota: { limit: DEFAULT_QUOTA_LIMIT_MAX + 1, windowDays: 30 } })).toBe(false);
+    expect(quota({ mode: 'limited', limit: DEFAULT_QUOTA_LIMIT_MAX, windowDays: 30 })).toEqual({ mode: 'limited', limit: DEFAULT_QUOTA_LIMIT_MAX, windowDays: 30 });
+    expect(accepts({ defaultQuota: { mode: 'limited', limit: DEFAULT_QUOTA_LIMIT_MAX + 1, windowDays: 30 } })).toBe(false);
     // A wildly oversized value (the pasted-digit-string tail) is rejected, not silently round-tripped.
-    expect(accepts({ defaultQuota: { limit: 10 ** 12, windowDays: 30 } })).toBe(false);
+    expect(accepts({ defaultQuota: { mode: 'limited', limit: 10 ** 12, windowDays: 30 } })).toBe(false);
   });
 });
 
@@ -213,20 +222,20 @@ describe('connectorSettingsDtoSchema', () => {
         { id: 'nf_1', name: 'Phone', type: 'ntfy', events: ['request.created'], config: { url: 'https://ntfy.sh', topic: 't', hasToken: false, priority: null } },
         { id: 'nf_2', name: 'Legacy', type: 'apprise', events: ['user.pending'], unknown: true },
       ],
-      defaultQuota: { limit: 10, windowDays: 30 },
+      defaultQuota: { mode: 'limited', limit: 10, windowDays: 30 },
     };
     expect(connectorSettingsDtoSchema.safeParse(dto).success).toBe(true);
   });
 
-  it('accepts empty notifiers + null connections', () => {
+  it('accepts empty notifiers + null connections + an unlimited default', () => {
     expect(
       connectorSettingsDtoSchema.parse({
         publicUrl: null,
         narratorr: null,
         notifiers: [],
-        defaultQuota: { limit: null, windowDays: 30 },
+        defaultQuota: { mode: 'unlimited', windowDays: 30 },
       }),
-    ).toEqual({ publicUrl: null, narratorr: null, notifiers: [], defaultQuota: { limit: null, windowDays: 30 } });
+    ).toEqual({ publicUrl: null, narratorr: null, notifiers: [], defaultQuota: { mode: 'unlimited', windowDays: 30 } });
   });
 
   it('requires defaultQuota in the masked DTO', () => {
@@ -238,7 +247,7 @@ describe('connectorSettingsDtoSchema', () => {
       publicUrl: null,
       narratorr: null,
       notifiers: [],
-      defaultQuota: { limit: 10, windowDays },
+      defaultQuota: { mode: 'limited', limit: 10, windowDays },
     });
     for (const allowed of [1, 7, 30]) {
       expect(connectorSettingsDtoSchema.safeParse(dto(allowed)).success).toBe(true);

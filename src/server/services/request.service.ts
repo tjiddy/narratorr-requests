@@ -12,23 +12,45 @@ import type {
   RequestStatus,
 } from '../../shared/schemas/request.js';
 import { OPEN_REQUEST_STATUSES, ACTIVE_REQUEST_STATUSES } from '../../shared/schemas/request.js';
-import type { Role } from '../../shared/schemas/user.js';
+import type { Role, RequestQuotaMode } from '../../shared/schemas/user.js';
+import type { DefaultQuota, QuotaWindowDays } from '../../shared/schemas/connectors.js';
 import { ADD_BOOK_ERROR_CODES, type V1Book } from '../../shared/schemas/v1/books.js';
 import type { INarratorrClient } from './narratorr-client.js';
 import { NarratorrError } from './narratorr-client.js';
 import { publicId } from '../util/ids.js';
-import { conflict, notFound, tooManyRequests } from '../util/errors.js';
+import { conflict, notFound, quotaBlocked, tooManyRequests } from '../util/errors.js';
 import { isUniqueViolation } from '../util/db.js';
+
+/**
+ * A user's RESOLVED effective quota — what actually gates a request after role + per-user override
+ * + app default are folded together. A number only ever means a positive cap (`limited`); the other
+ * two modes are first-class, so "no cap" (`unlimited`) and "hard admin block" (`blocked`) are never
+ * confused with each other or with a numeric limit.
+ */
+export type EffectiveQuota =
+  | { mode: 'unlimited' }
+  | { mode: 'limited'; limit: number }
+  | { mode: 'blocked' };
+
+/** The app default's effective mode (the `inherit` fall-through target) — `blocked` can't be a
+ *  default, only a per-user state, so it's excluded here. */
+export type DefaultEffectiveQuota = { mode: 'unlimited' } | { mode: 'limited'; limit: number };
 
 /**
  * Quota / approval policy. Built from app_settings + config at boot and handed
  * in (keeps the service free of the config singleton, so it's unit-testable).
  */
 export interface RequestPolicy {
-  /** App-wide default quota; per-user `requestQuota` overrides it. null = unlimited. */
-  defaultQuota: number | null;
-  windowDays: number;
+  /** App-wide default quota mode; per-user `requestQuota` modes override it. */
+  defaultQuota: DefaultEffectiveQuota;
+  windowDays: QuotaWindowDays;
   autoApproveRoles: Role[];
+}
+
+/** Narrow a `DefaultQuota` (the settings/DTO shape, carrying `windowDays`) to the policy's
+ *  effective-mode shape (windowDays lives on the policy separately). */
+function toDefaultEffective(quota: DefaultQuota): DefaultEffectiveQuota {
+  return quota.mode === 'limited' ? { mode: 'limited', limit: quota.limit } : { mode: 'unlimited' };
 }
 
 /**
@@ -41,18 +63,22 @@ export interface RequestPolicy {
  * (it isn't part of the quota narrowing).
  */
 export async function resolveRequestPolicy(
-  source: { getDefaultQuota(): Promise<{ limit: number | null; windowDays: number }> },
+  source: { getDefaultQuota(): Promise<DefaultQuota> },
   autoApproveRoles: Role[],
 ): Promise<RequestPolicy> {
   const quota = await source.getDefaultQuota();
-  return { defaultQuota: quota.limit, windowDays: quota.windowDays, autoApproveRoles };
+  return { defaultQuota: toDefaultEffective(quota), windowDays: quota.windowDays, autoApproveRoles };
 }
 
+/** Effective rolling-window usage for the `/api/me` quota badge. `mode` is authoritative:
+ *  `unlimited` → limit/remaining null; `limited` → positive limit + clamped remaining; `blocked`
+ *  → limit null, remaining 0. `used` is always the real in-window count. */
 export interface QuotaUsage {
+  mode: EffectiveQuota['mode'];
   limit: number | null;
   used: number;
   remaining: number | null;
-  windowDays: number;
+  windowDays: QuotaWindowDays;
 }
 
 /**
@@ -153,28 +179,56 @@ export class RequestService {
    * restart. Per-user overrides and admin-unlimited are unaffected; only the fall-through
    * default and the rolling-window cutoff change.
    */
-  reconfigureQuota(quota: { limit: number | null; windowDays: number }): void {
-    this.policy.defaultQuota = quota.limit;
+  reconfigureQuota(quota: DefaultQuota): void {
+    this.policy.defaultQuota = toDefaultEffective(quota);
     this.policy.windowDays = quota.windowDays;
   }
 
   /**
-   * Resolve a user's effective quota limit (null = unlimited). Auto-approve roles
-   * are unlimited; everyone else gets their per-user override or the app default.
+   * Resolve a user's effective quota policy. Auto-approve roles (admins) are always `unlimited`;
+   * everyone else resolves their per-user mode: `inherit` falls through to the app default;
+   * `unlimited`/`limited`/`blocked` are taken as-is. A `limited` mode trusts its positive limit
+   * (the DB mode↔limit CHECK guarantees one); an impossible incoherent row degrades to the app
+   * default rather than honoring a null/zero cap.
    */
-  resolveLimit(user: { role: Role; requestQuota: number | null }): number | null {
-    if (user.role === 'admin') return null; // admins unlimited; everyone else is capped
-    return user.requestQuota ?? this.policy.defaultQuota;
+  resolveQuota(user: { role: Role; requestQuotaMode: RequestQuotaMode; requestQuotaLimit: number | null }): EffectiveQuota {
+    if (user.role === 'admin') return { mode: 'unlimited' };
+    switch (user.requestQuotaMode) {
+      case 'unlimited':
+        return { mode: 'unlimited' };
+      case 'blocked':
+        return { mode: 'blocked' };
+      case 'limited':
+        return user.requestQuotaLimit && user.requestQuotaLimit > 0
+          ? { mode: 'limited', limit: user.requestQuotaLimit }
+          : this.policy.defaultQuota;
+      case 'inherit':
+        return this.policy.defaultQuota;
+    }
   }
 
   /**
    * Rolling-window usage (PLAN decision #5): count requests created in the last
    * `windowDays` whose status still occupies a slot — `pending`/`approved`/
    * `acquiring`/`available`, plus `failed` ONLY when the failure was user-caused
-   * (otherwise `failed` is refunded). `denied` is never counted. `limit` is the
-   * already-resolved effective limit (see `resolveLimit`); null = unlimited.
+   * (otherwise `failed` is refunded). `denied` is never counted. Shapes the count into the
+   * effective-mode badge contract: `limited` clamps remaining at 0; `blocked` reports
+   * remaining 0 (limit null); `unlimited` reports both null.
    */
-  async quotaUsage(userId: number, limit: number | null): Promise<QuotaUsage> {
+  async quotaUsage(userId: number, effective: EffectiveQuota): Promise<QuotaUsage> {
+    const used = await this.countInWindow(userId);
+    const windowDays = this.policy.windowDays;
+    if (effective.mode === 'limited') {
+      return { mode: 'limited', limit: effective.limit, used, remaining: Math.max(0, effective.limit - used), windowDays };
+    }
+    if (effective.mode === 'blocked') {
+      return { mode: 'blocked', limit: null, used, remaining: 0, windowDays };
+    }
+    return { mode: 'unlimited', limit: null, used, remaining: null, windowDays };
+  }
+
+  /** Count a user's slot-occupying requests inside the configured rolling window. */
+  private async countInWindow(userId: number): Promise<number> {
     const cutoff = new Date(Date.now() - this.policy.windowDays * 86_400_000);
     const [{ n: used } = { n: 0 }] = await this.db
       .select({ n: sql<number>`count(*)` })
@@ -189,12 +243,7 @@ export class RequestService {
           ),
         ),
       );
-    return {
-      limit,
-      used,
-      remaining: limit === null ? null : Math.max(0, limit - used),
-      windowDays: this.policy.windowDays,
-    };
+    return used;
   }
 
   // --- create ----------------------------------------------------------------
@@ -236,14 +285,19 @@ export class RequestService {
   }
 
   /**
-   * Throw `QUOTA_EXCEEDED` when the user has no remaining slot. Applies to everyone with a
-   * limit (only admins are unlimited) — auto-approved users included; auto-approve only
-   * decides pending-vs-approved, not the cap.
+   * Enforce the user's effective quota on request-create. `unlimited` → allow; `blocked` → reject
+   * with `403 QUOTA_BLOCKED` (a hard admin denial, regardless of usage); `limited` → reject with
+   * `429 QUOTA_EXCEEDED` once no slot remains. Applies to everyone non-admin — auto-approved users
+   * included; auto-approve only decides pending-vs-approved, not the cap.
    */
-  private async enforceQuota(user: { role: Role; requestQuota: number | null }, userId: number): Promise<void> {
-    const limit = this.resolveLimit(user);
-    if (limit === null) return;
-    const usage = await this.quotaUsage(userId, limit);
+  private async enforceQuota(
+    user: { role: Role; requestQuotaMode: RequestQuotaMode; requestQuotaLimit: number | null },
+    userId: number,
+  ): Promise<void> {
+    const effective = this.resolveQuota(user);
+    if (effective.mode === 'unlimited') return;
+    if (effective.mode === 'blocked') throw quotaBlocked();
+    const usage = await this.quotaUsage(userId, effective);
     if (usage.remaining !== null && usage.remaining <= 0) {
       throw tooManyRequests(
         'QUOTA_EXCEEDED',

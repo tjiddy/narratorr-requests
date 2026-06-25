@@ -24,6 +24,11 @@ export const accountPending = (
 ) => new ApiError(403, 'ACCOUNT_PENDING', message);
 export const accountRejected = (message = 'Your account was not approved.') =>
   new ApiError(403, 'ACCOUNT_REJECTED', message);
+// A hard admin block on a user's requests. 403 (a policy denial — retrying later won't help),
+// deliberately distinct from the retryable 429 QUOTA_EXCEEDED at-cap case so the client can
+// branch on the code: "blocked by an admin" vs "out of requests this window".
+export const quotaBlocked = (message = 'Requests are blocked for your account by an admin.') =>
+  new ApiError(403, 'QUOTA_BLOCKED', message);
 export const notFound = (message = 'Not found') => new ApiError(404, 'NOT_FOUND', message);
 export const conflict = (code: string, message: string) => new ApiError(409, code, message);
 export const tooManyRequests = (code: string, message: string) => new ApiError(429, code, message);

@@ -4,10 +4,10 @@ import { appSettings, type AppSettingsRow } from '../../db/schema.js';
 
 const SINGLETON_ID = 1;
 
-/** Seeded onto a fresh/empty settings row — the default request quota (limit + rolling window).
- *  The quota is now admin-editable in Settings, so these are just sane out-of-the-box values
- *  (no longer sourced from env). 10 requests per rolling 30 days. */
-const SEED_DEFAULT_QUOTA = 10;
+/** Seeded onto a fresh/empty settings row — the default request quota (mode + limit + rolling
+ *  window). The quota is now admin-editable in Settings, so these are just sane out-of-the-box
+ *  values (no longer sourced from env). A `limited` cap of 10 requests per rolling 30 days. */
+const SEED_DEFAULT_QUOTA_LIMIT = 10;
 const SEED_QUOTA_WINDOW_DAYS = 30;
 
 export class SettingsService {
@@ -24,7 +24,8 @@ export class SettingsService {
       .insert(appSettings)
       .values({
         id: SINGLETON_ID,
-        defaultQuota: SEED_DEFAULT_QUOTA,
+        defaultQuotaMode: 'limited',
+        defaultQuotaLimit: SEED_DEFAULT_QUOTA_LIMIT,
         defaultQuotaWindowDays: SEED_QUOTA_WINDOW_DAYS,
         autoApproveRoles: ['admin'],
       })

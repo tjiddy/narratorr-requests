@@ -143,11 +143,20 @@ describe('POST /api/requests — validation', () => {
   });
 
   it('quota exceeded → 429 with QUOTA_EXCEEDED in the error envelope', async () => {
-    // requestQuota: 0 makes the user perpetually at-quota (resolveLimit → 0, remaining → 0).
-    const capped = await insertUser(h.db, { role: 'user', status: 'active', requestQuota: 0 });
-    const res = await post(h.cookieFor(capped), { asin: 'B01', title: 'A Book' });
+    // A per-user limited cap of 1: the first request fills it, the second exceeds → 429.
+    const capped = await insertUser(h.db, { role: 'user', status: 'active', requestQuota: { mode: 'limited', limit: 1 } });
+    expect((await post(h.cookieFor(capped), { asin: 'B01', title: 'A Book' })).statusCode).toBe(201);
+    const res = await post(h.cookieFor(capped), { asin: 'B02', title: 'Another' });
     expect(res.statusCode).toBe(429);
     expect(res.json().error.code).toBe('QUOTA_EXCEEDED');
+  });
+
+  it('blocked user → 403 with QUOTA_BLOCKED (distinct from the at-cap 429)', async () => {
+    // A hard admin block is a policy denial, not a rate limit — even the FIRST request is rejected.
+    const blocked = await insertUser(h.db, { role: 'user', status: 'active', requestQuota: { mode: 'blocked' } });
+    const res = await post(h.cookieFor(blocked), { asin: 'B01', title: 'A Book' });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('QUOTA_BLOCKED');
   });
 });
 
@@ -161,7 +170,7 @@ describe('default quota sourced from settings (live reconfigure)', () => {
         registerRequestRoutes(app, deps);
       },
       enableTestRoleOverride: true,
-      policy: { defaultQuota: 10, windowDays: 30 },
+      policy: { defaultQuota: { mode: 'limited', limit: 10 }, windowDays: 30 },
     });
     try {
       const user = await insertUser(h2.db, { role: 'user', status: 'active' });
@@ -172,10 +181,10 @@ describe('default quota sourced from settings (live reconfigure)', () => {
         method: 'PUT',
         url: '/api/admin/settings/connectors',
         headers: h2.asRole('admin'),
-        payload: { defaultQuota: { limit: 1, windowDays: 7 } },
+        payload: { defaultQuota: { mode: 'limited', limit: 1, windowDays: 7 } },
       });
       expect(put.statusCode).toBe(200);
-      expect(put.json().defaultQuota).toEqual({ limit: 1, windowDays: 7 });
+      expect(put.json().defaultQuota).toEqual({ mode: 'limited', limit: 1, windowDays: 7 });
 
       // The non-override user now gets the new limit of 1: first create ok, second exceeds.
       const create = (asin: string) =>

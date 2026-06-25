@@ -1,11 +1,13 @@
 CREATE TABLE `app_settings` (
 	`id` integer PRIMARY KEY NOT NULL,
-	`default_quota` integer,
+	`default_quota_mode` text DEFAULT 'limited' NOT NULL,
+	`default_quota_limit` integer,
 	`default_quota_window_days` integer DEFAULT 30 NOT NULL,
 	`auto_approve_roles` text DEFAULT '["admin"]' NOT NULL,
 	`notify_config` text,
 	`connectors` text,
-	`updated_at` integer DEFAULT (unixepoch()) NOT NULL
+	`updated_at` integer DEFAULT (unixepoch()) NOT NULL,
+	CONSTRAINT "default_quota_mode_limit" CHECK((`app_settings`.`default_quota_mode` = 'limited') = (`app_settings`.`default_quota_limit` IS NOT NULL) AND (`app_settings`.`default_quota_limit` IS NULL OR `app_settings`.`default_quota_limit` > 0))
 );
 --> statement-breakpoint
 CREATE TABLE `requests` (
@@ -45,9 +47,11 @@ CREATE TABLE `users` (
 	`thumb` text,
 	`role` text DEFAULT 'user' NOT NULL,
 	`status` text DEFAULT 'pending' NOT NULL,
-	`request_quota` integer,
+	`request_quota_mode` text DEFAULT 'inherit' NOT NULL,
+	`request_quota_limit` integer,
 	`auto_approve` integer DEFAULT false NOT NULL,
-	`created_at` integer DEFAULT (unixepoch()) NOT NULL
+	`created_at` integer DEFAULT (unixepoch()) NOT NULL,
+	CONSTRAINT "request_quota_mode_limit" CHECK((`users`.`request_quota_mode` = 'limited') = (`users`.`request_quota_limit` IS NOT NULL) AND (`users`.`request_quota_limit` IS NULL OR `users`.`request_quota_limit` > 0))
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `users_public_id_unique` ON `users` (`public_id`);--> statement-breakpoint

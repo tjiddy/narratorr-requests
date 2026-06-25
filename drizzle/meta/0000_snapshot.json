@@ -14,8 +14,16 @@
           "notNull": true,
           "autoincrement": false
         },
-        "default_quota": {
-          "name": "default_quota",
+        "default_quota_mode": {
+          "name": "default_quota_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'limited'"
+        },
+        "default_quota_limit": {
+          "name": "default_quota_limit",
           "type": "integer",
           "primaryKey": false,
           "notNull": false,
@@ -64,7 +72,12 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "default_quota_mode_limit": {
+          "name": "default_quota_mode_limit",
+          "value": "(\"app_settings\".\"default_quota_mode\" = 'limited') = (\"app_settings\".\"default_quota_limit\" IS NOT NULL) AND (\"app_settings\".\"default_quota_limit\" IS NULL OR \"app_settings\".\"default_quota_limit\" > 0)"
+        }
+      }
     },
     "requests": {
       "name": "requests",
@@ -331,8 +344,16 @@
           "autoincrement": false,
           "default": "'pending'"
         },
-        "request_quota": {
-          "name": "request_quota",
+        "request_quota_mode": {
+          "name": "request_quota_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'inherit'"
+        },
+        "request_quota_limit": {
+          "name": "request_quota_limit",
           "type": "integer",
           "primaryKey": false,
           "notNull": false,
@@ -382,7 +403,12 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "request_quota_mode_limit": {
+          "name": "request_quota_mode_limit",
+          "value": "(\"users\".\"request_quota_mode\" = 'limited') = (\"users\".\"request_quota_limit\" IS NOT NULL) AND (\"users\".\"request_quota_limit\" IS NULL OR \"users\".\"request_quota_limit\" > 0)"
+        }
+      }
     }
   },
   "views": {},

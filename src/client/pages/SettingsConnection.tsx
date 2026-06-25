@@ -10,10 +10,11 @@ import {
   initDefaultQuota,
   buildDefaultQuota,
   isDefaultQuotaDirty,
-  isLimitValid,
+  isDefaultQuotaValid,
   daysLabel,
   QUOTA_UNITS,
   type QuotaUnit,
+  type DefaultQuotaMode,
 } from './settings-default-quota';
 
 // The General + Narratorr connection sections. Each owns its form state and saves
@@ -90,15 +91,17 @@ function PublicUrlCard({ saved }: { saved: string | null }) {
   );
 }
 
-// The default request quota: a number (the limit) + a day/week/month unit, reading like
-// "3 requests per [week]". Blank/0 → unlimited. The window unit maps to a fixed rolling-window
-// day count, shown as a `= N days` hint. Pure decision logic lives in settings-default-quota.ts.
+// The default request quota: a mode (`No default cap` | `Limit requests`) and — when limited — a
+// positive number + a day/week/month unit, reading like "3 requests per [week]". The window unit
+// maps to a fixed rolling-window day count, shown as a `= N days` hint. Mode-first: a number only
+// ever means a positive cap (no overloaded 0/blank). Pure logic lives in settings-default-quota.ts.
 function DefaultQuotaCard({ saved }: { saved: ConnectorSettingsDto['defaultQuota'] }) {
   const update = useUpdateConnectors();
   const initial = initDefaultQuota(saved);
   const [quota, setQuota] = useState(initial);
   const dirty = isDefaultQuotaDirty(quota, initial);
-  const valid = isLimitValid(quota.limit);
+  const valid = isDefaultQuotaValid(quota);
+  const limited = quota.mode === 'limited';
 
   function save() {
     if (!valid) return;
@@ -116,32 +119,45 @@ function DefaultQuotaCard({ saved }: { saved: ConnectorSettingsDto['defaultQuota
       >
         <Field
           label="Default request quota"
-          hint="Applies only to users without a per-user quota override (overrides set on the Users page still win). Admins are always unlimited. Leave the limit blank for no cap."
-          error={valid ? undefined : 'Enter a whole number, or leave blank for unlimited.'}
+          hint="Applies only to users without a per-user quota override (overrides set on the Users page still win). Admins are always unlimited."
+          error={valid ? undefined : 'Enter a whole number greater than zero.'}
         >
           <div className="flex flex-wrap items-center gap-3">
-            <input
-              className={`${inputCls} w-24`}
-              inputMode="numeric"
-              value={quota.limit}
-              onChange={(e) => setQuota((s) => ({ ...s, limit: e.target.value }))}
-              placeholder="∞"
-              aria-label="Request limit (blank for unlimited)"
-            />
-            <span className="text-sm text-muted-foreground">requests per</span>
             <select
-              className={`${inputCls} w-32 capitalize`}
-              value={quota.unit}
-              onChange={(e) => setQuota((s) => ({ ...s, unit: e.target.value as QuotaUnit }))}
-              aria-label="Quota window"
+              className={`${inputCls} w-44`}
+              value={quota.mode}
+              onChange={(e) => setQuota((s) => ({ ...s, mode: e.target.value as DefaultQuotaMode }))}
+              aria-label="Default quota mode"
             >
-              {QUOTA_UNITS.map((u) => (
-                <option key={u} value={u} className="capitalize">
-                  {u}
-                </option>
-              ))}
+              <option value="unlimited">No default cap</option>
+              <option value="limited">Limit requests</option>
             </select>
-            <span className="text-xs text-muted-foreground/70">{daysLabel(quota.unit)}</span>
+            {limited && (
+              <>
+                <input
+                  className={`${inputCls} w-24`}
+                  inputMode="numeric"
+                  value={quota.limit}
+                  onChange={(e) => setQuota((s) => ({ ...s, limit: e.target.value }))}
+                  placeholder="10"
+                  aria-label="Request limit"
+                />
+                <span className="text-sm text-muted-foreground">requests per</span>
+                <select
+                  className={`${inputCls} w-32 capitalize`}
+                  value={quota.unit}
+                  onChange={(e) => setQuota((s) => ({ ...s, unit: e.target.value as QuotaUnit }))}
+                  aria-label="Quota window"
+                >
+                  {QUOTA_UNITS.map((u) => (
+                    <option key={u} value={u} className="capitalize">
+                      {u}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-xs text-muted-foreground/70">{daysLabel(quota.unit)}</span>
+              </>
+            )}
           </div>
         </Field>
         {dirty && valid && (

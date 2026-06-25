@@ -39,15 +39,31 @@ describe('UserService role/status management', () => {
     expect((await svc.updateUser(u.publicId, { status: 'rejected' })).status).toBe('rejected');
   });
 
-  it('updates quota + auto-approve independently, leaving untouched fields alone', async () => {
+  it('updates quota mode/limit + auto-approve independently, leaving untouched fields alone', async () => {
     const u = await insertUser(db, { role: 'user' });
-    const set = await svc.updateUser(u.publicId, { requestQuota: 3, autoApprove: true });
-    expect(set.requestQuota).toBe(3);
+    const set = await svc.updateUser(u.publicId, { requestQuota: { mode: 'limited', limit: 3 }, autoApprove: true });
+    expect(set.requestQuotaMode).toBe('limited');
+    expect(set.requestQuotaLimit).toBe(3);
     expect(set.autoApprove).toBe(true);
 
-    const cleared = await svc.updateUser(u.publicId, { requestQuota: null });
-    expect(cleared.requestQuota).toBeNull();
+    // Switching to a non-limited mode nulls the limit column (CHECK-coherent).
+    const blocked = await svc.updateUser(u.publicId, { requestQuota: { mode: 'blocked' } });
+    expect(blocked.requestQuotaMode).toBe('blocked');
+    expect(blocked.requestQuotaLimit).toBeNull();
+
+    const cleared = await svc.updateUser(u.publicId, { requestQuota: { mode: 'inherit' } });
+    expect(cleared.requestQuotaMode).toBe('inherit');
+    expect(cleared.requestQuotaLimit).toBeNull();
     expect(cleared.autoApprove).toBe(true); // untouched by the quota-only patch
+  });
+
+  it('serializes the persisted columns into the four-mode union DTO', async () => {
+    const u = await insertUser(db, { role: 'user', requestQuota: { mode: 'limited', limit: 5 } });
+    const row = await svc.getByPublicId(u.publicId);
+    expect(svc.toDto(row!).requestQuota).toEqual({ mode: 'limited', limit: 5 });
+    const inheritUser = await insertUser(db, { role: 'user' });
+    const inheritRow = await svc.getByPublicId(inheritUser.publicId);
+    expect(svc.toDto(inheritRow!).requestQuota).toEqual({ mode: 'inherit' });
   });
 
   it('throws 404 for an unknown user', async () => {
