@@ -190,6 +190,13 @@ export const updateConnectorSettingsBodySchema = z
     // input mapped client-side to 0/null) collapses to null so "blank/0 = unlimited" matches
     // the old DEFAULT_REQUEST_QUOTA semantics. `windowDays`: constrained to the allowed set;
     // omitted → keep the stored window. The whole object omitted → keep both columns.
+    //
+    // INTENTIONAL DIVERGENCE (issue #77): here `0 → null = unlimited`, but the per-user
+    // override (`requestQuota` in user.ts) preserves a literal `0` to mean BLOCK-ALL. Same
+    // primitive, opposite outcomes, on purpose: a fat-fingered `0` on the app-wide default
+    // shouldn't lock out everyone, while a per-user `0` is a deliberate "suspend this user's
+    // requests" action. Pinned by the cross-referencing test in
+    // src/server/services/quota-semantics.test.ts — do NOT "fix" one side to match the other.
     defaultQuota: z
       .object({
         limit: z

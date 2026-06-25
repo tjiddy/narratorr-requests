@@ -160,7 +160,8 @@ function QuotaControl({ user, update }: { user: UserDto; update: UpdateUser }) {
       <div>
         <p className="font-medium">Request quota</p>
         <p className="text-xs text-muted-foreground/70">
-          Max open requests in the rolling window. Blank = app default. Admins are unlimited.
+          Max open requests in the rolling window. <code>0</code> blocks all requests; leave blank to use the app
+          default. Admins are unlimited.
         </p>
       </div>
       <div className="flex shrink-0 items-center gap-2">

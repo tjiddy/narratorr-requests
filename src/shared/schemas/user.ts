@@ -38,6 +38,12 @@ export const updateUserBodySchema = z
   .object({
     role: roleSchema.optional(),
     status: userStatusSchema.optional(),
+    // INTENTIONAL DIVERGENCE (issue #77): a per-user `0` is preserved as a literal `0` =
+    // BLOCK-ALL (resolveLimit returns 0 → remaining 0 → QUOTA_EXCEEDED), a deliberate
+    // "suspend this user's requests" action. This is the OPPOSITE of the app-wide default
+    // quota (`defaultQuota.limit` in connectors.ts), which collapses `0 → null = unlimited`.
+    // No `.transform()` here on purpose. Pinned by the cross-referencing test in
+    // src/server/services/quota-semantics.test.ts — do NOT add a 0→null collapse to match.
     requestQuota: z.number().int().min(0).nullable().optional(),
     autoApprove: z.boolean().optional(),
   })

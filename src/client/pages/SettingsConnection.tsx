@@ -116,7 +116,7 @@ function DefaultQuotaCard({ saved }: { saved: ConnectorSettingsDto['defaultQuota
       >
         <Field
           label="Default request quota"
-          hint="Applies only to users without a per-user quota override (overrides set on the Users page still win). Admins are always unlimited. Leave the limit blank for no cap."
+          hint="Applies only to users without a per-user quota override (overrides set on the Users page still win). Admins are always unlimited. Here 0 (or blank) means no cap / unlimited — the opposite of the per-user field on the Users page, where 0 blocks all requests."
           error={valid ? undefined : 'Enter a whole number, or leave blank for unlimited.'}
         >
           <div className="flex flex-wrap items-center gap-3">
