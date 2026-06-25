@@ -5,6 +5,7 @@ import { BookCard } from '../components/BookCard';
 import { EmptyState } from '../components/EmptyState';
 import { SearchIcon } from '../components/icons';
 import { Button } from '../components/Button';
+import { QuotaMeter } from '../components/QuotaMeter';
 import { ApiError } from '../api';
 
 export function SearchPage() {
@@ -29,13 +30,16 @@ export function SearchPage() {
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">
-          Request audiobooks
-        </h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Search the catalog and request what you want to listen to.
-        </p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">
+            Request audiobooks
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Search the catalog and request what you want to listen to.
+          </p>
+        </div>
+        <QuotaMeter />
       </div>
 
       <form onSubmit={onSubmit} className="flex gap-2">

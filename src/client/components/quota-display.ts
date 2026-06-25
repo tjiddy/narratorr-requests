@@ -1,5 +1,5 @@
 import type { MeDto } from '@shared/schemas/user';
-import type { BadgeVariant } from '../components/Badge';
+import type { BadgeVariant } from './Badge';
 
 // Pure display logic for the user's request quota. Pulled out of MyRequestsPage so
 // the null-vs-zero decisions (unlimited cap, at-cap, zero limit) are unit-testable

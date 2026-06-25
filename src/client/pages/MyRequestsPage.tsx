@@ -1,11 +1,10 @@
 import type { RequestDto } from '@shared/schemas/request';
-import { useMe, useMyRequests } from '../hooks';
-import { Badge } from '../components/Badge';
+import { useMyRequests } from '../hooks';
 import { StatusBadge } from '../components/StatusBadge';
 import { EmptyState } from '../components/EmptyState';
 import { InboxIcon } from '../components/icons';
 import { requestFailureReason } from '../components/request-failure';
-import { formatQuota } from './quota-display';
+import { QuotaMeter } from '../components/QuotaMeter';
 
 function RequestRow({ r }: { r: RequestDto }) {
   const failureReason = requestFailureReason(r);
@@ -37,26 +36,6 @@ function RequestRow({ r }: { r: RequestDto }) {
       </div>
       <StatusBadge status={r.status} />
     </li>
-  );
-}
-
-function QuotaMeter() {
-  const { data: me } = useMe();
-  if (!me) return null;
-  const q = formatQuota(me.quota);
-
-  if (q.unlimited) {
-    return (
-      <Badge variant="info" className="text-xs">
-        {q.label}
-      </Badge>
-    );
-  }
-
-  return (
-    <Badge variant={q.variant} className="text-xs">
-      {q.label}
-    </Badge>
   );
 }
 
