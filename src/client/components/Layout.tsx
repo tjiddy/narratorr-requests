@@ -42,7 +42,7 @@ export function Layout({ me }: { me: MeDto }) {
     try {
       await logout();
       qc.clear();
-      navigate('/');
+      await navigate('/');
       window.location.reload();
     } catch {
       toast.error('Logout failed');

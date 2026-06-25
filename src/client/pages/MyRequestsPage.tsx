@@ -3,8 +3,11 @@ import { useMyRequests } from '../hooks';
 import { StatusBadge } from '../components/StatusBadge';
 import { EmptyState } from '../components/EmptyState';
 import { InboxIcon } from '../components/icons';
+import { requestFailureReason } from '../components/request-failure';
+import { QuotaMeter } from '../components/QuotaMeter';
 
 function RequestRow({ r }: { r: RequestDto }) {
+  const failureReason = requestFailureReason(r);
   return (
     <li className="glass-card flex items-center gap-4 rounded-xl p-3">
       {r.coverUrl ? (
@@ -24,6 +27,12 @@ function RequestRow({ r }: { r: RequestDto }) {
             {r.note}
           </p>
         )}
+        {failureReason && (
+          <p className="mt-1 text-xs text-destructive">
+            <span className="text-destructive/70">Failed: </span>
+            {failureReason}
+          </p>
+        )}
       </div>
       <StatusBadge status={r.status} />
     </li>
@@ -35,7 +44,10 @@ export function MyRequestsPage() {
 
   return (
     <div>
-      <h1 className="mb-6 font-display text-2xl font-semibold tracking-tight sm:text-3xl">My requests</h1>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">My requests</h1>
+        <QuotaMeter />
+      </div>
       {isLoading && <p className="text-sm text-muted-foreground/70">Loading…</p>}
       {error && <p className="text-sm text-destructive">Could not load your requests.</p>}
       {data && data.data.length === 0 && (

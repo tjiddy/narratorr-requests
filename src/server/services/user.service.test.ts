@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { UserService } from './user.service.js';
 import type { OidcProfile } from './oidc.service.js';
 import { createTestDb, insertUser } from '../test-support/db.js';
@@ -39,15 +39,31 @@ describe('UserService role/status management', () => {
     expect((await svc.updateUser(u.publicId, { status: 'rejected' })).status).toBe('rejected');
   });
 
-  it('updates quota + auto-approve independently, leaving untouched fields alone', async () => {
+  it('updates quota mode/limit + auto-approve independently, leaving untouched fields alone', async () => {
     const u = await insertUser(db, { role: 'user' });
-    const set = await svc.updateUser(u.publicId, { requestQuota: 3, autoApprove: true });
-    expect(set.requestQuota).toBe(3);
+    const set = await svc.updateUser(u.publicId, { requestQuota: { mode: 'limited', limit: 3 }, autoApprove: true });
+    expect(set.requestQuotaMode).toBe('limited');
+    expect(set.requestQuotaLimit).toBe(3);
     expect(set.autoApprove).toBe(true);
 
-    const cleared = await svc.updateUser(u.publicId, { requestQuota: null });
-    expect(cleared.requestQuota).toBeNull();
+    // Switching to a non-limited mode nulls the limit column (CHECK-coherent).
+    const blocked = await svc.updateUser(u.publicId, { requestQuota: { mode: 'blocked' } });
+    expect(blocked.requestQuotaMode).toBe('blocked');
+    expect(blocked.requestQuotaLimit).toBeNull();
+
+    const cleared = await svc.updateUser(u.publicId, { requestQuota: { mode: 'inherit' } });
+    expect(cleared.requestQuotaMode).toBe('inherit');
+    expect(cleared.requestQuotaLimit).toBeNull();
     expect(cleared.autoApprove).toBe(true); // untouched by the quota-only patch
+  });
+
+  it('serializes the persisted columns into the four-mode union DTO', async () => {
+    const u = await insertUser(db, { role: 'user', requestQuota: { mode: 'limited', limit: 5 } });
+    const row = await svc.getByPublicId(u.publicId);
+    expect(svc.toDto(row!).requestQuota).toEqual({ mode: 'limited', limit: 5 });
+    const inheritUser = await insertUser(db, { role: 'user' });
+    const inheritRow = await svc.getByPublicId(inheritUser.publicId);
+    expect(svc.toDto(inheritRow!).requestQuota).toEqual({ mode: 'inherit' });
   });
 
   it('throws 404 for an unknown user', async () => {
@@ -114,6 +130,49 @@ describe('UserService local auth', () => {
     const second = await svc.createLocalUser({ email: 'second@x.com', passwordHash: 'h' });
     expect(second.created).toBe(true);
     expect(second.user).toMatchObject({ role: 'user', status: 'pending' });
+  });
+});
+
+describe('UserService createIdentity unique-violation race', () => {
+  // createLocalUser() goes straight to createIdentity() (no preflight findByIdentity), so
+  // forcing the insert to throw the unique violation drives the catch at :200-208: a unique
+  // breach re-queries via findByIdentity and resolves to the existing row; anything else
+  // (incl. a re-query miss) re-throws unchanged.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('resolves a unique violation to the existing identity (created=false)', async () => {
+    const existing = await insertUser(db, {
+      provider: 'local',
+      subject: 'todd@example.com',
+      username: 'todd',
+    });
+    vi.spyOn(db, 'insert').mockImplementation(() => {
+      throw new Error('UNIQUE constraint failed: users.auth_provider, users.auth_subject');
+    });
+
+    const result = await svc.createLocalUser({ email: 'Todd@Example.com', passwordHash: 'h' });
+    expect(result.created).toBe(false);
+    expect(result.user.id).toBe(existing.id); // re-queried via findByIdentity, not a new signup
+  });
+
+  it('re-throws a non-unique error unchanged (the catch does not swallow it)', async () => {
+    await insertUser(db, { provider: 'local', subject: 'todd@example.com', username: 'todd' });
+    vi.spyOn(db, 'insert').mockImplementation(() => {
+      throw new Error('boom');
+    });
+    await expect(svc.createLocalUser({ email: 'todd@example.com', passwordHash: 'h' })).rejects.toThrow('boom');
+  });
+
+  it('re-throws the original unique error when the re-query finds no identity (no silent null)', async () => {
+    // No seeded identity → findByIdentity misses after the matched violation → fallthrough.
+    vi.spyOn(db, 'insert').mockImplementation(() => {
+      throw new Error('UNIQUE constraint failed: users.auth_provider, users.auth_subject');
+    });
+    await expect(svc.createLocalUser({ email: 'ghost@x.com', passwordHash: 'h' })).rejects.toThrow(
+      'UNIQUE constraint failed',
+    );
   });
 });
 

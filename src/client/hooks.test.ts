@@ -1,0 +1,408 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { RequestDto } from '@shared/schemas/request';
+import type { UserDto } from '@shared/schemas/user';
+import type { ConnectorSettingsDto, TestConnectorResult } from '@shared/schemas/connectors';
+// Type-only namespace imports (erased at runtime, so they don't fight the mocks below) —
+// give importActual its return type without an inline `import()` annotation.
+import type * as ApiModule from './api';
+import type * as ReactModule from 'react';
+
+// Node-only hook testing — no render harness. We mock @tanstack/react-query so
+// `useMutation` and `useQuery` each return the options object passed to them (so
+// the hook hands us its onSuccess/onError callbacks and derived query options
+// directly) and `useQueryClient` returns a fake client of spies. `sonner`'s toast
+// is spied so we can assert the surfaced text.
+const hoisted = vi.hoisted(() => ({
+  qc: { invalidateQueries: vi.fn(), setQueryData: vi.fn() },
+  // Spies for the local-auth boundary functions; the rest of `./api` is preserved
+  // (importActual) so `ApiError` and unrelated exports stay real.
+  api: { localLogin: vi.fn(), localSignup: vi.fn() },
+  // A module-scoped slot backing the test-only `react` useState mock so a re-invoked
+  // `useTheme()` observes the value a prior `toggleTheme()` wrote.
+  react: { slot: undefined as unknown, initialized: false },
+}));
+
+vi.mock('@tanstack/react-query', () => ({
+  useMutation: (options: unknown) => options,
+  useQuery: (options: unknown) => options,
+  useQueryClient: () => hoisted.qc,
+}));
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+// Preserve every real `./api` export (notably `ApiError`, used below) and replace
+// only the two local-auth boundary functions with spies.
+vi.mock('./api', async (importActual) => {
+  const actual = await importActual<typeof ApiModule>();
+  return { ...actual, localLogin: hoisted.api.localLogin, localSignup: hoisted.api.localSignup };
+});
+
+// Test-only `react` mock: minimal stateful useState/useEffect so `useTheme()` runs
+// as a plain function under the node harness — no jsdom, no render dispatcher. Only
+// `useTheme` touches React directly; the TanStack hooks are mocked separately.
+vi.mock('react', async (importActual) => {
+  const actual = await importActual<typeof ReactModule>();
+  return {
+    ...actual,
+    useState: (init: unknown) => {
+      if (!hoisted.react.initialized) {
+        hoisted.react.slot = typeof init === 'function' ? (init as () => unknown)() : init;
+        hoisted.react.initialized = true;
+      }
+      const setter = (next: unknown) => {
+        hoisted.react.slot =
+          typeof next === 'function' ? (next as (prev: unknown) => unknown)(hoisted.react.slot) : next;
+      };
+      return [hoisted.react.slot, setter];
+    },
+    useEffect: (fn: () => void | (() => void)) => {
+      fn();
+    },
+  };
+});
+
+import { toast } from 'sonner';
+import {
+  qk,
+  useRequestBook,
+  useUpdateUser,
+  useDecide,
+  useUpdateConnectors,
+  useTestConnector,
+  useCreateNotifier,
+  useUpdateNotifier,
+  useDeleteNotifier,
+  useTestNotifier,
+  useSearch,
+  useLocalAuth,
+  useTheme,
+} from './hooks';
+import { ApiError } from './api';
+
+const success = vi.mocked(toast.success);
+const error = vi.mocked(toast.error);
+
+// The mocked `useMutation` returns the raw options object, but its declared return
+// type is `UseMutationResult` (no onSuccess/onError). Cast to the callbacks we drive.
+interface Callbacks {
+  onSuccess: (...args: any[]) => unknown;
+  onError: (...args: any[]) => unknown;
+}
+const cb = (hook: unknown): Callbacks => hook as Callbacks;
+
+// `useMutation` returns the raw options; for the auth hook we drive its mutationFn.
+interface MutationOptions {
+  mutationFn: (vars: { email: string; password: string }) => unknown;
+  onSuccess: () => unknown;
+}
+const mut = (hook: unknown): MutationOptions => hook as MutationOptions;
+
+// `useQuery` now returns the raw options too — read the derived enabled/queryKey.
+interface QueryOptions {
+  enabled: boolean;
+  queryKey: unknown;
+}
+const query = (hook: unknown): QueryOptions => hook as QueryOptions;
+
+// Minimal cast helpers — the callbacks only read the few fields we set.
+const req = (over: Partial<RequestDto>): RequestDto => ({ title: 'Dune', status: 'pending', ...over } as RequestDto);
+
+beforeEach(() => vi.clearAllMocks());
+afterEach(() => {
+  // Restore ambient globals stubbed by the useTheme cases and reset the React state
+  // slot so each invocation re-runs the useState initializer. Harmless to tests that
+  // stub nothing.
+  vi.unstubAllGlobals();
+  hoisted.react.slot = undefined;
+  hoisted.react.initialized = false;
+});
+
+describe('qk query-key builders', () => {
+  it('builds the static and parameterized keys', () => {
+    expect(qk.me).toEqual(['me']);
+    expect(qk.myRequests).toEqual(['requests', 'mine']);
+    expect(qk.search('')).toEqual(['search', '']);
+    expect(qk.search('a')).toEqual(['search', 'a']);
+    expect(qk.search('')).not.toEqual(qk.search('a'));
+  });
+
+  it('collapses an absent admin-queue status to "all"', () => {
+    expect(qk.adminQueue(undefined)).toEqual(['admin', 'requests', 'all']);
+    expect(qk.adminQueue('pending')).toEqual(['admin', 'requests', 'pending']);
+  });
+});
+
+describe('useRequestBook', () => {
+  it('toasts "already available" and invalidates myRequests + me on an available result', () => {
+    cb(useRequestBook()).onSuccess(req({ status: 'available', title: 'Dune' }));
+    expect(success).toHaveBeenCalledWith('“Dune” is already available!');
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: qk.myRequests });
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: qk.me });
+    // Keys must equal the qk definitions verbatim (no drift).
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['requests', 'mine'] });
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['me'] });
+  });
+
+  it('toasts "Requested" for a non-available result', () => {
+    cb(useRequestBook()).onSuccess(req({ status: 'pending', title: 'Dune' }));
+    expect(success).toHaveBeenCalledWith('Requested “Dune”');
+  });
+
+  it('surfaces an ApiError message, else the generic fallback, on error', () => {
+    const h = cb(useRequestBook());
+    h.onError(new ApiError(400, 'BAD', 'boom'));
+    expect(error).toHaveBeenCalledWith('boom');
+    h.onError(new Error('raw'));
+    expect(error).toHaveBeenCalledWith('Request failed');
+  });
+});
+
+describe('useDecide', () => {
+  it('toasts Approved/Denied with curly quotes and invalidates the admin-requests prefix', () => {
+    const h = cb(useDecide());
+    h.onSuccess(req({ title: 'Dune' }), { action: 'approve' });
+    expect(success).toHaveBeenCalledWith('Approved “Dune”');
+    h.onSuccess(req({ title: 'Dune' }), { action: 'deny' });
+    expect(success).toHaveBeenCalledWith('Denied “Dune”');
+    // DRY-1 guard: the hardcoded invalidation tuple must match qk.adminQueue's prefix.
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['admin', 'requests'] });
+    expect(qk.adminQueue(undefined).slice(0, 2)).toEqual(['admin', 'requests']);
+  });
+
+  it('surfaces ApiError message, else "Action failed", on error', () => {
+    const h = cb(useDecide());
+    h.onError(new ApiError(409, 'C', 'conflict'));
+    expect(error).toHaveBeenCalledWith('conflict');
+    h.onError(new Error('x'));
+    expect(error).toHaveBeenCalledWith('Action failed');
+  });
+});
+
+describe('useUpdateUser', () => {
+  const user = { username: 'todd' } as UserDto;
+
+  it('toasts the saved username and invalidates admin/users', () => {
+    cb(useUpdateUser()).onSuccess(user);
+    expect(success).toHaveBeenCalledWith('Saved changes to todd');
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['admin', 'users'] });
+  });
+
+  it('surfaces ApiError message, else "Failed to update user", on error', () => {
+    const h = cb(useUpdateUser());
+    h.onError(new ApiError(400, 'B', 'bad patch'));
+    expect(error).toHaveBeenCalledWith('bad patch');
+    h.onError(new Error('x'));
+    expect(error).toHaveBeenCalledWith('Failed to update user');
+  });
+});
+
+describe('useUpdateConnectors', () => {
+  const dto = { publicUrl: null } as ConnectorSettingsDto;
+
+  it('writes the connectors cache directly (not invalidate) and toasts "Settings saved"', () => {
+    cb(useUpdateConnectors()).onSuccess(dto);
+    expect(hoisted.qc.setQueryData).toHaveBeenCalledWith(['admin', 'settings', 'connectors'], dto);
+    expect(success).toHaveBeenCalledWith('Settings saved');
+    expect(hoisted.qc.invalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it('surfaces ApiError message, else "Save failed", on error', () => {
+    const h = cb(useUpdateConnectors());
+    h.onError(new ApiError(422, 'V', 'invalid url'));
+    expect(error).toHaveBeenCalledWith('invalid url');
+    h.onError(new Error('x'));
+    expect(error).toHaveBeenCalledWith('Save failed');
+  });
+});
+
+describe('useTestConnector', () => {
+  it('routes a success result to toast.success and a failure to toast.error', () => {
+    const h = cb(useTestConnector());
+    h.onSuccess({ success: true, message: 'Connected' } as TestConnectorResult);
+    expect(success).toHaveBeenCalledWith('Connected');
+    h.onSuccess({ success: false, message: 'Unauthorized' } as TestConnectorResult);
+    expect(error).toHaveBeenCalledWith('Unauthorized');
+  });
+
+  it('surfaces ApiError message, else "Test failed", on error', () => {
+    const h = cb(useTestConnector());
+    h.onError(new ApiError(500, 'E', 'upstream down'));
+    expect(error).toHaveBeenCalledWith('upstream down');
+    h.onError(new Error('x'));
+    expect(error).toHaveBeenCalledWith('Test failed');
+  });
+});
+
+describe('notifier mutation hooks — cache invalidation + toast contract', () => {
+  // The notifier list is carried by the connectors query, so create/update/delete must
+  // invalidate that exact key (not setQueryData) to refetch the committed list + reset
+  // freshly-masked secrets. Pin the verbatim key so a drift would fail here.
+  const CONNECTORS_KEY = ['admin', 'settings', 'connectors'];
+
+  it('useCreateNotifier invalidates the connectors key and toasts "Notifier added"', () => {
+    cb(useCreateNotifier()).onSuccess();
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: CONNECTORS_KEY });
+    expect(hoisted.qc.setQueryData).not.toHaveBeenCalled();
+    expect(success).toHaveBeenCalledWith('Notifier added');
+  });
+
+  it('useCreateNotifier surfaces ApiError message, else "Could not add notifier"', () => {
+    const h = cb(useCreateNotifier());
+    h.onError(new ApiError(400, 'B', 'bad notifier'));
+    expect(error).toHaveBeenCalledWith('bad notifier');
+    h.onError(new Error('x'));
+    expect(error).toHaveBeenCalledWith('Could not add notifier');
+  });
+
+  it('useUpdateNotifier invalidates the connectors key and toasts "Notifier saved"', () => {
+    cb(useUpdateNotifier()).onSuccess();
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: CONNECTORS_KEY });
+    expect(success).toHaveBeenCalledWith('Notifier saved');
+  });
+
+  it('useUpdateNotifier surfaces ApiError message, else "Could not save notifier"', () => {
+    const h = cb(useUpdateNotifier());
+    h.onError(new ApiError(404, 'N', 'gone'));
+    expect(error).toHaveBeenCalledWith('gone');
+    h.onError(new Error('x'));
+    expect(error).toHaveBeenCalledWith('Could not save notifier');
+  });
+
+  it('useDeleteNotifier invalidates the connectors key and toasts "Notifier deleted"', () => {
+    cb(useDeleteNotifier()).onSuccess();
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: CONNECTORS_KEY });
+    expect(success).toHaveBeenCalledWith('Notifier deleted');
+  });
+
+  it('useDeleteNotifier surfaces ApiError message, else "Could not delete notifier"', () => {
+    const h = cb(useDeleteNotifier());
+    h.onError(new ApiError(404, 'N', 'missing'));
+    expect(error).toHaveBeenCalledWith('missing');
+    h.onError(new Error('x'));
+    expect(error).toHaveBeenCalledWith('Could not delete notifier');
+  });
+});
+
+describe('useTestNotifier — routes the probe result to a toast', () => {
+  it('routes a success result to toast.success and a failure to toast.error', () => {
+    const h = cb(useTestNotifier());
+    h.onSuccess({ success: true, message: 'Test notification sent.' } as TestConnectorResult);
+    expect(success).toHaveBeenCalledWith('Test notification sent.');
+    h.onSuccess({ success: false, message: 'webhook responded 500' } as TestConnectorResult);
+    expect(error).toHaveBeenCalledWith('webhook responded 500');
+  });
+
+  it('surfaces ApiError message, else "Test failed", on error', () => {
+    const h = cb(useTestNotifier());
+    h.onError(new ApiError(500, 'E', 'upstream down'));
+    expect(error).toHaveBeenCalledWith('upstream down');
+    h.onError(new Error('x'));
+    expect(error).toHaveBeenCalledWith('Test failed');
+  });
+
+  it('does not touch the connectors cache (a probe never mutates state)', () => {
+    cb(useTestNotifier()).onSuccess({ success: true, message: 'ok' } as TestConnectorResult);
+    expect(hoisted.qc.invalidateQueries).not.toHaveBeenCalled();
+    expect(hoisted.qc.setQueryData).not.toHaveBeenCalled();
+  });
+});
+
+describe('useSearch enabled predicate + query key', () => {
+  it('disables the query for an empty or whitespace-only input', () => {
+    expect(query(useSearch('')).enabled).toBe(false);
+    expect(query(useSearch('   ')).enabled).toBe(false);
+    expect(query(useSearch('\t\n')).enabled).toBe(false);
+  });
+
+  it('enables the query once there is a non-whitespace character (raw or padded)', () => {
+    expect(query(useSearch('a')).enabled).toBe(true);
+    expect(query(useSearch('  a  ')).enabled).toBe(true);
+  });
+
+  it('keys the query by the raw (un-trimmed) input via qk.search', () => {
+    expect(query(useSearch('  a  ')).queryKey).toEqual(qk.search('  a  '));
+    expect(query(useSearch('a')).queryKey).toEqual(['search', 'a']);
+  });
+});
+
+describe('useLocalAuth', () => {
+  it('dispatches localLogin (not localSignup) with the exact credentials for mode=login', () => {
+    mut(useLocalAuth('login')).mutationFn({ email: 'a@b.c', password: 'pw' });
+    expect(hoisted.api.localLogin).toHaveBeenCalledWith('a@b.c', 'pw');
+    expect(hoisted.api.localSignup).not.toHaveBeenCalled();
+  });
+
+  it('dispatches localSignup (not localLogin) with the exact credentials for mode=signup', () => {
+    mut(useLocalAuth('signup')).mutationFn({ email: 'x@y.z', password: 'pw2' });
+    expect(hoisted.api.localSignup).toHaveBeenCalledWith('x@y.z', 'pw2');
+    expect(hoisted.api.localLogin).not.toHaveBeenCalled();
+  });
+
+  it('invalidates the me query on success (exact ["me"] key)', () => {
+    mut(useLocalAuth('login')).onSuccess();
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: qk.me });
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['me'] });
+  });
+});
+
+describe('useTheme', () => {
+  // Stub the ambient inputs useTheme reads: localStorage (get/set), window.matchMedia,
+  // and document.documentElement.classList (add/remove). Returns the spies to assert on.
+  function setupTheme(opts: { stored: string | null; prefersDark?: boolean }) {
+    const getItem = vi.fn((): string | null => opts.stored);
+    const setItem = vi.fn();
+    const matchMedia = vi.fn(() => ({ matches: opts.prefersDark ?? false }));
+    const add = vi.fn();
+    const remove = vi.fn();
+    vi.stubGlobal('localStorage', { getItem, setItem });
+    vi.stubGlobal('window', { matchMedia });
+    vi.stubGlobal('document', { documentElement: { classList: { add, remove } } });
+    return { getItem, setItem, matchMedia, add, remove };
+  }
+
+  it('initializes from a persisted "dark" theme and reflects it onto the dom + storage', () => {
+    const m = setupTheme({ stored: 'dark' });
+    const { theme } = useTheme();
+    expect(theme).toBe('dark');
+    // Lock the read contract: the persisted value comes from the exact 'theme' key.
+    expect(m.getItem).toHaveBeenCalledWith('theme');
+    expect(m.add).toHaveBeenCalledWith('dark');
+    expect(m.remove).not.toHaveBeenCalled();
+    expect(m.setItem).toHaveBeenCalledWith('theme', 'dark');
+  });
+
+  it('initializes from a persisted "light" theme and removes the dark class', () => {
+    const m = setupTheme({ stored: 'light' });
+    const { theme } = useTheme();
+    expect(theme).toBe('light');
+    expect(m.getItem).toHaveBeenCalledWith('theme');
+    expect(m.remove).toHaveBeenCalledWith('dark');
+    expect(m.add).not.toHaveBeenCalled();
+    expect(m.setItem).toHaveBeenCalledWith('theme', 'light');
+  });
+
+  it('falls back to matchMedia (prefers dark) when no theme is persisted', () => {
+    const m = setupTheme({ stored: null, prefersDark: true });
+    expect(useTheme().theme).toBe('dark');
+    // Lock the fallback contract: the OS preference is read via the exact dark-scheme query.
+    expect(m.getItem).toHaveBeenCalledWith('theme');
+    expect(m.matchMedia).toHaveBeenCalledWith('(prefers-color-scheme: dark)');
+  });
+
+  it('falls back to matchMedia (prefers light) when no theme is persisted', () => {
+    const m = setupTheme({ stored: null, prefersDark: false });
+    expect(useTheme().theme).toBe('light');
+    expect(m.matchMedia).toHaveBeenCalledWith('(prefers-color-scheme: dark)');
+  });
+
+  it('toggleTheme flips the theme and persists + reflects the new value on re-invoke', () => {
+    const m = setupTheme({ stored: 'light' });
+    const first = useTheme();
+    expect(first.theme).toBe('light');
+    first.toggleTheme();
+    // Re-invoke: the mocked useState reads the slot the toggle wrote (no re-init).
+    const second = useTheme();
+    expect(second.theme).toBe('dark');
+    expect(m.setItem).toHaveBeenLastCalledWith('theme', 'dark');
+    expect(m.add).toHaveBeenLastCalledWith('dark');
+  });
+});

@@ -19,9 +19,12 @@ export interface EmailConfig {
  */
 export class EmailChannel implements NotificationChannel {
   readonly name = 'email';
+  // The SMTP password (when set) is the secret — exposed for dispatcher-log redaction.
+  readonly secrets: readonly string[];
   private readonly transport: Transporter;
 
   constructor(private readonly cfg: EmailConfig) {
+    this.secrets = cfg.pass ? [cfg.pass] : [];
     this.transport = nodemailer.createTransport({
       host: cfg.host,
       port: cfg.port,
@@ -36,8 +39,13 @@ export class EmailChannel implements NotificationChannel {
   }
 
   async send({ message }: SendContext): Promise<void> {
-    // message.url is our own constructed origin + '/admin', not user input — safe in href.
-    const link = message.url ? `<p><a href="${message.url}">Open the request queue</a></p>` : '';
+    // Escape EVERY value interpolated into this HTML at the boundary (href, label, body)
+    // rather than reasoning per-value about trust. url + linkLabel are renderer-owned today,
+    // but uniform escaping keeps the email injection-proof if PUBLIC_URL (in the href) or a
+    // future dynamic label ever carries a metacharacter.
+    const link = message.url
+      ? `<p><a href="${escapeHtml(message.url)}">${escapeHtml(message.linkLabel)}</a></p>`
+      : '';
     await this.transport.sendMail({
       from: this.cfg.from,
       to: this.cfg.to,

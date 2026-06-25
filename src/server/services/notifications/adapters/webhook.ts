@@ -11,15 +11,28 @@ export interface WebhookConfig {
  */
 export class WebhookChannel implements NotificationChannel {
   readonly name = 'webhook';
-  constructor(private readonly cfg: WebhookConfig) {}
+  // The webhook URL is a capability secret (may carry a token) — exposed for dispatcher-log
+  // redaction. Pattern scrubbing only covers Discord/Slack hosts; an arbitrary hook URL needs
+  // this exact-match value so it never lands in the log line raw.
+  readonly secrets: readonly string[];
+  constructor(private readonly cfg: WebhookConfig) {
+    this.secrets = [cfg.url];
+  }
 
   async send({ payload, message }: SendContext): Promise<void> {
     const content = [message.title, message.body, message.url].filter(Boolean).join('\n');
     // `content` works for Discord (it renders that and ignores the rest); the
     // event-specific fields give a generic consumer the structured data.
+    // Branch on DATA PRESENCE, not the event literal, so any request-shaped event
+    // (request.created, request.failed, …) serializes its request/requester payload
+    // with no further edits here. A request.failed payload also carries a `reason`.
     const structured =
-      payload.event === 'request.created'
-        ? { request: payload.request, requester: payload.requester }
+      'request' in payload
+        ? {
+            request: payload.request,
+            requester: payload.requester,
+            ...('reason' in payload && { reason: payload.reason }),
+          }
         : { user: payload.user };
     const res = await fetch(this.cfg.url, {
       method: 'POST',

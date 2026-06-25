@@ -12,7 +12,7 @@ import { runMigrations } from '../db/migrate.js';
 import { createDb } from '../db/client.js';
 import { UserService } from './services/user.service.js';
 import { SettingsService } from './services/settings.service.js';
-import { RequestService } from './services/request.service.js';
+import { RequestService, resolveRequestPolicy } from './services/request.service.js';
 import { SearchService } from './services/search.service.js';
 import { StatusPoller } from './services/status-poller.js';
 import { NarratorrClient } from './services/narratorr-client.js';
@@ -36,7 +36,7 @@ async function main(): Promise<void> {
 
   const users = new UserService(db, { bootstrapAdmin: config.bootstrapAdmin });
   const settings = new SettingsService(db);
-  const settingsRow = await settings.ensure(config.defaultRequestQuota);
+  const settingsRow = await settings.ensure();
 
   // App (and its logger) first, so the connector service can WARN through it when a
   // stored secret can't be decrypted.
@@ -65,11 +65,20 @@ async function main(): Promise<void> {
     app.log.warn('narratorr is not configured — search and requests will fail until it is set on the Settings page');
   }
 
-  const requests = new RequestService(db, narratorr, {
-    defaultQuota: settingsRow.defaultQuota,
-    windowDays: config.quotaWindowDays,
-    autoApproveRoles: settingsRow.autoApproveRoles as Role[],
-  });
+  // Seed the request policy from the SANITIZED quota (not the raw settingsRow columns) via the
+  // shared resolveRequestPolicy seam, so boot enforcement and the Settings GET agree on the same
+  // narrowed values — a legacy/corrupt out-of-set window or non-positive limit degrades identically
+  // on both paths. The seam is unit-tested (connector-settings.service.test.ts) so a regression to
+  // the raw row fails a test rather than silently re-diverging.
+  const requests = new RequestService(
+    db,
+    narratorr,
+    await resolveRequestPolicy(connectorSettings, settingsRow.autoApproveRoles as Role[]),
+    // Live-notifier accessor (NOT a captured instance): the settings route reassigns
+    // deps.notifier on every notifier-config save, so read it at dispatch time. The app
+    // logger makes a lost request.failed (rejected lookup/dispatch) diagnosable.
+    { getNotifier: () => deps.notifier, users, logger: app.log },
+  );
   const search = new SearchService(narratorr);
   // One OidcService per configured provider, keyed by id. Authorization is the approval
   // queue (no per-provider gate), so the mapped profile flows straight to upsertFromOidc.
@@ -152,7 +161,7 @@ async function main(): Promise<void> {
 
   await app.listen({ port: config.port, host: config.bindHost });
   app.log.info(
-    `narrator-request on :${config.port} (auth=${config.authMode}, narratorr=${narratorr.configured ? 'configured' : 'unconfigured'})`,
+    `narratorr-requests on :${config.port} (auth=${config.authMode}, narratorr=${narratorr.configured ? 'configured' : 'unconfigured'})`,
   );
 
   // Reconcile in-flight acquisitions against narratorr. No-op while narratorr is
@@ -168,7 +177,8 @@ async function main(): Promise<void> {
 
   const shutdown = () => {
     poller.stop();
-    app.close().finally(() => process.exit(0));
+    // Fire-and-forget: we're exiting regardless of how close() settles.
+    void app.close().finally(() => process.exit(0));
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

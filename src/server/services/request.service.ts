@@ -1,6 +1,10 @@
 import { and, desc, eq, gte, inArray, or, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
 import { requests, users, type RequestRow } from '../../db/schema.js';
+import type { Notifier } from './notifications/index.js';
+import { redact } from './notifications/redact.js';
+import type { NotifierLogger } from './notifications/types.js';
+import type { UserService } from './user.service.js';
 import type {
   CreateRequestBody,
   DecisionBody,
@@ -8,36 +12,106 @@ import type {
   RequestStatus,
 } from '../../shared/schemas/request.js';
 import { OPEN_REQUEST_STATUSES, ACTIVE_REQUEST_STATUSES } from '../../shared/schemas/request.js';
-import type { Role } from '../../shared/schemas/user.js';
-import type { V1Book } from '../../shared/schemas/v1/books.js';
+import type { Role, RequestQuotaMode } from '../../shared/schemas/user.js';
+import type { DefaultQuota, QuotaWindowDays } from '../../shared/schemas/connectors.js';
+import { ADD_BOOK_ERROR_CODES, type V1Book } from '../../shared/schemas/v1/books.js';
 import type { INarratorrClient } from './narratorr-client.js';
 import { NarratorrError } from './narratorr-client.js';
 import { publicId } from '../util/ids.js';
-import { conflict, notFound, tooManyRequests } from '../util/errors.js';
+import { conflict, notFound, quotaBlocked, tooManyRequests } from '../util/errors.js';
+import { isUniqueViolation } from '../util/db.js';
+
+/**
+ * A user's RESOLVED effective quota — what actually gates a request after role + per-user override
+ * + app default are folded together. A number only ever means a positive cap (`limited`); the other
+ * two modes are first-class, so "no cap" (`unlimited`) and "hard admin block" (`blocked`) are never
+ * confused with each other or with a numeric limit.
+ */
+export type EffectiveQuota =
+  | { mode: 'unlimited' }
+  | { mode: 'limited'; limit: number }
+  | { mode: 'blocked' };
+
+/** The app default's effective mode (the `inherit` fall-through target) — `blocked` can't be a
+ *  default, only a per-user state, so it's excluded here. */
+export type DefaultEffectiveQuota = { mode: 'unlimited' } | { mode: 'limited'; limit: number };
 
 /**
  * Quota / approval policy. Built from app_settings + config at boot and handed
  * in (keeps the service free of the config singleton, so it's unit-testable).
  */
 export interface RequestPolicy {
-  /** App-wide default quota; per-user `requestQuota` overrides it. null = unlimited. */
-  defaultQuota: number | null;
-  windowDays: number;
+  /** App-wide default quota mode; per-user `requestQuota` modes override it. */
+  defaultQuota: DefaultEffectiveQuota;
+  windowDays: QuotaWindowDays;
   autoApproveRoles: Role[];
 }
 
+/** Narrow a `DefaultQuota` (the settings/DTO shape, carrying `windowDays`) to the policy's
+ *  effective-mode shape (windowDays lives on the policy separately). */
+function toDefaultEffective(quota: DefaultQuota): DefaultEffectiveQuota {
+  return quota.mode === 'limited' ? { mode: 'limited', limit: quota.limit } : { mode: 'unlimited' };
+}
+
+/**
+ * Build the boot request policy from the SANITIZED default quota — the single seam boot uses to
+ * seed `RequestService` (see `src/server/index.ts`). Extracted (and structurally typed over just
+ * `getDefaultQuota()`, not the whole settings service) so the "seed from the sanitizer, not the
+ * raw `app_settings` columns" guarantee is directly testable: a regression that read the raw row
+ * instead of `getDefaultQuota()` fails the policy assertion rather than slipping through an
+ * in-test reconstruction of the wiring. `autoApproveRoles` stays sourced from the settings row
+ * (it isn't part of the quota narrowing).
+ */
+export async function resolveRequestPolicy(
+  source: { getDefaultQuota(): Promise<DefaultQuota> },
+  autoApproveRoles: Role[],
+): Promise<RequestPolicy> {
+  const quota = await source.getDefaultQuota();
+  return { defaultQuota: toDefaultEffective(quota), windowDays: quota.windowDays, autoApproveRoles };
+}
+
+/** Effective rolling-window usage for the `/api/me` quota badge. `mode` is authoritative:
+ *  `unlimited` → limit/remaining null; `limited` → positive limit + clamped remaining; `blocked`
+ *  → limit null, remaining 0. `used` is always the real in-window count. */
 export interface QuotaUsage {
+  mode: EffectiveQuota['mode'];
   limit: number | null;
   used: number;
   remaining: number | null;
-  windowDays: number;
+  windowDays: QuotaWindowDays;
 }
+
+/**
+ * Wiring for the admin-facing `request.failed` notification (issue #60). Optional — when
+ * absent the service simply doesn't emit (existing call-sites that don't care about
+ * notifications keep their 3-arg construction).
+ */
+export interface RequestFailureNotifyDeps {
+  /**
+   * Reads the CURRENT notifier at call time. MUST be an accessor, not a captured
+   * instance: the live notifier is rebuilt and reassigned on every notifier-settings
+   * change, so capturing it would dispatch failed-notifications through a stale channel set.
+   */
+  getNotifier: () => Notifier;
+  /** Resolves `requester.username`; an absent row falls back to a stable placeholder. */
+  users: Pick<UserService, 'getById'>;
+  /**
+   * Optional log sink for fire-and-forget emission faults (a requester lookup that rejects, or a
+   * notifier dispatch that rejects). Without it a lost `request.failed` is undiagnosable; the
+   * emission stays non-blocking either way — these are breadcrumbs, never thrown to the caller.
+   */
+  logger?: NotifierLogger;
+}
+
+/** Username used when the requester row is gone (e.g. deleted account) — the admin still hears it failed. */
+const UNKNOWN_REQUESTER = '(unknown requester)';
 
 export class RequestService {
   constructor(
     private readonly db: Db,
     private readonly client: INarratorrClient,
     private readonly policy: RequestPolicy,
+    private readonly notifyDeps?: RequestFailureNotifyDeps,
   ) {}
 
   // --- reads -----------------------------------------------------------------
@@ -85,6 +159,7 @@ export class RequestService {
       coverUrl: row.coverUrl,
       status: row.status,
       note: row.note,
+      failureReason: row.failureReason,
       requestedAt: row.requestedAt.toISOString(),
       decidedAt: row.decidedAt ? row.decidedAt.toISOString() : null,
       narratorrBookId: row.narratorrBookId,
@@ -99,22 +174,61 @@ export class RequestService {
   }
 
   /**
-   * Resolve a user's effective quota limit (null = unlimited). Auto-approve roles
-   * are unlimited; everyone else gets their per-user override or the app default.
+   * Update the app-wide default quota (limit + rolling window) after a Settings save — mirrors
+   * the notifier dispatcher's reconfigure-on-save so the new default takes effect without a
+   * restart. Per-user overrides and admin-unlimited are unaffected; only the fall-through
+   * default and the rolling-window cutoff change.
    */
-  resolveLimit(user: { role: Role; requestQuota: number | null }): number | null {
-    if (user.role === 'admin') return null; // admins unlimited; everyone else is capped
-    return user.requestQuota ?? this.policy.defaultQuota;
+  reconfigureQuota(quota: DefaultQuota): void {
+    this.policy.defaultQuota = toDefaultEffective(quota);
+    this.policy.windowDays = quota.windowDays;
+  }
+
+  /**
+   * Resolve a user's effective quota policy. Auto-approve roles (admins) are always `unlimited`;
+   * everyone else resolves their per-user mode: `inherit` falls through to the app default;
+   * `unlimited`/`limited`/`blocked` are taken as-is. A `limited` mode trusts its positive limit
+   * (the DB mode↔limit CHECK guarantees one); an impossible incoherent row degrades to the app
+   * default rather than honoring a null/zero cap.
+   */
+  resolveQuota(user: { role: Role; requestQuotaMode: RequestQuotaMode; requestQuotaLimit: number | null }): EffectiveQuota {
+    if (user.role === 'admin') return { mode: 'unlimited' };
+    switch (user.requestQuotaMode) {
+      case 'unlimited':
+        return { mode: 'unlimited' };
+      case 'blocked':
+        return { mode: 'blocked' };
+      case 'limited':
+        return user.requestQuotaLimit && user.requestQuotaLimit > 0
+          ? { mode: 'limited', limit: user.requestQuotaLimit }
+          : this.policy.defaultQuota;
+      case 'inherit':
+        return this.policy.defaultQuota;
+    }
   }
 
   /**
    * Rolling-window usage (PLAN decision #5): count requests created in the last
    * `windowDays` whose status still occupies a slot — `pending`/`approved`/
    * `acquiring`/`available`, plus `failed` ONLY when the failure was user-caused
-   * (otherwise `failed` is refunded). `denied` is never counted. `limit` is the
-   * already-resolved effective limit (see `resolveLimit`); null = unlimited.
+   * (otherwise `failed` is refunded). `denied` is never counted. Shapes the count into the
+   * effective-mode badge contract: `limited` clamps remaining at 0; `blocked` reports
+   * remaining 0 (limit null); `unlimited` reports both null.
    */
-  async quotaUsage(userId: number, limit: number | null): Promise<QuotaUsage> {
+  async quotaUsage(userId: number, effective: EffectiveQuota): Promise<QuotaUsage> {
+    const used = await this.countInWindow(userId);
+    const windowDays = this.policy.windowDays;
+    if (effective.mode === 'limited') {
+      return { mode: 'limited', limit: effective.limit, used, remaining: Math.max(0, effective.limit - used), windowDays };
+    }
+    if (effective.mode === 'blocked') {
+      return { mode: 'blocked', limit: null, used, remaining: 0, windowDays };
+    }
+    return { mode: 'unlimited', limit: null, used, remaining: null, windowDays };
+  }
+
+  /** Count a user's slot-occupying requests inside the configured rolling window. */
+  private async countInWindow(userId: number): Promise<number> {
     const cutoff = new Date(Date.now() - this.policy.windowDays * 86_400_000);
     const [{ n: used } = { n: 0 }] = await this.db
       .select({ n: sql<number>`count(*)` })
@@ -129,12 +243,7 @@ export class RequestService {
           ),
         ),
       );
-    return {
-      limit,
-      used,
-      remaining: limit === null ? null : Math.max(0, limit - used),
-      windowDays: this.policy.windowDays,
-    };
+    return used;
   }
 
   // --- create ----------------------------------------------------------------
@@ -150,33 +259,64 @@ export class RequestService {
     if (!user) throw notFound('user not found');
 
     // De-dupe: an existing ACTIVE request for this (user, asin) is returned as-is.
-    const existing = await this.db.query.requests.findFirst({
-      where: and(
-        eq(requests.userId, userId),
-        eq(requests.asin, body.asin),
-        inArray(requests.status, [...ACTIVE_REQUEST_STATUSES]),
-      ),
-    });
+    const existing = await this.findActiveDuplicate(userId, body.asin);
     if (existing) return { row: existing, created: false };
 
-    // Quota applies to everyone with a limit (only admins are unlimited) — auto-approved
-    // users included. Auto-approve only decides pending-vs-approved, not the cap.
-    const limit = this.resolveLimit(user);
-    if (limit !== null) {
-      const usage = await this.quotaUsage(userId, limit);
-      if (usage.remaining !== null && usage.remaining <= 0) {
-        throw tooManyRequests(
-          'QUOTA_EXCEEDED',
-          `Request quota reached (${usage.used}/${usage.limit} in the last ${usage.windowDays} days).`,
-        );
-      }
-    }
+    await this.enforceQuota(user, userId);
 
     // Auto-approve when the role auto-approves (admin) OR the user is individually flagged.
     const autoApprove = this.isAutoApprove(user.role) || user.autoApprove;
 
+    const inserted = await this.insertRequest(userId, body, autoApprove);
+    if (!inserted.created) return inserted; // lost the unique-index race → existing row
+    const row = autoApprove ? await this.handoff(inserted.row) : inserted.row;
+    return { row, created: true };
+  }
+
+  /** An existing ACTIVE (pending/approved/acquiring/available) request for this (user, asin). */
+  private findActiveDuplicate(userId: number, asin: string): Promise<RequestRow | undefined> {
+    return this.db.query.requests.findFirst({
+      where: and(
+        eq(requests.userId, userId),
+        eq(requests.asin, asin),
+        inArray(requests.status, [...ACTIVE_REQUEST_STATUSES]),
+      ),
+    });
+  }
+
+  /**
+   * Enforce the user's effective quota on request-create. `unlimited` → allow; `blocked` → reject
+   * with `403 QUOTA_BLOCKED` (a hard admin denial, regardless of usage); `limited` → reject with
+   * `429 QUOTA_EXCEEDED` once no slot remains. Applies to everyone non-admin — auto-approved users
+   * included; auto-approve only decides pending-vs-approved, not the cap.
+   */
+  private async enforceQuota(
+    user: { role: Role; requestQuotaMode: RequestQuotaMode; requestQuotaLimit: number | null },
+    userId: number,
+  ): Promise<void> {
+    const effective = this.resolveQuota(user);
+    if (effective.mode === 'unlimited') return;
+    if (effective.mode === 'blocked') throw quotaBlocked();
+    const usage = await this.quotaUsage(userId, effective);
+    if (usage.remaining !== null && usage.remaining <= 0) {
+      throw tooManyRequests(
+        'QUOTA_EXCEEDED',
+        `Request quota reached (${usage.used}/${usage.limit} in the last ${usage.windowDays} days).`,
+      );
+    }
+  }
+
+  /**
+   * Insert the new request row. `created: false` means the partial unique index fired
+   * between the preflight de-dupe and this insert (a concurrent identical request), in
+   * which case the existing active row is returned instead.
+   */
+  private async insertRequest(
+    userId: number,
+    body: CreateRequestBody,
+    autoApprove: boolean,
+  ): Promise<{ row: RequestRow; created: boolean }> {
     const now = new Date();
-    let row: RequestRow;
     try {
       const [created] = await this.db
         .insert(requests)
@@ -194,24 +334,15 @@ export class RequestService {
         })
         .returning();
       if (!created) throw new Error('insert returned no row');
-      row = created;
+      return { row: created, created: true };
     } catch (err) {
       // Race: the partial unique index fired between our preflight and insert.
       if (isUniqueViolation(err)) {
-        const dupe = await this.db.query.requests.findFirst({
-          where: and(
-            eq(requests.userId, userId),
-            eq(requests.asin, body.asin),
-            inArray(requests.status, [...ACTIVE_REQUEST_STATUSES]),
-          ),
-        });
+        const dupe = await this.findActiveDuplicate(userId, body.asin);
         if (dupe) return { row: dupe, created: false };
       }
       throw err;
     }
-
-    if (autoApprove) row = await this.handoff(row);
-    return { row, created: true };
   }
 
   // --- admin decision --------------------------------------------------------
@@ -253,25 +384,131 @@ export class RequestService {
     try {
       const book = await this.client.addBook(row.asin);
       const next = this.mapBookStatus(book.status);
+      // The book itself came back terminal-failed: claim the failed edge atomically
+      // (emits request.failed once) while preserving the resolved book linkage.
+      if (next === 'failed') {
+        const failed = await this.transitionToFailed(row, bookStatusFailureReason(book.status), {
+          narratorrBookId: book.id,
+        });
+        return failed ?? row;
+      }
       const [updated] = await this.db
         .update(requests)
-        .set({
-          narratorrBookId: book.id,
-          status: next,
-          ...(next === 'failed' ? { userCausedFailure: false, failureReason: `book ${book.status}` } : {}),
-        })
+        .set({ narratorrBookId: book.id, status: next })
         .where(eq(requests.id, row.id))
         .returning();
       return updated ?? row;
     } catch (err) {
       if (!isTerminalHandoffError(err)) throw err; // transient — stays `approved`, poller retries
-      const reason = err instanceof NarratorrError ? `${err.upstreamCode}: ${err.message}` : 'handoff failed';
-      await this.db
-        .update(requests)
-        .set({ status: 'failed', userCausedFailure: false, failureReason: reason })
-        .where(eq(requests.id, row.id));
+      // Terminal handoff failure: claim the failed edge (emits request.failed once) and
+      // PRESERVE the existing rethrow — callers/tests depend on the error surfacing.
+      await this.transitionToFailed(row, handoffFailureReason(err));
       throw err;
     }
+  }
+
+  /**
+   * Poller-facing stranded-`approved` handoff recovery. Differs from the user-facing {@link handoff}
+   * in how it treats a TERMINAL failure: there it is a SUCCESSFUL reconciliation — the request
+   * reaches its correct `failed` state and emits `request.failed` once — so it RESOLVES instead of
+   * re-throwing, letting the poller count it as a transition rather than an upstream error (which
+   * would wrongly trip backoff even though the terminal transition actually succeeded). TRANSIENT
+   * failures still throw, so the poller counts an upstream error and retries on the next pass.
+   * Returns `'recovered'` when the request advanced (→ acquiring/available) and `'failed'` when it
+   * landed terminal (the added book came back failed, or a terminal handoff error).
+   */
+  async recoverHandoff(row: RequestRow): Promise<'recovered' | 'failed'> {
+    try {
+      const result = await this.handoff(row);
+      return result.status === 'failed' ? 'failed' : 'recovered';
+    } catch (err) {
+      if (!isTerminalHandoffError(err)) throw err; // transient — poller counts an upstream error & retries
+      return 'failed'; // terminal: handoff already claimed `failed` and emitted once — a real transition
+    }
+  }
+
+  /**
+   * Atomically claim the `row.status` → `failed` edge and emit `request.failed` EXACTLY
+   * once. The `WHERE status = row.status` guard asserts the OBSERVED source state — not merely
+   * "not failed" — so two racing callers can't both win (the loser's row has already moved off
+   * the observed state, its UPDATE returns no row, it emits nothing) AND a stale caller can't
+   * clobber a NEWER terminal state: a row that moved on to `available`/`denied` behind the
+   * caller's back no longer matches, so the claim lands zero rows and the newer state stands.
+   * All callers pass a row in a live non-`failed` state (handoff: `approved`; applyBook/poller:
+   * `acquiring`), so the failed edge is reachable. Returns the updated row when THIS caller
+   * performed the transition, else null (moved on, already failed, or row gone). `extra` carries
+   * path-specific fields to preserve (e.g. `narratorrBookId` on the handoff path, which a
+   * status-only write would drop).
+   */
+  private async transitionToFailed(
+    row: RequestRow,
+    reason: string,
+    extra: { narratorrBookId?: string | null } = {},
+  ): Promise<RequestRow | null> {
+    const [updated] = await this.db
+      .update(requests)
+      .set({ status: 'failed', userCausedFailure: false, failureReason: reason, ...extra })
+      .where(and(eq(requests.id, row.id), eq(requests.status, row.status)))
+      .returning();
+    if (!updated) return null;
+    this.emitFailed(updated, reason);
+    return updated;
+  }
+
+  /**
+   * Fire-and-forget `request.failed` emission. NEVER throws into the request/poll path:
+   * the failed transition is already committed, so a missing requester or a dispatch
+   * hiccup must not unwind it. Resolves the requester via the live UserService and
+   * dispatches through the LIVE notifier (read at call time). A missing requester row
+   * still emits with a stable placeholder username — the admin needs to hear it failed.
+   */
+  private emitFailed(row: RequestRow, reason: string | null): void {
+    const deps = this.notifyDeps;
+    if (!deps) return;
+    void (async () => {
+      // A requester lookup fault (DB fault) must NOT lose the notification — the admin still
+      // needs to hear it failed. Log a redacted breadcrumb and fall back to the placeholder.
+      let requester: { username: string } | undefined;
+      try {
+        requester = await deps.users.getById(row.userId);
+      } catch (err) {
+        // redact() before logging: a lookup fault's error text could embed a secret-bearing
+        // value, and the breadcrumb must never carry one raw (URL-pattern scrub; no per-channel
+        // secrets to exact-match here — those live inside the dispatcher).
+        deps.logger?.warn(
+          { err: redact(err), request: row.publicId },
+          'request.failed: requester lookup failed; emitting with placeholder username',
+        );
+      }
+      try {
+        await deps.getNotifier().notify({
+          event: 'request.failed',
+          request: {
+            publicId: row.publicId,
+            title: row.title,
+            author: row.author,
+            asin: row.asin,
+            coverUrl: row.coverUrl,
+          },
+          requester: { username: requester?.username ?? UNKNOWN_REQUESTER },
+          reason,
+        });
+      } catch (err) {
+        // A lost notification must be diagnosable — without this breadcrumb a dropped
+        // request.failed is invisible. The failed transition already committed; never propagate.
+        // redact() before logging: a dispatch error can embed a capability webhook URL or a
+        // token-in-path (the very reason the dispatcher redacts), so scrub it here too.
+        deps.logger?.warn(
+          { err: redact(err), request: row.publicId },
+          'request.failed: notifier dispatch failed; notification lost',
+        );
+      }
+    })().catch((err) => {
+      // Final backstop: both awaits above are individually guarded, so this only fires on a
+      // truly unexpected throw. The failed transition already landed; swallow into a (redacted)
+      // breadcrumb.
+      deps.logger?.warn({ err: redact(err), request: row.publicId }, 'request.failed: emission failed unexpectedly');
+    });
   }
 
   // --- reconciliation (poller) ----------------------------------------------
@@ -305,7 +542,8 @@ export class RequestService {
 
   /**
    * Apply a freshly-polled book to a request. Returns the new status if it changed,
-   * else null (so the poller logs/notifies only on transitions). We mirror narratorr's
+   * else null (so the poller logs only on transitions — there is no requester
+   * notification today; see #50). We mirror narratorr's
    * lifecycle and never invent a terminal state on a timer: a request stays `acquiring`
    * for as long as the book is pre-`imported` (a not-found book legitimately sits
    * `wanted` until narratorr's next scheduled search) and only goes terminal when
@@ -315,23 +553,30 @@ export class RequestService {
     const next = this.mapBookStatus(book.status);
     const bookId = book.id ?? row.narratorrBookId;
     if (next === 'acquiring' && bookId === row.narratorrBookId) return null; // no change worth persisting
+    // A polled book that went terminal-failed claims the failed edge atomically (emits
+    // request.failed once), preserving the book linkage. null = another caller already
+    // failed it → no transition to report.
+    if (next === 'failed') {
+      const failed = await this.transitionToFailed(row, bookStatusFailureReason(book.status), {
+        narratorrBookId: bookId,
+      });
+      return failed ? 'failed' : null;
+    }
     await this.db
       .update(requests)
-      .set({
-        status: next,
-        narratorrBookId: bookId,
-        ...(next === 'failed' ? { userCausedFailure: false, failureReason: `book ${book.status}` } : {}),
-      })
+      .set({ status: next, narratorrBookId: bookId })
       .where(eq(requests.id, row.id));
     return next === row.status ? null : next;
   }
 
-  /** Mark a request failed when its book can no longer be found (404 on poll). */
-  async markFailed(row: RequestRow, reason: string): Promise<void> {
-    await this.db
-      .update(requests)
-      .set({ status: 'failed', userCausedFailure: false, failureReason: reason })
-      .where(eq(requests.id, row.id));
+  /**
+   * Mark a request failed when its book can no longer be found (404 on poll). Thin wrapper
+   * over the atomic failed-transition helper. Returns whether THIS call performed the
+   * transition, so the poller counts/logs the edge exactly once (and doesn't re-emit on a
+   * book that was already failed).
+   */
+  async markFailed(row: RequestRow, reason: string): Promise<boolean> {
+    return (await this.transitionToFailed(row, reason)) !== null;
   }
 
   private mapBookStatus(status: V1Book['status']): RequestStatus {
@@ -358,9 +603,45 @@ function isTerminalHandoffError(err: unknown): boolean {
   return err.upstreamStatus === 400 || err.upstreamStatus === 409 || err.upstreamStatus === 422;
 }
 
-/** libSQL surfaces a unique-constraint breach with this SQLite message fragment. */
-function isUniqueViolation(err: unknown): boolean {
-  if (err instanceof RangeError) return false;
-  const msg = err instanceof Error ? err.message : String(err);
-  return /UNIQUE constraint failed/i.test(msg) || /SQLITE_CONSTRAINT/i.test(msg);
+// --- Friendly failure reasons ------------------------------------------------
+// Once a `failureReason` is surfaced to users/admins it must read as plain English,
+// not a raw upstream code. These map every terminal failure cause to a friendly string.
+// Branch on the upstream CODE (narratorr #1545), never the human message text.
+
+/** Per-code friendly text for the add-handoff terminal errors. */
+const HANDOFF_FAILURE_REASONS: Record<string, string> = {
+  [ADD_BOOK_ERROR_CODES.editionRejected]: "This edition is excluded by the library's filters.",
+  [ADD_BOOK_ERROR_CODES.asinNotResolved]: "Couldn't find this book in the catalog.",
+  [ADD_BOOK_ERROR_CODES.invalidRecord]: 'Incomplete book data from the provider.',
+};
+
+/** "The book is gone upstream" reason — written by the poller's 404 path (status-poller). */
+export const BOOK_VANISHED_REASON = 'This book is no longer available upstream.';
+
+/**
+ * Friendly reason for a TERMINAL handoff error. A recognized `NarratorrError` code maps
+ * to its per-code message; an unknown terminal code falls back to the readable
+ * `${code}: ${message}` shape; a non-`NarratorrError` throw is a generic 'handoff failed'.
+ */
+export function handoffFailureReason(err: unknown): string {
+  if (err instanceof NarratorrError) {
+    return HANDOFF_FAILURE_REASONS[err.upstreamCode] ?? `${err.upstreamCode}: ${err.message}`;
+  }
+  return 'handoff failed';
+}
+
+/**
+ * Friendly reason for a book whose status maps to `failed` (`failed` / `missing`). Any
+ * other status shouldn't reach here (only `failed`/`missing` collapse to a failed request),
+ * but it degrades to a readable `book ${status}` string rather than throwing.
+ */
+export function bookStatusFailureReason(status: V1Book['status']): string {
+  switch (status) {
+    case 'failed':
+      return 'Download failed upstream.';
+    case 'missing':
+      return 'No source found upstream.';
+    default:
+      return `book ${status}`;
+  }
 }

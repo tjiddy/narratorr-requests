@@ -1,28 +1,29 @@
-# narrator-request
+# narratorr-requests
 
 An [Overseerr](https://overseerr.dev/)-style request manager for
-[Narratorr](https://github.com/) (Sonarr/Radarr for audiobooks). Family and friends sign in
+[Narratorr](https://github.com/tjiddy/narratorr) (Sonarr/Radarr for audiobooks). Family and friends sign in
 (local email/password or any OIDC provider — Plex bridge, Authelia, Authentik, Google, …),
 search/browse audiobooks, and request them. New users land in an **approval queue** until an
-admin lets them in; an admin then approves each request; approved requests are handed to
-Narratorr's `search → download → import` pipeline; the requester is notified when the book is
-available.
+admin lets them in; an admin then approves each request (admins and auto-approve users skip the queue); approved
+requests hand off to Narratorr's `search → download → import` pipeline, and the requester tracks
+progress to **available** on their **My requests** page. Notifications are admin-facing — a new
+request to review, a new signup awaiting approval — not requester-facing.
 
 It is a **plug-in sidecar** that talks to Narratorr only over its public `/api/v1` HTTP
-surface (API key). It has no other coupling. The Narratorr connection and the notification
-channels (ntfy / email / webhook) are configured in the in-app **Settings** page after first
+surface (API key). It has no other coupling. The Narratorr connection and the notifiers
+(a list of ntfy / email / webhook destinations, each routed to the events it fires on) are configured in the in-app **Settings** page after first
 boot — not via environment variables — and stored encrypted in the DB, so spinning it up
 takes a minimal env (a session secret + auth) and the rest is point-and-click.
 
 ## Contract-first
 
-The `/api/v1` surface this app consumes is vendored as Zod schemas in
-[`src/shared/schemas/narratorr-v1.ts`](src/shared/schemas/narratorr-v1.ts) (annotated with
-source-file pointers and `PROPOSED` tags); that vendored file is the spec that lands in
-Narratorr. The matching **MSW handlers** (`src/server/mocks/narratorr-v1.ts`) are a **test
-fixture** — they back the contract tests; there is no mock runtime mode.
+The `/api/v1` surface this app consumes is vendored as Zod schemas under
+[`src/shared/schemas/v1/`](src/shared/schemas/v1/) (+ [`book.ts`](src/shared/schemas/book.ts)),
+mirroring Narratorr's own schema layout so the contract lifts cleanly upstream. The matching
+**MSW handlers** (`src/server/mocks/narratorr-v1.ts`) are a **test fixture** — they back the
+contract tests; there is no mock runtime mode.
 
-See [`PLAN.md`](PLAN.md) for the full design, decisions, and Narratorr-side contributions.
+See [`CLAUDE.md`](CLAUDE.md) for the architecture, conventions, and the contract/auth model.
 
 ## Run it (local dev)
 
@@ -34,8 +35,9 @@ pnpm dev                      # server :3000, client :5173
 ```
 
 Open http://localhost:5173, then go to **Settings** and enter a Narratorr URL + API key
-(use **Test** to verify) to enable search and requests. Turn on a notification channel the
-same way. Until Narratorr is configured, search/requests return a "not connected yet" notice.
+(use **Test** to verify) to enable search and requests. Add a notifier the same way — pick a
+type, choose which events it fires on, and **Test** before saving. Until Narratorr is
+configured, search/requests return a "not connected yet" notice.
 
 ## Auth
 
@@ -67,10 +69,10 @@ Authentication (who you are) is **pluggable**; authorization (who may request) i
 The admin **Settings** page configures, and stores encrypted at rest:
 
 - **Narratorr connection** — base URL + API key (the lifeline; required for search/requests).
-- **Notifications** — ntfy, email (SMTP), and a generic/Discord webhook; each with a **Test** button.
+- **Notifiers** — a list of destinations (ntfy, email/SMTP, generic/Discord webhook). Each has a name, an enabled toggle, the events it fires on (new request / new signup), and a **Test** button — add as many as you like, including several of the same type routed to different events.
 - **Public URL** — used to deep-link notifications back to the request queue.
 
-Secrets are never returned to the browser (the form shows `•••• unchanged`). The at-rest key
+Secrets are never returned to the browser (the form shows `•••••••• (unchanged)`). The at-rest key
 comes from `SETTINGS_KEY`, or is derived from `SESSION_SECRET` when that's unset — see the
 caveat in [`.env.docker.example`](.env.docker.example).
 
@@ -103,23 +105,21 @@ In production the app **refuses to start** without a `SESSION_SECRET`, refuses `
 entirely, and requires at least one auth method (`LOCAL_AUTH` or an OIDC provider) — so a
 misconfigured deployment fails fast rather than exposing an open admin. The build is a 3-stage
 `node:24-slim` image that runs as the non-root `node` user; the DB persists in the
-`narrator-request-data` volume (`/data`).
+`narratorr-requests-data` volume (`/data`).
 
 > **Upgrading:** migrations apply automatically on boot and are **forward-only** (no
-> down-migrations). The v0.8.0 auth migration (`0003`) rebuilds the `users` table in place —
-> it's atomic and preserves existing users + request history, but it is **irreversible**.
-> Before upgrading a populated instance, **snapshot the `narrator-request-data` volume**;
-> to roll back, restore that snapshot and redeploy the previous image (the old image can't
-> run against the new schema).
+> down-migrations). Before upgrading a populated instance, **snapshot the
+> `narratorr-requests-data` volume**; to roll back, restore that snapshot and redeploy the
+> previous image (an older image can't run against a newer schema).
 
 ### Published images
 
 CI (`.github/workflows/docker.yml`) builds a multi-arch (amd64/arm64) image and pushes to
-**Docker Hub `narratorr/narratorr-request`** and **GHCR `ghcr.io/tjiddy/narratorr-request`**:
+**Docker Hub `narratorr/narratorr-requests`** and **GHCR `ghcr.io/tjiddy/narratorr-requests`**:
 
-- **Release** — push a semver tag (`git tag v0.1.0 && git push origin v0.1.0`) → `:latest`, `:0.1.0`,
-  `:0.1` + a GitHub Release.
-- **Bleeding edge** — run the workflow manually (Actions → *Build & Push Docker Image* → Run) → `:edge`.
+- **Release** — push a semver tag on `main` (`git tag v1.0.0 && git push origin v1.0.0`) → `:latest`,
+  `:1.0.0`, `:1.0` + a GitHub Release.
+- **Bleeding edge** — every push to `develop` (or a manual workflow run) → `:develop`.
 
 Quality gates (lint/typecheck/test/build) run first, and the pushed image is smoke-tested before
 the job succeeds. Requires repo secrets **`DOCKERHUB_USERNAME`** and **`DOCKERHUB_TOKEN`**.
@@ -129,3 +129,13 @@ the job succeeds. Requires repo secrets **`DOCKERHUB_USERNAME`** and **`DOCKERHU
 ```bash
 pnpm verify   # lint + test + typecheck + build
 ```
+
+## Contributing
+
+Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) (branch off `develop`) and the
+[Code of Conduct](CODE_OF_CONDUCT.md). Found a security issue? See [SECURITY.md](SECURITY.md) —
+please report privately, not as a public issue.
+
+## License
+
+[GPL-3.0](LICENSE) © Todd Johnson

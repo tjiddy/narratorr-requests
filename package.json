@@ -1,5 +1,5 @@
 {
-  "name": "narrator-request",
+  "name": "narratorr-requests",
   "version": "0.1.0",
   "private": true,
   "license": "GPL-3.0-only",
@@ -34,7 +34,7 @@
     "fastify": "^5.8.5",
     "fastify-plugin": "^5.1.0",
     "fastify-type-provider-zod": "^6.1.0",
-    "nodemailer": "^9.0.0",
+    "nodemailer": "^9.0.1",
     "openid-client": "^6.1.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
@@ -76,6 +76,10 @@
       "esbuild",
       "msw",
       "@tailwindcss/oxide"
-    ]
+    ],
+    "overrides": {
+      "shell-quote": ">=1.8.4",
+      "esbuild": ">=0.28.1"
+    }
   }
 }

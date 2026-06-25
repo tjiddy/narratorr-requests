@@ -14,14 +14,14 @@ afterEach(() => {
 describe('parseOidcProviders', () => {
   it('builds a provider config with sensible defaults', () => {
     setEnv('OIDC_PLEX_ISSUER', 'https://plex.example.com');
-    setEnv('OIDC_PLEX_CLIENT_ID', 'narrator-request');
+    setEnv('OIDC_PLEX_CLIENT_ID', 'narratorr-requests');
     setEnv('OIDC_PLEX_REDIRECT_URI', 'https://r.example.com/api/auth/oidc/plex/callback');
     const [p] = parseOidcProviders(['plex']);
     expect(p).toMatchObject({
       id: 'plex',
       label: 'Plex', // default = capitalized id
       issuer: 'https://plex.example.com',
-      clientId: 'narrator-request',
+      clientId: 'narratorr-requests',
       scope: 'openid profile email', // default scope
       clientSecret: undefined,
     });

@@ -1,1 +1,0 @@
-ALTER TABLE `users` ADD `auto_approve` integer DEFAULT false NOT NULL;

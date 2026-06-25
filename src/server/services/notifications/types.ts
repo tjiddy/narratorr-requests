@@ -3,15 +3,20 @@
  * notifier in spirit (fire-and-forget fan-out to N channels). The config it runs on is
  * the decrypted connector settings from ConnectorSettingsService.getNotificationsConfig()
  * (edited in the admin Settings UI, secrets stored encrypted); buildNotifier assembles a
- * channel for each populated block — see ./index.ts.
+ * channel per notifier — see ./index.ts.
  */
+import type { NotificationEvent } from '../../../shared/notification-events.js';
+
+export type { NotificationEvent } from '../../../shared/notification-events.js';
 
 /**
  * Everything the app can notify about, as a discriminated union keyed on `event`.
  * Each member carries exactly the data that event needs — the renderer and the
- * adapters narrow on `event`. Add an event by adding a member here, a `case` in
- * render(), and (only if it carries channel-specific data) a branch in the adapters
- * that read the payload directly (ntfy cover icon, webhook body).
+ * adapters narrow on `event`. The event-key contract (the discriminant + UI labels)
+ * lives in shared (`src/shared/notification-events.ts`); this union types each variant's
+ * `event` against it and a type-level assertion below keeps the two exactly in sync.
+ * Add an event by adding a member here AND a `NOTIFICATION_EVENTS` entry in shared, plus
+ * a `case` in render() and (only if it carries channel-specific data) an adapter branch.
  */
 export type NotificationPayload =
   | {
@@ -26,6 +31,19 @@ export type NotificationPayload =
       requester: { username: string };
     }
   | {
+      event: 'request.failed';
+      request: {
+        publicId: string;
+        title: string;
+        author: string | null;
+        asin: string;
+        coverUrl: string | null;
+      };
+      requester: { username: string };
+      /** Friendly failure reason, or null when genuinely absent. */
+      reason: string | null;
+    }
+  | {
       event: 'user.pending';
       user: {
         publicId: string;
@@ -35,8 +53,13 @@ export type NotificationPayload =
       };
     };
 
-/** The set of event keys — the discriminant of NotificationPayload. */
-export type NotificationEvent = NotificationPayload['event'];
+// Keep NotificationPayload['event'] and the shared NotificationEvent union EXACTLY in
+// sync, both directions: a payload variant added without a matching NOTIFICATION_EVENTS
+// label entry (or a label key with no payload variant) is a compile error here. This is
+// the single source of truth — no parallel hand-maintained list.
+type Equals<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type AssertTrue<T extends true> = T;
+export type _EventsInSync = AssertTrue<Equals<NotificationPayload['event'], NotificationEvent>>;
 
 /** Human-facing message, rendered once and handed to every channel. */
 export interface RenderedMessage {
@@ -44,6 +67,10 @@ export interface RenderedMessage {
   body: string;
   /** Deep link to act on the event (admin queue / users page), or null if PUBLIC_URL is unset. */
   url: string | null;
+  /** Call-to-action text for the deep link, tracking `url`'s destination (e.g. "Review pending
+   *  users" for /users vs "Open the request queue" for /admin). Used by the email adapter's
+   *  `<a>` label; non-null so it needs no guard. */
+  linkLabel: string;
 }
 
 /** What each channel's send() receives: the structured event + the rendered message. */
@@ -59,27 +86,38 @@ export interface SendContext {
  */
 export interface NotificationChannel {
   readonly name: string;
+  /**
+   * The plaintext secret values this channel holds (tokens / keys / capability URLs), for
+   * exact-match redaction at the dispatcher log sink — where a fetch/network error can embed
+   * a value the URL-pattern scrub can't enumerate (a Pushover/Gotify token, or an arbitrary
+   * webhook URL). Omitted/empty when the channel has no secrets. The Test route redacts with
+   * the candidate secrets instead (it has the candidate config); this is the dispatcher half.
+   */
+  readonly secrets?: readonly string[];
   send(ctx: SendContext): Promise<void>;
 }
 
 /**
+ * A single decrypted notifier in the shape buildNotifier consumes. `config` is the
+ * runtime (plaintext) type-specific config — secrets revealed; the adapter map validates
+ * it per type. `type` stays a bare string (an unknown type is skipped at build).
+ */
+export interface RuntimeNotifier {
+  id: string;
+  name: string;
+  type: string;
+  events: NotificationEvent[];
+  config: Record<string, unknown>;
+}
+
+/**
  * Decrypted notification config the dispatcher is built from. Produced by the
- * connector-settings service (reads the DB, decrypts secrets); a channel block is
- * null when unconfigured. Shapes mirror the adapter configs.
+ * connector-settings service (reads the DB, decrypts secrets per the registry's secret
+ * metadata). An empty `notifiers` list yields a no-op Notifier.
  */
 export interface NotificationsConfig {
   publicUrl: string | null;
-  ntfy: { url: string; topic: string; token: string | null; priority: string | null } | null;
-  email: {
-    host: string;
-    port: number;
-    secure: boolean;
-    user: string | null;
-    pass: string | null;
-    from: string;
-    to: string;
-  } | null;
-  webhook: { url: string } | null;
+  notifiers: RuntimeNotifier[];
 }
 
 /** Minimal structural logger — Fastify's pino logger satisfies it. */

@@ -6,6 +6,6 @@ export default defineConfig({
   out: './drizzle',
   dialect: 'turso',
   dbCredentials: {
-    url: `file:${process.env.DATABASE_PATH || './narrator-request.db'}`,
+    url: `file:${process.env.DATABASE_PATH || './narratorr-requests.db'}`,
   },
 });

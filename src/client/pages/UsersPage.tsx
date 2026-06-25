@@ -5,16 +5,17 @@ import { Badge } from '../components/Badge';
 import { Button } from '../components/Button';
 import { EmptyState } from '../components/EmptyState';
 import { InboxIcon } from '../components/icons';
+import { sortUsersByStatus } from './sortUsersByStatus';
 
-// Surface pending users first (the admin's action list), then active, then rejected.
-const STATUS_ORDER: Record<UserDto['status'], number> = { pending: 0, active: 1, rejected: 2 };
+type UpdateUser = ReturnType<typeof useUpdateUser>;
+type UserPatch = Parameters<UpdateUser['mutate']>[0]['patch'];
 
 export function UsersPage() {
   const me = useMe();
   const users = useUsers();
   const update = useUpdateUser();
 
-  const rows = users.data ? [...users.data.data].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status]) : [];
+  const rows = users.data ? sortUsersByStatus(users.data.data) : [];
   const pendingCount = rows.filter((u) => u.status === 'pending').length;
 
   return (
@@ -37,63 +38,92 @@ export function UsersPage() {
       )}
       {rows.length > 0 && (
         <ul className="flex flex-col gap-3">
-          {rows.map((u) => {
-            const isSelf = me.data?.publicId === u.publicId;
-            const isAdmin = u.role === 'admin';
-            const busy = update.isPending && update.variables?.publicId === u.publicId;
-            const set = (patch: Parameters<typeof update.mutate>[0]['patch']) =>
-              update.mutate({ publicId: u.publicId, patch });
-            return (
-              <li key={u.publicId} className="glass-card flex items-center gap-3 rounded-xl p-3">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">
-                    <Link to={`/users/${u.publicId}`} className="underline-offset-4 hover:text-primary hover:underline">
-                      {u.username}
-                    </Link>
-                    {isSelf && <span className="ml-1 text-xs text-muted-foreground/70">(you)</span>}
-                    <span className="ml-2 text-xs font-normal text-muted-foreground/60">{u.authProvider}</span>
-                  </p>
-                  {u.email && <p className="truncate text-sm text-muted-foreground">{u.email}</p>}
-                </div>
-
-                {u.status === 'pending' && <Badge variant="warning">Pending</Badge>}
-                {u.status === 'rejected' && <Badge variant="danger">Rejected</Badge>}
-                {u.status === 'active' && u.autoApprove && !isAdmin && <Badge variant="success">Auto-approve</Badge>}
-                {u.status === 'active' && <Badge variant={isAdmin ? 'info' : 'muted'}>{isAdmin ? 'Admin' : 'User'}</Badge>}
-
-                <div className="flex shrink-0 gap-2">
-                  {u.status === 'pending' && (
-                    <>
-                      <Button variant="success" size="sm" loading={busy} onClick={() => set({ status: 'active' })}>
-                        Approve
-                      </Button>
-                      <Button variant="secondary" size="sm" disabled={busy} onClick={() => set({ status: 'rejected' })}>
-                        Reject
-                      </Button>
-                    </>
-                  )}
-                  {u.status === 'rejected' && (
-                    <Button variant="success" size="sm" loading={busy} onClick={() => set({ status: 'active' })}>
-                      Approve
-                    </Button>
-                  )}
-                  {u.status === 'active' && (
-                    <Button
-                      variant={isAdmin ? 'secondary' : 'success'}
-                      size="sm"
-                      disabled={isSelf}
-                      loading={busy}
-                      title={isSelf ? "You can't change your own role" : undefined}
-                      onClick={() => set({ role: isAdmin ? 'user' : 'admin' })}
-                    >
-                      {isAdmin ? 'Demote' : 'Make admin'}
-                    </Button>
-                  )}
-                </div>
-              </li>
-            );
-          })}
+          {rows.map((u) => (
+            <UserRow key={u.publicId} user={u} currentUserId={me.data?.publicId} update={update} />
+          ))}
         </ul>
+      )}
+    </div>
+  );
+}
+
+function UserRow({ user, currentUserId, update }: { user: UserDto; currentUserId: string | undefined; update: UpdateUser }) {
+  const isSelf = currentUserId === user.publicId;
+  const isAdmin = user.role === 'admin';
+  const busy = update.isPending && update.variables?.publicId === user.publicId;
+  const set = (patch: UserPatch) => update.mutate({ publicId: user.publicId, patch });
+
+  return (
+    <li className="glass-card flex items-center gap-3 rounded-xl p-3">
+      <div className="min-w-0 flex-1">
+        <p className="truncate font-medium">
+          <Link to={`/users/${user.publicId}`} className="underline-offset-4 hover:text-primary hover:underline">
+            {user.username}
+          </Link>
+          {isSelf && <span className="ml-1 text-xs text-muted-foreground/70">(you)</span>}
+          <span className="ml-2 text-xs font-normal text-muted-foreground/60">{user.authProvider}</span>
+        </p>
+        {user.email && <p className="truncate text-sm text-muted-foreground">{user.email}</p>}
+      </div>
+
+      <UserBadges user={user} isAdmin={isAdmin} />
+      <UserActions user={user} isAdmin={isAdmin} isSelf={isSelf} busy={busy} set={set} />
+    </li>
+  );
+}
+
+function UserBadges({ user, isAdmin }: { user: UserDto; isAdmin: boolean }) {
+  return (
+    <>
+      {user.status === 'pending' && <Badge variant="warning">Pending</Badge>}
+      {user.status === 'rejected' && <Badge variant="danger">Rejected</Badge>}
+      {user.status === 'active' && user.autoApprove && !isAdmin && <Badge variant="success">Auto-approve</Badge>}
+      {user.status === 'active' && <Badge variant={isAdmin ? 'info' : 'muted'}>{isAdmin ? 'Admin' : 'User'}</Badge>}
+    </>
+  );
+}
+
+function UserActions({
+  user,
+  isAdmin,
+  isSelf,
+  busy,
+  set,
+}: {
+  user: UserDto;
+  isAdmin: boolean;
+  isSelf: boolean;
+  busy: boolean;
+  set: (patch: UserPatch) => void;
+}) {
+  return (
+    <div className="flex shrink-0 gap-2">
+      {user.status === 'pending' && (
+        <>
+          <Button variant="success" size="sm" loading={busy} onClick={() => set({ status: 'active' })}>
+            Approve
+          </Button>
+          <Button variant="secondary" size="sm" disabled={busy} onClick={() => set({ status: 'rejected' })}>
+            Reject
+          </Button>
+        </>
+      )}
+      {user.status === 'rejected' && (
+        <Button variant="success" size="sm" loading={busy} onClick={() => set({ status: 'active' })}>
+          Approve
+        </Button>
+      )}
+      {user.status === 'active' && (
+        <Button
+          variant={isAdmin ? 'secondary' : 'success'}
+          size="sm"
+          disabled={isSelf}
+          loading={busy}
+          title={isSelf ? "You can't change your own role" : undefined}
+          onClick={() => set({ role: isAdmin ? 'user' : 'admin' })}
+        >
+          {isAdmin ? 'Demote' : 'Make admin'}
+        </Button>
       )}
     </div>
   );

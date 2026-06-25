@@ -4,7 +4,13 @@ import { toast } from 'sonner';
 import type { V1AudibleResult } from '@shared/schemas/v1/metadata';
 import type { RequestStatus } from '@shared/schemas/request';
 import type { UpdateUserBody } from '@shared/schemas/user';
-import type { UpdateConnectorSettingsBody } from '@shared/schemas/connectors';
+import type {
+  UpdateConnectorSettingsBody,
+  TestConnectorBody,
+  CreateNotifierBody,
+  UpdateNotifierBody,
+  NotifierTestBody,
+} from '@shared/schemas/connectors';
 import {
   getMe,
   searchCatalog,
@@ -18,10 +24,13 @@ import {
   getConnectorSettings,
   updateConnectorSettings,
   testConnector,
+  createNotifier,
+  updateNotifier,
+  deleteNotifier,
+  testNotifier,
   getAuthProviders,
   localLogin,
   localSignup,
-  type ConnectorChannel,
   ApiError,
 } from './api';
 
@@ -118,7 +127,56 @@ export function useUpdateConnectors() {
 
 export function useTestConnector() {
   return useMutation({
-    mutationFn: (channel: ConnectorChannel) => testConnector(channel),
+    mutationFn: (body: TestConnectorBody) => testConnector(body),
+    onSuccess: (res) => (res.success ? toast.success(res.message) : toast.error(res.message)),
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Test failed'),
+  });
+}
+
+// --- Notifiers (admin) -------------------------------------------------------
+// Mutations refetch the connector settings (which carries the notifier list) so the
+// list reflects the committed state — and the masked secrets reset cleanly.
+const CONNECTORS_KEY = ['admin', 'settings', 'connectors'] as const;
+
+export function useCreateNotifier() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CreateNotifierBody) => createNotifier(body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CONNECTORS_KEY });
+      toast.success('Notifier added');
+    },
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Could not add notifier'),
+  });
+}
+
+export function useUpdateNotifier() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: UpdateNotifierBody }) => updateNotifier(id, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CONNECTORS_KEY });
+      toast.success('Notifier saved');
+    },
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Could not save notifier'),
+  });
+}
+
+export function useDeleteNotifier() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => deleteNotifier(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CONNECTORS_KEY });
+      toast.success('Notifier deleted');
+    },
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Could not delete notifier'),
+  });
+}
+
+export function useTestNotifier() {
+  return useMutation({
+    mutationFn: (body: NotifierTestBody) => testNotifier(body),
     onSuccess: (res) => (res.success ? toast.success(res.message) : toast.error(res.message)),
     onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Test failed'),
   });

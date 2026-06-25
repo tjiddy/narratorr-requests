@@ -61,8 +61,8 @@ const envSchema = z.object({
 
   DATABASE_PATH: z
     .string()
-    .default('./narrator-request.db')
-    .transform((v) => resolveFromRoot(v || './narrator-request.db')),
+    .default('./narratorr-requests.db')
+    .transform((v) => resolveFromRoot(v || './narratorr-requests.db')),
 
   SESSION_SECRET: z.string().optional(),
   // Optional: dedicated key for encrypting connector secrets at rest. When unset,
@@ -88,14 +88,9 @@ const envSchema = z.object({
   // Named to match narratorr's env (both map to Fastify's `trustProxy`).
   TRUSTED_PROXIES: z.string().default(''),
 
-  // Requests. Validated here (fail-fast, like PORT): a non-negative integer, with
-  // blank/0 meaning unlimited (null). Rejects junk like "10abc" and negatives.
-  DEFAULT_REQUEST_QUOTA: z
-    .string()
-    .default('10')
-    .transform((v) => v.trim())
-    .refine((v) => v === '' || /^\d+$/.test(v), 'must be a non-negative integer or blank')
-    .transform((v) => (v === '' || v === '0' ? null : Number(v))),
+  // The default request quota (limit + rolling window) is no longer env-configured — it's
+  // admin-editable in the Settings UI and stored in app_settings. A fresh DB seeds a sane
+  // default (10 requests / rolling 30 days) via SettingsService.ensure().
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -229,9 +224,6 @@ if (authMode === 'standard' && !localAuth && oidcProviders.length === 0) {
   );
 }
 
-// Parsed + validated in the env schema (blank/0 → unlimited).
-const defaultRequestQuota = env.DEFAULT_REQUEST_QUOTA;
-
 export const config = {
   port: env.PORT,
   bindHost: env.BIND_HOST,
@@ -246,9 +238,6 @@ export const config = {
   localAuth,
   oidcProviders,
   bootstrapAdmin,
-  defaultRequestQuota,
-  /** Rolling quota window in days (PLAN decision #5). */
-  quotaWindowDays: 30,
 };
 
 export type AppConfig = typeof config;

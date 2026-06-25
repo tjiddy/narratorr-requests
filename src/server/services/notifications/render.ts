@@ -15,6 +15,19 @@ export function render(payload: NotificationPayload, baseUrl: string | null): Re
         body: `${requester.username} requested “${request.title}”${by}.`,
         // The admin acts on a request in the queue.
         url: baseUrl ? `${baseUrl}/admin` : null,
+        linkLabel: 'Open the request queue',
+      };
+    }
+    case 'request.failed': {
+      const { request, reason } = payload;
+      const by = request.author ? ` by ${request.author}` : '';
+      const because = reason ? `: ${reason}` : '';
+      return {
+        title: 'Request failed',
+        body: `“${request.title}” failed to acquire${by}${because}`,
+        // The admin intervenes (manual search / deny / refund) from the request queue.
+        url: baseUrl ? `${baseUrl}/admin` : null,
+        linkLabel: 'Open the request queue',
       };
     }
     case 'user.pending': {
@@ -27,13 +40,14 @@ export function render(payload: NotificationPayload, baseUrl: string | null): Re
         body: `${user.username}${contact} signed up${via} and is waiting for your approval.`,
         // The admin approves a user on the Users page, not the request queue.
         url: baseUrl ? `${baseUrl}/users` : null,
+        linkLabel: 'Review pending users',
       };
     }
     default: {
       // Exhaustiveness guard: a new event without a case here is a compile error,
       // not a silent generic message.
       const _exhaustive: never = payload;
-      return { title: 'Notification', body: String(_exhaustive), url: baseUrl };
+      return { title: 'Notification', body: String(_exhaustive), url: baseUrl, linkLabel: 'Open' };
     }
   }
 }

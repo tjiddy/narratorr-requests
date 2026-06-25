@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "b25ef883-9d80-4d04-ac9f-0c84a5ed8f70",
+  "id": "abb6da83-ee34-4601-96e1-54b32ceeee12",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "app_settings": {
@@ -14,12 +14,28 @@
           "notNull": true,
           "autoincrement": false
         },
-        "default_quota": {
-          "name": "default_quota",
+        "default_quota_mode": {
+          "name": "default_quota_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'limited'"
+        },
+        "default_quota_limit": {
+          "name": "default_quota_limit",
           "type": "integer",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "default_quota_window_days": {
+          "name": "default_quota_window_days",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 30
         },
         "auto_approve_roles": {
           "name": "auto_approve_roles",
@@ -31,6 +47,13 @@
         },
         "notify_config": {
           "name": "notify_config",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "connectors": {
+          "name": "connectors",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
@@ -49,7 +72,12 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "default_quota_mode_limit": {
+          "name": "default_quota_mode_limit",
+          "value": "(\"app_settings\".\"default_quota_mode\" = 'limited') = (\"app_settings\".\"default_quota_limit\" IS NOT NULL) AND (\"app_settings\".\"default_quota_limit\" IS NULL OR \"app_settings\".\"default_quota_limit\" > 0)"
+        }
+      }
     },
     "requests": {
       "name": "requests",
@@ -258,25 +286,32 @@
           "notNull": true,
           "autoincrement": false
         },
-        "plex_id": {
-          "name": "plex_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "authelia_subject": {
-          "name": "authelia_subject",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "plex_username": {
-          "name": "plex_username",
+        "auth_provider": {
+          "name": "auth_provider",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "auth_subject": {
+          "name": "auth_subject",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "username": {
+          "name": "username",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "password_hash": {
+          "name": "password_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "email": {
@@ -301,12 +336,36 @@
           "autoincrement": false,
           "default": "'user'"
         },
-        "request_quota": {
-          "name": "request_quota",
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'pending'"
+        },
+        "request_quota_mode": {
+          "name": "request_quota_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'inherit'"
+        },
+        "request_quota_limit": {
+          "name": "request_quota_limit",
           "type": "integer",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "auto_approve": {
+          "name": "auto_approve",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
         },
         "created_at": {
           "name": "created_at",
@@ -325,24 +384,18 @@
           ],
           "isUnique": true
         },
-        "users_plex_id_unique": {
-          "name": "users_plex_id_unique",
+        "idx_users_provider_subject": {
+          "name": "idx_users_provider_subject",
           "columns": [
-            "plex_id"
+            "auth_provider",
+            "auth_subject"
           ],
           "isUnique": true
         },
-        "users_authelia_subject_unique": {
-          "name": "users_authelia_subject_unique",
+        "idx_users_username": {
+          "name": "idx_users_username",
           "columns": [
-            "authelia_subject"
-          ],
-          "isUnique": true
-        },
-        "idx_users_plex_username": {
-          "name": "idx_users_plex_username",
-          "columns": [
-            "plex_username"
+            "username"
           ],
           "isUnique": false
         }
@@ -350,7 +403,12 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "request_quota_mode_limit": {
+          "name": "request_quota_mode_limit",
+          "value": "(\"users\".\"request_quota_mode\" = 'limited') = (\"users\".\"request_quota_limit\" IS NOT NULL) AND (\"users\".\"request_quota_limit\" IS NULL OR \"users\".\"request_quota_limit\" > 0)"
+        }
+      }
     }
   },
   "views": {},

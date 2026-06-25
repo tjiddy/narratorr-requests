@@ -4,11 +4,14 @@ import type { V1AudibleResult } from '@shared/schemas/v1/metadata';
 import type { ListEnvelope } from '@shared/schemas/v1/common';
 import type {
   ConnectorSettingsDto,
+  NotifierDto,
   UpdateConnectorSettingsBody,
+  TestConnectorBody,
   TestConnectorResult,
+  CreateNotifierBody,
+  UpdateNotifierBody,
+  NotifierTestBody,
 } from '@shared/schemas/connectors';
-
-export type ConnectorChannel = 'narratorr' | 'ntfy' | 'email' | 'webhook';
 
 export class ApiError extends Error {
   constructor(
@@ -116,9 +119,36 @@ export const updateConnectorSettings = (body: UpdateConnectorSettingsBody) =>
     body: JSON.stringify(body),
   })).then(parse<ConnectorSettingsDto>);
 
-export const testConnector = (channel: ConnectorChannel) =>
+export const testConnector = (body: TestConnectorBody) =>
   fetch('/api/admin/settings/connectors/test', opts({
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ channel }),
+    body: JSON.stringify(body),
+  })).then(parse<TestConnectorResult>);
+
+// --- Notifiers (admin): per-notifier CRUD + candidate test --------------------
+export const createNotifier = (body: CreateNotifierBody) =>
+  fetch('/api/admin/settings/notifiers', opts({
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })).then(parse<NotifierDto>);
+
+export const updateNotifier = (id: string, body: UpdateNotifierBody) =>
+  fetch(`/api/admin/settings/notifiers/${encodeURIComponent(id)}`, opts({
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })).then(parse<NotifierDto>);
+
+export const deleteNotifier = (id: string) =>
+  fetch(`/api/admin/settings/notifiers/${encodeURIComponent(id)}`, opts({ method: 'DELETE' })).then(
+    parse<{ ok: true }>,
+  );
+
+export const testNotifier = (body: NotifierTestBody) =>
+  fetch('/api/admin/settings/notifiers/test', opts({
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
   })).then(parse<TestConnectorResult>);

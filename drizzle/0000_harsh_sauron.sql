@@ -1,9 +1,13 @@
 CREATE TABLE `app_settings` (
 	`id` integer PRIMARY KEY NOT NULL,
-	`default_quota` integer,
+	`default_quota_mode` text DEFAULT 'limited' NOT NULL,
+	`default_quota_limit` integer,
+	`default_quota_window_days` integer DEFAULT 30 NOT NULL,
 	`auto_approve_roles` text DEFAULT '["admin"]' NOT NULL,
 	`notify_config` text,
-	`updated_at` integer DEFAULT (unixepoch()) NOT NULL
+	`connectors` text,
+	`updated_at` integer DEFAULT (unixepoch()) NOT NULL,
+	CONSTRAINT "default_quota_mode_limit" CHECK((`app_settings`.`default_quota_mode` = 'limited') = (`app_settings`.`default_quota_limit` IS NOT NULL) AND (`app_settings`.`default_quota_limit` IS NULL OR `app_settings`.`default_quota_limit` > 0))
 );
 --> statement-breakpoint
 CREATE TABLE `requests` (
@@ -35,17 +39,21 @@ CREATE UNIQUE INDEX `idx_requests_user_asin_active` ON `requests` (`user_id`,`as
 CREATE TABLE `users` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`public_id` text NOT NULL,
-	`plex_id` text,
-	`authelia_subject` text,
-	`plex_username` text NOT NULL,
+	`auth_provider` text NOT NULL,
+	`auth_subject` text NOT NULL,
+	`username` text NOT NULL,
+	`password_hash` text,
 	`email` text,
 	`thumb` text,
 	`role` text DEFAULT 'user' NOT NULL,
-	`request_quota` integer,
-	`created_at` integer DEFAULT (unixepoch()) NOT NULL
+	`status` text DEFAULT 'pending' NOT NULL,
+	`request_quota_mode` text DEFAULT 'inherit' NOT NULL,
+	`request_quota_limit` integer,
+	`auto_approve` integer DEFAULT false NOT NULL,
+	`created_at` integer DEFAULT (unixepoch()) NOT NULL,
+	CONSTRAINT "request_quota_mode_limit" CHECK((`users`.`request_quota_mode` = 'limited') = (`users`.`request_quota_limit` IS NOT NULL) AND (`users`.`request_quota_limit` IS NULL OR `users`.`request_quota_limit` > 0))
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `users_public_id_unique` ON `users` (`public_id`);--> statement-breakpoint
-CREATE UNIQUE INDEX `users_plex_id_unique` ON `users` (`plex_id`);--> statement-breakpoint
-CREATE UNIQUE INDEX `users_authelia_subject_unique` ON `users` (`authelia_subject`);--> statement-breakpoint
-CREATE INDEX `idx_users_plex_username` ON `users` (`plex_username`);
+CREATE UNIQUE INDEX `idx_users_provider_subject` ON `users` (`auth_provider`,`auth_subject`);--> statement-breakpoint
+CREATE INDEX `idx_users_username` ON `users` (`username`);

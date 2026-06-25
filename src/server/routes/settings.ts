@@ -1,23 +1,31 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
+import { z } from 'zod';
 import type { AppDeps } from '../services/deps.js';
 import {
   connectorSettingsDtoSchema,
+  notifierDtoSchema,
   updateConnectorSettingsBodySchema,
+  createNotifierBodySchema,
+  updateNotifierBodySchema,
+  notifierTestBodySchema,
   testConnectorBodySchema,
   testConnectorResultSchema,
 } from '../../shared/schemas/connectors.js';
 import type { TestConnectorResult } from '../../shared/schemas/connectors.js';
 import { requireAdmin } from '../plugins/auth.js';
 import { NarratorrClient, NarratorrError } from '../services/narratorr-client.js';
+import { Mutex } from '../util/mutex.js';
 import {
   buildNotifier,
-  buildChannel,
+  buildNotifierChannel,
   render,
-  type NotificationsConfig,
+  redact,
+  type NotificationEvent,
   type NotificationPayload,
   type SendContext,
 } from '../services/notifications/index.js';
+import { NOTIFIER_REGISTRY, type NotifierType } from '../../shared/notifier-registry.js';
 
 function describeNarratorrError(err: unknown): string {
   if (err instanceof NarratorrError) {
@@ -28,24 +36,73 @@ function describeNarratorrError(err: unknown): string {
   return err instanceof Error ? err.message : 'Unknown error';
 }
 
-function testContext(cfg: NotificationsConfig): SendContext {
-  const payload: NotificationPayload = {
-    event: 'request.created',
-    request: { publicId: 'rq_test', title: 'Test notification', author: 'narrator-request', asin: 'TEST', coverUrl: null },
-    requester: { username: '(settings test)' },
-  };
-  // Render via the real renderer so a test notification matches production formatting.
-  return { payload, message: render(payload, cfg.publicUrl) };
+/** The sample payload for an event — so Test exercises the event the notifier is configured for. */
+function samplePayload(event: NotificationEvent): NotificationPayload {
+  switch (event) {
+    case 'request.created':
+      return {
+        event: 'request.created',
+        request: { publicId: 'rq_test', title: 'Test notification', author: 'narratorr-requests', asin: 'TEST', coverUrl: null },
+        requester: { username: '(settings test)' },
+      };
+    case 'request.failed':
+      return {
+        event: 'request.failed',
+        request: { publicId: 'rq_test', title: 'Test notification', author: 'narratorr-requests', asin: 'TEST', coverUrl: null },
+        requester: { username: '(settings test)' },
+        reason: 'This is a test failure reason.',
+      };
+    case 'user.pending':
+      return {
+        event: 'user.pending',
+        user: { publicId: 'us_test', username: '(settings test)', email: null, authProvider: 'local' },
+      };
+    default: {
+      const _exhaustive: never = event;
+      return _exhaustive;
+    }
+  }
 }
+
+/** A sample event rendered with the given public URL, for a Test probe. */
+function testContext(event: NotificationEvent, publicUrl: string | null): SendContext {
+  const payload = samplePayload(event);
+  // Render via the real renderer so a test notification matches production formatting.
+  return { payload, message: render(payload, publicUrl) };
+}
+
+/**
+ * The resolved (plaintext) secret values in a candidate notifier config — passed to
+ * redact() so a Test error embedding a token/key/capability-URL never reaches the admin
+ * raw. Walks the registry's secret metadata, so it covers every type without a per-type branch.
+ */
+function candidateSecrets(candidate: { type: NotifierType; config: Record<string, unknown> }): string[] {
+  return NOTIFIER_REGISTRY[candidate.type].secretFields
+    .map((sf) => candidate.config[sf.field])
+    .filter((v): v is string => typeof v === 'string' && v.length > 0);
+}
+
+const idParams = z.object({ id: z.string().min(1) });
+const okSchema = z.object({ ok: z.literal(true) });
 
 export function registerSettingsRoutes(app: FastifyInstance, deps: AppDeps): void {
   const a = app.withTypeProvider<ZodTypeProvider>();
 
-  // Rebuild the live narratorr client + notifier from the freshly-saved DB settings.
+  // ONE in-process mutex serializes ALL connector/notifier writes. The critical section
+  // wraps the whole read-modify-write + reconfigure(), and covers BOTH the notifier
+  // mutations and the /connectors PUT — they share the single app_settings.connectors
+  // JSON blob, so an unserialized overlap would lose a change. (Multi-process would need
+  // DB-level locking instead — see Mutex.)
+  const writeLock = new Mutex();
+
+  // Rebuild the live narratorr client + notifier from the freshly-saved DB settings, and
+  // refresh the request-quota policy so an edited default limit/window takes effect on the
+  // next request (no restart). Notifier-only saves re-apply the same quota — a cheap no-op read.
   async function reconfigure(): Promise<void> {
     const ncfg = await deps.connectorSettings.getNarratorrConfig();
     deps.narratorr.set(ncfg ? new NarratorrClient({ baseUrl: ncfg.url, apiKey: ncfg.apiKey }) : null);
     deps.notifier = buildNotifier(await deps.connectorSettings.getNotificationsConfig(), app.log);
+    deps.requests.reconfigureQuota(await deps.connectorSettings.getDefaultQuota());
   }
 
   a.get(
@@ -62,40 +119,114 @@ export function registerSettingsRoutes(app: FastifyInstance, deps: AppDeps): voi
     { schema: { body: updateConnectorSettingsBodySchema, response: { 200: connectorSettingsDtoSchema } } },
     async (request) => {
       requireAdmin(request);
-      await deps.connectorSettings.update(request.body);
-      await reconfigure();
-      return deps.connectorSettings.getDto();
+      return writeLock.run(async () => {
+        await deps.connectorSettings.update(request.body);
+        await reconfigure();
+        return deps.connectorSettings.getDto();
+      });
     },
   );
 
-  // Fire a live probe against the SAVED config for one connector. Always returns 200
-  // with { success, message } — a failed test is a result, not an HTTP error.
+  // ---- Notifier CRUD (per-notifier; all admin, all through the write mutex) ----
+  a.post(
+    '/api/admin/settings/notifiers',
+    { schema: { body: createNotifierBodySchema, response: { 200: notifierDtoSchema } } },
+    async (request) => {
+      requireAdmin(request);
+      return writeLock.run(async () => {
+        const created = await deps.connectorSettings.createNotifier(request.body);
+        await reconfigure();
+        // Return the freshly-created notifier from the masked DTO list (no secret leak),
+        // matched by its assigned id — not by array position, which is brittle against any
+        // future reorder/filter in getDto() (the update route already returns by id).
+        const dto = await deps.connectorSettings.getDto();
+        return dto.notifiers.find((n) => n.id === created.id)!;
+      });
+    },
+  );
+
+  a.put(
+    '/api/admin/settings/notifiers/:id',
+    { schema: { params: idParams, body: updateNotifierBodySchema, response: { 200: notifierDtoSchema } } },
+    async (request) => {
+      requireAdmin(request);
+      const { id } = request.params;
+      return writeLock.run(async () => {
+        await deps.connectorSettings.updateNotifier(id, request.body);
+        await reconfigure();
+        const dto = await deps.connectorSettings.getDto();
+        return dto.notifiers.find((n) => n.id === id)!;
+      });
+    },
+  );
+
+  a.delete(
+    '/api/admin/settings/notifiers/:id',
+    { schema: { params: idParams, response: { 200: okSchema } } },
+    async (request) => {
+      requireAdmin(request);
+      const { id } = request.params;
+      return writeLock.run(async () => {
+        await deps.connectorSettings.deleteNotifier(id);
+        await reconfigure();
+        return { ok: true as const };
+      });
+    },
+  );
+
+  // Fire a sample notification through the CANDIDATE (current, unsaved) notifier values —
+  // so Test confirms config BEFORE a save. Edit (id present) → unchanged secrets fall back
+  // to the stored value; the path NEVER persists. Always 200 { success, message } — a
+  // failed probe is a result, not an HTTP error. The write mutex is held ONLY around
+  // candidate-config building (it resolves omit-to-keep secrets from the stored row); the
+  // outbound send() runs OUTSIDE the lock so a slow/dead endpoint can't block Save/Delete/Create.
+  a.post(
+    '/api/admin/settings/notifiers/test',
+    { schema: { body: notifierTestBodySchema, response: { 200: testConnectorResultSchema } } },
+    async (request): Promise<TestConnectorResult> => {
+      requireAdmin(request);
+      const body = request.body;
+      let channel;
+      let candidate;
+      try {
+        // Secret resolution reads stored state → serialize it. Channel construction reads no
+        // DB state, so building it here (still inside the try) needs no lock.
+        candidate = await writeLock.run(() => deps.connectorSettings.buildCandidateNotifier(body));
+        channel = buildNotifierChannel(candidate.type, candidate.config);
+      } catch (err) {
+        // A bad candidate (e.g. a required secret that won't resolve) is a failed test. No
+        // resolved candidate config to enumerate here → pattern-based redaction only.
+        return { success: false, message: redact(err) };
+      }
+      if (!channel) return { success: false, message: `${body.type} is not configured.` };
+      try {
+        await channel.send(testContext(body.event, body.publicUrl ?? null));
+        return { success: true, message: 'Test notification sent.' };
+      } catch (err) {
+        // redact() before returning: a fetch/network error can embed the capability webhook
+        // URL or a token — scrub both the resolved candidate secrets and URL-path secrets.
+        return { success: false, message: redact(err, candidateSecrets(candidate)) };
+      }
+    },
+  );
+
+  // Test the narratorr connection (its own card; the /connectors PUT persists it). Probes
+  // the candidate (unsaved) discrete fields, omit-to-keep apiKey. Always 200. The write mutex
+  // wraps ONLY the candidate-config build (resolves the stored apiKey); the ping() runs OUTSIDE
+  // the lock so a slow/dead narratorr can't block a concurrent Save/Delete/Create write.
   a.post(
     '/api/admin/settings/connectors/test',
     { schema: { body: testConnectorBodySchema, response: { 200: testConnectorResultSchema } } },
     async (request): Promise<TestConnectorResult> => {
       requireAdmin(request);
-      const { channel } = request.body;
-
-      if (channel === 'narratorr') {
-        const cfg = await deps.connectorSettings.getNarratorrConfig();
-        if (!cfg) return { success: false, message: 'Narratorr is not configured.' };
-        try {
-          await new NarratorrClient({ baseUrl: cfg.url, apiKey: cfg.apiKey }).ping();
-          return { success: true, message: 'Connected to narratorr.' };
-        } catch (err) {
-          return { success: false, message: describeNarratorrError(err) };
-        }
-      }
-
-      const cfg = await deps.connectorSettings.getNotificationsConfig();
-      const ch = buildChannel(channel, cfg);
-      if (!ch) return { success: false, message: `${channel} is not configured.` };
+      const body = request.body;
+      const cfg = await writeLock.run(() => deps.connectorSettings.buildCandidateNarratorrConfig(body.narratorr));
+      if (!cfg) return { success: false, message: 'Narratorr is not configured.' };
       try {
-        await ch.send(testContext(cfg));
-        return { success: true, message: 'Test notification sent.' };
+        await new NarratorrClient({ baseUrl: cfg.url, apiKey: cfg.apiKey }).ping();
+        return { success: true, message: 'Connected to narratorr.' };
       } catch (err) {
-        return { success: false, message: err instanceof Error ? err.message : 'Unknown error' };
+        return { success: false, message: describeNarratorrError(err) };
       }
     },
   );

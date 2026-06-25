@@ -1,7 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { eq } from 'drizzle-orm';
-import { RequestService, type RequestPolicy } from './request.service.js';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { and, eq } from 'drizzle-orm';
+import { RequestService, type RequestPolicy, type RequestFailureNotifyDeps } from './request.service.js';
 import { NarratorrError, type INarratorrClient } from './narratorr-client.js';
+import { UserService } from './user.service.js';
+import type { Notifier, NotificationPayload } from './notifications/index.js';
+import type { NotifierLogger } from './notifications/types.js';
 import { createTestDb, insertUser } from '../test-support/db.js';
 import { requests } from '../../db/schema.js';
 import type { Db } from '../../db/client.js';
@@ -40,7 +43,7 @@ const body = (asin: string, title = 'A Book'): CreateRequestBody => ({
 });
 
 const policy = (over: Partial<RequestPolicy> = {}): RequestPolicy => ({
-  defaultQuota: 10,
+  defaultQuota: { mode: 'limited', limit: 10 },
   windowDays: 30,
   autoApproveRoles: ['admin'],
   ...over,
@@ -100,16 +103,83 @@ describe('RequestService.create', () => {
 
   it('still enforces quota for an auto-approve user (auto-approve ≠ unlimited)', async () => {
     const user = await insertUser(db, { role: 'user', autoApprove: true });
-    const svc = new RequestService(db, client, policy({ defaultQuota: 1 }));
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 1 } }));
     await svc.create(user.id, body('B1'));
     await expect(svc.create(user.id, body('B2'))).rejects.toMatchObject({ code: 'QUOTA_EXCEEDED' });
+  });
+});
+
+describe('insert-time unique-violation race', () => {
+  // The preflight findActiveDuplicate() at create():154 returns before insertRequest(),
+  // so a pre-seeded duplicate alone only retests preflight dedupe and never reaches the
+  // catch at insertRequest():225-232. Simulate the race window explicitly: drive the DB
+  // read seam (db.query.requests.findFirst) so preflight MISSES and the catch re-query
+  // HITS, and make the insert throw the unique violation. (:memory: libSQL breaks across
+  // db.transaction() per CLAUDE.md, so a spy is preferred over real concurrency.)
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('resolves the race to the existing duplicate — no new row, no handoff', async () => {
+    // Drive an AUTO-APPROVE caller (admin) against an `approved` duplicate so the
+    // no-handoff assertion is mutation-sensitive: create() returns at :163 (`!created`)
+    // BEFORE the auto-approve handoff at :164. handoff() only acts on an `approved` row,
+    // so if that early return were ever removed, handoff(dupe) would fire addBook here —
+    // a `pending` duplicate would no-op in handoff() and mask the regression. `approved`
+    // is an active status covered by the partial unique index.
+    const admin = await insertUser(db, { role: 'admin' });
+    // Seed the duplicate directly — direct db.insert does not touch FakeClient.added.
+    const [seeded] = await db
+      .insert(requests)
+      .values({ publicId: 'rq_dupe', userId: admin.id, asin: 'B1', title: 't', status: 'approved' })
+      .returning();
+
+    // Preflight (create():154) misses; catch re-query (insertRequest():228) hits the seed.
+    vi.spyOn(db.query.requests, 'findFirst')
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(seeded);
+    // The insert trips the partial unique index between preflight and write.
+    vi.spyOn(db, 'insert').mockImplementation(() => {
+      throw new Error('UNIQUE constraint failed: requests.user_id, requests.asin');
+    });
+
+    const svc = new RequestService(db, client, policy());
+    const { row, created } = await svc.create(admin.id, body('B1'));
+
+    expect(created).toBe(false);
+    expect(row.publicId).toBe(seeded!.publicId); // returns the existing duplicate
+    // No handoff for the raced call: an approved dupe handed to handoff() WOULD call
+    // addBook, so length 0 proves create() short-circuited before handoff / re-charge.
+    expect(client.added).toHaveLength(0);
+
+    // No second row was written for the (user, asin) pair.
+    vi.restoreAllMocks();
+    const rows = await db
+      .select()
+      .from(requests)
+      .where(and(eq(requests.userId, admin.id), eq(requests.asin, 'B1')));
+    expect(rows).toHaveLength(1);
+  });
+
+  it('re-throws the original error when the catch re-query finds no duplicate (no silent null)', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    // Both preflight and catch re-query miss; the unique violation must surface unchanged.
+    vi.spyOn(db.query.requests, 'findFirst')
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
+    vi.spyOn(db, 'insert').mockImplementation(() => {
+      throw new Error('UNIQUE constraint failed: requests.user_id, requests.asin');
+    });
+
+    const svc = new RequestService(db, client, policy());
+    await expect(svc.create(user.id, body('B1'))).rejects.toThrow('UNIQUE constraint failed');
   });
 });
 
 describe('quota enforcement (rolling window)', () => {
   it('blocks a normal user past their limit but never an auto-approve admin', async () => {
     const user = await insertUser(db, { role: 'user' });
-    const svc = new RequestService(db, client, policy({ defaultQuota: 1 }));
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 1 } }));
     await svc.create(user.id, body('B1'));
     await expect(svc.create(user.id, body('B2'))).rejects.toMatchObject({ code: 'QUOTA_EXCEEDED' });
 
@@ -117,9 +187,28 @@ describe('quota enforcement (rolling window)', () => {
     await expect(svc.create(admin.id, body('B3'))).resolves.toBeTruthy();
   });
 
+  it('rejects a blocked user with 403 QUOTA_BLOCKED (distinct from the at-cap 429), regardless of usage', async () => {
+    const blocked = await insertUser(db, { role: 'user', requestQuota: { mode: 'blocked' } });
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 10 } }));
+    await expect(svc.create(blocked.id, body('B1'))).rejects.toMatchObject({
+      statusCode: 403,
+      code: 'QUOTA_BLOCKED',
+    });
+    // Nothing was written — a hard block stops the request before any insert.
+    const rows = await db.select().from(requests).where(eq(requests.userId, blocked.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  it('a per-user unlimited override imposes no cap even under a limited default', async () => {
+    const user = await insertUser(db, { role: 'user', requestQuota: { mode: 'unlimited' } });
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 1 } }));
+    await expect(svc.create(user.id, body('B1'))).resolves.toBeTruthy();
+    await expect(svc.create(user.id, body('B2'))).resolves.toBeTruthy(); // no cap despite default of 1
+  });
+
   it('does not count denied or non-user-caused failures, but does count user-caused failures', async () => {
     const user = await insertUser(db, { role: 'user' });
-    const svc = new RequestService(db, client, policy({ defaultQuota: 10 }));
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 10 } }));
     // Seed four requests in various terminal states.
     await db.insert(requests).values([
       { publicId: 'rq_open', userId: user.id, asin: 'A1', title: 't', status: 'pending' },
@@ -127,18 +216,97 @@ describe('quota enforcement (rolling window)', () => {
       { publicId: 'rq_failrefund', userId: user.id, asin: 'A3', title: 't', status: 'failed', userCausedFailure: false },
       { publicId: 'rq_failcharged', userId: user.id, asin: 'A4', title: 't', status: 'failed', userCausedFailure: true },
     ]);
-    const usage = await svc.quotaUsage(user.id, 10);
+    const usage = await svc.quotaUsage(user.id, { mode: 'limited', limit: 10 });
     expect(usage.used).toBe(2); // pending + user-caused failure only
     expect(usage.remaining).toBe(8);
   });
 
-  it('reports unlimited (null) for auto-approve roles', async () => {
+  it('reports unlimited for auto-approve roles (limit & remaining null)', async () => {
     const admin = await insertUser(db, { role: 'admin' });
-    const svc = new RequestService(db, client, policy({ defaultQuota: 1 }));
-    expect(svc.resolveLimit({ role: 'admin', requestQuota: 5 })).toBeNull();
-    const usage = await svc.quotaUsage(admin.id, svc.resolveLimit({ role: 'admin', requestQuota: null }));
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 1 } }));
+    expect(svc.resolveQuota({ role: 'admin', requestQuotaMode: 'limited', requestQuotaLimit: 5 })).toEqual({ mode: 'unlimited' });
+    const usage = await svc.quotaUsage(admin.id, svc.resolveQuota({ role: 'admin', requestQuotaMode: 'inherit', requestQuotaLimit: null }));
+    expect(usage.mode).toBe('unlimited');
     expect(usage.limit).toBeNull();
     expect(usage.remaining).toBeNull();
+  });
+});
+
+describe('resolveQuota — mode resolution + configured-default sourcing', () => {
+  it('inherits the configured limited default for a non-override, non-admin user', () => {
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 7 } }));
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'inherit', requestQuotaLimit: null })).toEqual({ mode: 'limited', limit: 7 });
+  });
+
+  it('a per-user limited override still wins over the configured default', () => {
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 7 } }));
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'limited', requestQuotaLimit: 2 })).toEqual({ mode: 'limited', limit: 2 });
+  });
+
+  it('a per-user unlimited override imposes no cap even when the default is limited', () => {
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 7 } }));
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'unlimited', requestQuotaLimit: null })).toEqual({ mode: 'unlimited' });
+  });
+
+  it('a per-user blocked override resolves to blocked', () => {
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 7 } }));
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'blocked', requestQuotaLimit: null })).toEqual({ mode: 'blocked' });
+  });
+
+  it('inherit with an unlimited default imposes no cap on a fall-through user', () => {
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'unlimited' } }));
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'inherit', requestQuotaLimit: null })).toEqual({ mode: 'unlimited' });
+  });
+});
+
+describe('quotaUsage — configured rolling window', () => {
+  const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000);
+
+  it('counts only requests inside the configured window (cutoff uses windowDays)', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    const svc = new RequestService(db, client, policy({ windowDays: 7 }));
+    await db.insert(requests).values([
+      { publicId: 'rq_in', userId: user.id, asin: 'A1', title: 't', status: 'pending', requestedAt: daysAgo(6) },
+      { publicId: 'rq_out', userId: user.id, asin: 'A2', title: 't', status: 'pending', requestedAt: daysAgo(8) },
+    ]);
+    const usage = await svc.quotaUsage(user.id, { mode: 'limited', limit: 10 });
+    expect(usage.used).toBe(1); // only the in-window request
+    expect(usage.windowDays).toBe(7);
+  });
+
+  it('a wider window includes a request a narrower one excludes (1 vs 7 vs 30)', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    await db
+      .insert(requests)
+      .values({ publicId: 'rq_x', userId: user.id, asin: 'A1', title: 't', status: 'pending', requestedAt: daysAgo(10) });
+    expect((await new RequestService(db, client, policy({ windowDays: 1 })).quotaUsage(user.id, { mode: 'limited', limit: 10 })).used).toBe(0);
+    expect((await new RequestService(db, client, policy({ windowDays: 7 })).quotaUsage(user.id, { mode: 'limited', limit: 10 })).used).toBe(0);
+    expect((await new RequestService(db, client, policy({ windowDays: 30 })).quotaUsage(user.id, { mode: 'limited', limit: 10 })).used).toBe(1);
+  });
+});
+
+describe('reconfigureQuota — live settings save', () => {
+  it('updates the default limit + window applied to fall-through users', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 10 }, windowDays: 30 }));
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'inherit', requestQuotaLimit: null })).toEqual({ mode: 'limited', limit: 10 });
+
+    svc.reconfigureQuota({ mode: 'limited', limit: 1, windowDays: 7 });
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'inherit', requestQuotaLimit: null })).toEqual({ mode: 'limited', limit: 1 });
+    expect((await svc.quotaUsage(user.id, { mode: 'limited', limit: 1 })).windowDays).toBe(7);
+  });
+
+  it('can switch the default to unlimited live', () => {
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 10 } }));
+    svc.reconfigureQuota({ mode: 'unlimited', windowDays: 30 });
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'inherit', requestQuotaLimit: null })).toEqual({ mode: 'unlimited' });
+  });
+
+  it('does not subject admins or per-user overrides to the new default', () => {
+    const svc = new RequestService(db, client, policy());
+    svc.reconfigureQuota({ mode: 'limited', limit: 1, windowDays: 1 });
+    expect(svc.resolveQuota({ role: 'admin', requestQuotaMode: 'inherit', requestQuotaLimit: null })).toEqual({ mode: 'unlimited' });
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'limited', requestQuotaLimit: 5 })).toEqual({ mode: 'limited', limit: 5 });
   });
 });
 
@@ -186,7 +354,7 @@ describe('admin decisions + handoff', () => {
 
   it('fails a request (refundable) on a TERMINAL handoff error (422), and re-throws', async () => {
     const admin = await insertUser(db, { role: 'admin' });
-    client.throwOnAdd = new NarratorrError(422, 'not_found', 'unresolvable asin');
+    client.throwOnAdd = new NarratorrError(422, 'asin_not_resolved', 'unresolvable asin');
     const svc = new RequestService(db, client, policy());
     await expect(svc.create(admin.id, body('B1'))).rejects.toBeInstanceOf(NarratorrError);
     const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
@@ -202,6 +370,344 @@ describe('admin decisions + handoff', () => {
     const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
     expect(row?.status).toBe('approved'); // stranded — findApprovedAwaitingHandoff retries it
     expect(row?.narratorrBookId).toBeNull();
+    expect(row?.failureReason).toBeNull(); // transient writes no reason
+  });
+});
+
+describe('handoff failure reasons (friendly per-code add-handoff errors)', () => {
+  // Each terminal code → its friendly reason on the persisted row, refundable, no book id,
+  // and the error still re-throws. A fresh approved request starts with no book, so
+  // `narratorrBookId` must remain null (untouched) on the failed row.
+  const cases: Array<{ code: string; expected: string }> = [
+    { code: 'edition_rejected', expected: "This edition is excluded by the library's filters." },
+    { code: 'asin_not_resolved', expected: "Couldn't find this book in the catalog." },
+    { code: 'invalid_record', expected: 'Incomplete book data from the provider.' },
+  ];
+
+  for (const { code, expected } of cases) {
+    it(`maps a 422 ${code} to its friendly reason on the failed row`, async () => {
+      const admin = await insertUser(db, { role: 'admin' });
+      client.throwOnAdd = new NarratorrError(422, code, 'gate rejected');
+      const svc = new RequestService(db, client, policy());
+      await expect(svc.create(admin.id, body('B1'))).rejects.toBeInstanceOf(NarratorrError);
+      const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+      expect(row?.status).toBe('failed');
+      expect(row?.failureReason).toBe(expected);
+      expect(row?.userCausedFailure).toBe(false);
+      expect(row?.narratorrBookId).toBeNull();
+    });
+  }
+
+  it('falls back to a readable `code: message` for an unknown terminal code (no crash)', async () => {
+    const admin = await insertUser(db, { role: 'admin' });
+    client.throwOnAdd = new NarratorrError(422, 'some_new_code', 'a brand new reason');
+    const svc = new RequestService(db, client, policy());
+    await expect(svc.create(admin.id, body('B1'))).rejects.toBeInstanceOf(NarratorrError);
+    const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+    expect(row?.status).toBe('failed');
+    expect(row?.failureReason).toBe('some_new_code: a brand new reason');
+    expect(row?.userCausedFailure).toBe(false);
+  });
+
+  it('uses the generic fallback reason for a non-NarratorrError terminal throw', async () => {
+    const admin = await insertUser(db, { role: 'admin' });
+    client.throwOnAdd = new Error('db exploded');
+    const svc = new RequestService(db, client, policy());
+    await expect(svc.create(admin.id, body('B1'))).rejects.toThrow('db exploded');
+    const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+    expect(row?.status).toBe('failed');
+    expect(row?.failureReason).toBe('handoff failed');
+    expect(row?.userCausedFailure).toBe(false);
+  });
+
+  it('writes a friendly reason when the added book itself comes back failed/missing', async () => {
+    const admin = await insertUser(db, { role: 'admin' });
+    client.status = 'missing'; // addBook resolves a book already in a terminal-failed state
+    const svc = new RequestService(db, client, policy());
+    const { row } = await svc.create(admin.id, body('B1'));
+    expect(row.status).toBe('failed');
+    const [fresh] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+    expect(fresh?.failureReason).toBe('No source found upstream.');
+  });
+});
+
+describe('request.failed notification (#60)', () => {
+  // A recording notifier behind a mutable holder, so a test can swap the live notifier
+  // and prove the failed-emission reads it at dispatch time (no stale capture).
+  function harness() {
+    const notify = vi.fn(async (_p: NotificationPayload) => {});
+    const holder = { current: { notify } as unknown as Notifier };
+    const swapped = vi.fn(async (_p: NotificationPayload) => {});
+    return {
+      notify,
+      holder,
+      swapped,
+      /** Wiring with the real UserService (resolves the inserted requester's username). */
+      deps: (): RequestFailureNotifyDeps => ({ getNotifier: () => holder.current, users: new UserService(db) }),
+      /** Wiring whose user lookup always misses (deleted-account case). */
+      depsNoRequester: (): RequestFailureNotifyDeps => ({
+        getNotifier: () => holder.current,
+        users: { getById: async () => undefined },
+      }),
+    };
+  }
+
+  const failedPayload = (notify: ReturnType<typeof vi.fn>): NotificationPayload =>
+    notify.mock.calls.find((c) => (c[0] as NotificationPayload).event === 'request.failed')?.[0] as NotificationPayload;
+
+  it('emits request.failed once on a TERMINAL handoff error, and still rethrows', async () => {
+    const h = harness();
+    const admin = await insertUser(db, { role: 'admin', username: 'todd' });
+    client.throwOnAdd = new NarratorrError(422, 'asin_not_resolved', 'nope');
+    const svc = new RequestService(db, client, policy(), h.deps());
+
+    await expect(svc.create(admin.id, body('B1'))).rejects.toBeInstanceOf(NarratorrError); // rethrow preserved
+    await vi.waitFor(() => expect(h.notify).toHaveBeenCalledTimes(1));
+    expect(failedPayload(h.notify)).toMatchObject({
+      event: 'request.failed',
+      request: { asin: 'B1', title: 'A Book', author: 'Author' },
+      requester: { username: 'todd' },
+      reason: "Couldn't find this book in the catalog.",
+    });
+    const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+    expect(row?.status).toBe('failed');
+  });
+
+  it('emits once on a handoff that resolves a terminal-failed book AND preserves narratorrBookId', async () => {
+    const h = harness();
+    const admin = await insertUser(db, { role: 'admin', username: 'todd' });
+    client.status = 'missing'; // addBook resolves a book already terminal-failed → mapBookStatus → failed
+    const svc = new RequestService(db, client, policy(), h.deps());
+
+    const { row } = await svc.create(admin.id, body('B1'));
+    expect(row.status).toBe('failed');
+    expect(row.narratorrBookId).toBe('bk_1'); // book linkage NOT dropped by the failed transition
+    await vi.waitFor(() => expect(h.notify).toHaveBeenCalledTimes(1));
+    expect(failedPayload(h.notify)).toMatchObject({ event: 'request.failed', reason: 'No source found upstream.' });
+  });
+
+  it('emits once via applyBook (poller reconciliation) when a polled book goes failed', async () => {
+    const h = harness();
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const svc = new RequestService(db, client, policy(), h.deps());
+    const { row } = await svc.create(user.id, body('B1'));
+
+    const book: V1Book = { id: 'bk_1', title: 't', authors: [], narrators: [], status: 'failed' };
+    const next = await svc.applyBook(row, book);
+    expect(next).toBe('failed');
+    await vi.waitFor(() => expect(h.notify).toHaveBeenCalledTimes(1));
+    expect(failedPayload(h.notify)).toMatchObject({
+      event: 'request.failed',
+      reason: 'Download failed upstream.',
+      requester: { username: 'todd' },
+    });
+
+    // Re-applying the already-failed book is not a transition → no re-emit.
+    const again = await svc.applyBook(row, book);
+    expect(again).toBeNull();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits exactly once when two callers race the same non-failed row (atomic claim)', async () => {
+    const h = harness();
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const svc = new RequestService(db, client, policy(), h.deps());
+    const { row } = await svc.create(user.id, body('B1'));
+
+    const [a, b] = await Promise.all([
+      svc.markFailed(row, 'gone'),
+      svc.markFailed(row, 'gone'),
+    ]);
+    expect([a, b].filter(Boolean)).toHaveLength(1); // only one caller performed the transition
+    await vi.waitFor(() => expect(h.notify).toHaveBeenCalledTimes(1));
+  });
+
+  it('two concurrent failed-claims on the same acquiring row: exactly one wins and emits once', async () => {
+    const h = harness();
+    const admin = await insertUser(db, { role: 'admin', username: 'todd' });
+    const svc = new RequestService(db, client, policy(), h.deps());
+    const { row } = await svc.create(admin.id, body('B1')); // admin auto-approve → handoff → acquiring
+    expect(row.status).toBe('acquiring');
+
+    const [a, b] = await Promise.all([svc.markFailed(row, 'gone'), svc.markFailed(row, 'gone')]);
+    expect([a, b].filter(Boolean)).toHaveLength(1);
+    await vi.waitFor(() => expect(h.notify).toHaveBeenCalledTimes(1));
+    const [fresh] = await db.select().from(requests).where(eq(requests.id, row.id));
+    expect(fresh?.status).toBe('failed');
+  });
+
+  it('a stale failed-claim does NOT clobber a row that moved on to a newer terminal state (no emit)', async () => {
+    const h = harness();
+    const admin = await insertUser(db, { role: 'admin', username: 'todd' });
+    const svc = new RequestService(db, client, policy(), h.deps());
+    const { row } = await svc.create(admin.id, body('B1')); // acquiring, narratorrBookId set
+    expect(row.status).toBe('acquiring');
+
+    // The row moves on to a NEWER terminal state behind the stale caller's back.
+    await db.update(requests).set({ status: 'available' }).where(eq(requests.id, row.id));
+
+    // The stale caller still holds the `acquiring` row and tries to fail it → claims zero rows.
+    await expect(svc.markFailed(row, 'gone')).resolves.toBe(false);
+    const [fresh] = await db.select().from(requests).where(eq(requests.id, row.id));
+    expect(fresh?.status).toBe('available'); // newer terminal state preserved, not clobbered to failed
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.notify).not.toHaveBeenCalled(); // no request.failed emitted
+  });
+
+  it('dispatches through the LIVE notifier after a reconfiguration (no stale capture)', async () => {
+    const h = harness();
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const svc = new RequestService(db, client, policy(), h.deps());
+    const { row } = await svc.create(user.id, body('B1'));
+
+    // Simulate settings.ts reassigning deps.notifier to a freshly-built dispatcher.
+    h.holder.current = { notify: h.swapped } as unknown as Notifier;
+    await svc.markFailed(row, 'gone');
+
+    await vi.waitFor(() => expect(h.swapped).toHaveBeenCalledTimes(1)); // rebuilt notifier got it
+    expect(h.notify).not.toHaveBeenCalled(); // original (stale) instance did NOT
+  });
+
+  it('still emits with a fallback username when the requester lookup misses, without throwing', async () => {
+    // depsNoRequester.getById always returns undefined — the deleted-account case. (Deleting
+    // the user row itself would cascade-delete the request, so we drive the lookup miss directly.)
+    const h = harness();
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const svc = new RequestService(db, client, policy(), h.depsNoRequester());
+    const { row } = await svc.create(user.id, body('B1'));
+
+    await expect(svc.markFailed(row, 'gone')).resolves.toBe(true); // transition lands, no throw
+    await vi.waitFor(() => expect(h.notify).toHaveBeenCalledTimes(1));
+    expect(failedPayload(h.notify)).toMatchObject({
+      event: 'request.failed',
+      requester: { username: '(unknown requester)' },
+    });
+  });
+
+  it('does not emit when constructed without notify deps (backward-compatible)', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    const svc = new RequestService(db, client, policy()); // 3-arg, no notifier
+    const { row } = await svc.create(user.id, body('B1'));
+    await expect(svc.markFailed(row, 'gone')).resolves.toBe(true); // no throw, transition still lands
+    const [fresh] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+    expect(fresh?.status).toBe('failed');
+  });
+});
+
+describe('request.failed emission diagnostics (#68: a lost notification is logged, never thrown)', () => {
+  // emitFailed is fire-and-forget: it must NEVER throw into the request/poll path, but a lost
+  // notification (rejected requester lookup or rejected dispatch) has to be diagnosable. These
+  // wire a warn spy as the deps logger and assert the redacted breadcrumb carries the request id.
+  function diagDeps(over: {
+    getById?: () => Promise<Awaited<ReturnType<UserService['getById']>>>;
+    notify?: (p: NotificationPayload) => Promise<void>;
+  }): { deps: RequestFailureNotifyDeps; warn: ReturnType<typeof vi.fn>; notify: ReturnType<typeof vi.fn> } {
+    const warn = vi.fn();
+    const logger: NotifierLogger = { info() {}, warn, error() {}, debug() {} };
+    const notify = vi.fn(over.notify ?? (async (_p: NotificationPayload) => {}));
+    const deps: RequestFailureNotifyDeps = {
+      getNotifier: () => ({ notify } as unknown as Notifier),
+      users: over.getById ? { getById: over.getById } : new UserService(db),
+      logger,
+    };
+    return { deps, warn, notify };
+  }
+
+  const warnFor = (warn: ReturnType<typeof vi.fn>, needle: string) =>
+    warn.mock.calls.find((c) => String(c[1]).includes(needle));
+
+  it('logs a redacted warn (carrying the request id) when the requester lookup REJECTS, still dispatches with the placeholder, and never throws', async () => {
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const { deps, warn, notify } = diagDeps({
+      getById: async () => {
+        throw new Error('db fault');
+      },
+    });
+    const svc = new RequestService(db, client, policy(), deps);
+    const { row } = await svc.create(user.id, body('B1'));
+
+    await expect(svc.markFailed(row, 'gone')).resolves.toBe(true); // transition lands, caller never throws
+
+    await vi.waitFor(() => expect(warnFor(warn, 'requester lookup failed')).toBeTruthy());
+    expect(warnFor(warn, 'requester lookup failed')?.[0]).toMatchObject({ request: row.publicId });
+    // The notification is NOT lost on a lookup fault — it still dispatches with the placeholder.
+    await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1));
+    expect(notify.mock.calls[0]![0]).toMatchObject({
+      event: 'request.failed',
+      requester: { username: '(unknown requester)' },
+    });
+  });
+
+  it('logs a redacted warn (carrying the request id) when the notifier dispatch REJECTS, with no propagation into the caller', async () => {
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const { deps, warn, notify } = diagDeps({
+      notify: async () => {
+        throw new Error('channel down');
+      },
+    });
+    const svc = new RequestService(db, client, policy(), deps);
+    const { row } = await svc.create(user.id, body('B1'));
+
+    await expect(svc.markFailed(row, 'gone')).resolves.toBe(true); // caller never sees the dispatch failure
+    await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(warnFor(warn, 'notifier dispatch failed')).toBeTruthy());
+    expect(warnFor(warn, 'notifier dispatch failed')?.[0]).toMatchObject({ request: row.publicId });
+  });
+
+  it('REDACTS a secret-bearing dispatch error before logging the breadcrumb (capability URL never reaches the log raw)', async () => {
+    // A real dispatch fault can embed a capability URL / token-in-path (the leak vector redact()
+    // exists for). The error text below carries a Telegram bot token in the URL path; the logged
+    // breadcrumb must scrub it. Deleting redact() from emitFailed would fail THIS assertion (the
+    // plain-text 'channel down' case above would still pass — it has no secret to scrub).
+    const secretToken = 'bot123456789:AA-ZZ_SuperSecretBotTokenValue';
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const { deps, warn, notify } = diagDeps({
+      notify: async () => {
+        throw new Error(`fetch failed for https://api.telegram.org/${secretToken}/sendMessage`);
+      },
+    });
+    const svc = new RequestService(db, client, policy(), deps);
+    const { row } = await svc.create(user.id, body('B1'));
+
+    await expect(svc.markFailed(row, 'gone')).resolves.toBe(true);
+    await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(warnFor(warn, 'notifier dispatch failed')).toBeTruthy());
+    const breadcrumb = warnFor(warn, 'notifier dispatch failed')![0];
+    const serialized = JSON.stringify(breadcrumb);
+    expect(serialized).not.toContain(secretToken); // token scrubbed
+    expect(serialized).not.toContain('SuperSecretBotTokenValue'); // and its value-class fragment
+    expect(serialized).toContain('«redacted»'); // replaced by the shared redaction marker
+    expect(breadcrumb).toMatchObject({ request: row.publicId });
+  });
+
+  it('logs nothing at warn on the happy path (successful lookup + dispatch, emitted once)', async () => {
+    const user = await insertUser(db, { role: 'user', username: 'todd' });
+    const { deps, warn, notify } = diagDeps({});
+    const svc = new RequestService(db, client, policy(), deps);
+    const { row } = await svc.create(user.id, body('B1'));
+
+    await svc.markFailed(row, 'gone');
+    await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 10)); // let any stray breadcrumb settle
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('toDto', () => {
+  const requester = { publicId: 'us_x', username: 'x' };
+
+  it('maps failureReason onto the DTO (friendly string and null)', async () => {
+    const admin = await insertUser(db, { role: 'admin' });
+    const svc = new RequestService(db, client, policy());
+
+    const { row: pending } = await svc.create(admin.id, body('B1'));
+    expect(svc.toDto(pending, requester).failureReason).toBeNull();
+
+    client.throwOnAdd = new NarratorrError(422, 'edition_rejected', 'nope');
+    await expect(svc.create(admin.id, body('B2'))).rejects.toBeInstanceOf(NarratorrError);
+    const [failed] = await db.select().from(requests).where(eq(requests.asin, 'B2'));
+    expect(svc.toDto(failed!, requester).failureReason).toBe("This edition is excluded by the library's filters.");
   });
 });
 
@@ -227,6 +733,21 @@ describe('applyBook (poller reconciliation)', () => {
     expect(toFailed).toBe('failed');
   });
 
+  it('writes the friendly book-status reason when a polled book goes failed/missing', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    const svc = new RequestService(db, client, policy());
+
+    const { row: r1 } = await svc.create(user.id, body('B1'));
+    await svc.applyBook(r1, mkBook('failed'));
+    const [failed] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
+    expect(failed?.failureReason).toBe('Download failed upstream.');
+
+    const { row: r2 } = await svc.create(user.id, body('B2'));
+    await svc.applyBook(r2, mkBook('missing'));
+    const [missing] = await db.select().from(requests).where(eq(requests.asin, 'B2'));
+    expect(missing?.failureReason).toBe('No source found upstream.');
+  });
+
   it('leaves a `wanted` request acquiring indefinitely — no app-side timeout', async () => {
     const admin = await insertUser(db, { role: 'admin' });
     const svc = new RequestService(db, client, policy());
@@ -237,5 +758,32 @@ describe('applyBook (poller reconciliation)', () => {
     expect(result).toBeNull(); // no transition — still acquiring
     const [fresh] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
     expect(fresh?.status).toBe('acquiring');
+  });
+
+  it('persists a late-arriving book id while status stays acquiring — returns null but updates narratorrBookId', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    const svc = new RequestService(db, client, policy());
+    const [row] = await db
+      .insert(requests)
+      .values({
+        publicId: 'rq_late',
+        userId: user.id,
+        asin: 'L1',
+        title: 't',
+        status: 'acquiring',
+        narratorrBookId: 'bk_old',
+      })
+      .returning();
+
+    // `downloading` maps back to acquiring (status unchanged), but the book id differs:
+    // the bookId !== row.narratorrBookId branch falls through the early-return guard,
+    // persists the new id, then returns null because `next === row.status`.
+    const book: V1Book = { id: 'bk_new', title: 't', authors: [], narrators: [], status: 'downloading' };
+    const result = await svc.applyBook(row!, book);
+
+    expect(result).toBeNull(); // no transition — still acquiring
+    const [fresh] = await db.select().from(requests).where(eq(requests.id, row!.id));
+    expect(fresh?.status).toBe('acquiring');
+    expect(fresh?.narratorrBookId).toBe('bk_new'); // late id persisted despite the null return
   });
 });

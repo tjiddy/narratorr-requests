@@ -19,7 +19,12 @@ const TAG_LEN = 16;
 /** Derive a stable 32-byte key from whichever source string is configured. */
 export function deriveSettingsKey(opts: { settingsKey?: string | undefined; sessionSecret: string }): Buffer {
   const source = opts.settingsKey?.trim() || opts.sessionSecret;
-  const derived = hkdfSync('sha256', source, new Uint8Array(0), 'narrator-request:settings:v1', 32);
+  // The HKDF `info` is a frozen key-derivation domain separator, NOT a display name. It
+  // tracks the app name only by coincidence; changing it re-derives the key and orphans
+  // every stored secret. Realigned to `narratorr-requests` during the pre-1.0 DB wipe — from
+  // here it is fixed. Do NOT touch it in a future rename; rotate via `:v2` as a deliberate,
+  // migrated key change only.
+  const derived = hkdfSync('sha256', source, new Uint8Array(0), 'narratorr-requests:settings:v1', 32);
   return Buffer.from(derived);
 }
 

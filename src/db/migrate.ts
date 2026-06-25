@@ -26,7 +26,7 @@ export async function runMigrations(dbPath: string) {
 // inlines this file into the server bundle (argv[1] would match the bundle).
 const isBundled = !import.meta.url.includes('/src/');
 if (!isBundled && process.argv[1] === fileURLToPath(import.meta.url)) {
-  const dbPath = process.env.DATABASE_PATH || './narrator-request.db';
+  const dbPath = process.env.DATABASE_PATH || './narratorr-requests.db';
   console.log(`Running migrations on ${dbPath}...`);
   runMigrations(dbPath)
     .then(() => {

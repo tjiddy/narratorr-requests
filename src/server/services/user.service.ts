@@ -6,6 +6,7 @@ import type { AuthUser } from '../types.js';
 import type { OidcProfile } from './oidc.service.js';
 import { publicId } from '../util/ids.js';
 import { notFound } from '../util/errors.js';
+import { isUniqueViolation } from '../util/db.js';
 
 export const DEV_ADMIN_PROVIDER = 'local';
 export const DEV_ADMIN_SUBJECT = 'dev-admin';
@@ -63,10 +64,19 @@ export class UserService {
       thumb: row.thumb,
       role: row.role,
       status: row.status,
-      requestQuota: row.requestQuota,
+      requestQuota: this.requestQuotaDto(row),
       autoApprove: row.autoApprove,
       createdAt: row.createdAt.toISOString(),
     };
+  }
+
+  /** Serialize the two per-user quota columns into the four-mode union. `limited` carries the
+   *  positive limit (CHECK-guaranteed); every other mode is a bare `{ mode }`. */
+  private requestQuotaDto(row: Pick<UserRow, 'requestQuotaMode' | 'requestQuotaLimit'>): UserDto['requestQuota'] {
+    if (row.requestQuotaMode === 'limited' && row.requestQuotaLimit !== null) {
+      return { mode: 'limited', limit: row.requestQuotaLimit };
+    }
+    return { mode: row.requestQuotaMode === 'limited' ? 'inherit' : row.requestQuotaMode };
   }
 
   async getById(id: number): Promise<UserRow | undefined> {
@@ -97,10 +107,15 @@ export class UserService {
    *  override, and/or the auto-approve flag. The "can't change your own role/status"
    *  guard lives in the route, where the acting admin's identity is known. */
   async updateUser(pid: string, patch: UpdateUserBody): Promise<UserRow> {
-    const set: Partial<Pick<UserRow, 'role' | 'status' | 'requestQuota' | 'autoApprove'>> = {};
+    const set: Partial<Pick<UserRow, 'role' | 'status' | 'requestQuotaMode' | 'requestQuotaLimit' | 'autoApprove'>> = {};
     if (patch.role !== undefined) set.role = patch.role;
     if (patch.status !== undefined) set.status = patch.status;
-    if (patch.requestQuota !== undefined) set.requestQuota = patch.requestQuota;
+    if (patch.requestQuota !== undefined) {
+      // Mode → columns: a `limited` override sets the positive limit; every other mode nulls it,
+      // keeping the row CHECK-coherent.
+      set.requestQuotaMode = patch.requestQuota.mode;
+      set.requestQuotaLimit = patch.requestQuota.mode === 'limited' ? patch.requestQuota.limit : null;
+    }
     if (patch.autoApprove !== undefined) set.autoApprove = patch.autoApprove;
     if (Object.keys(set).length === 0) {
       const existing = await this.getByPublicId(pid);
@@ -249,10 +264,4 @@ export class UserService {
     if (!row) throw new Error('failed to ensure dev admin');
     return row;
   }
-}
-
-/** libSQL surfaces a unique-constraint breach with this SQLite message fragment. */
-function isUniqueViolation(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /UNIQUE constraint failed/i.test(msg) || /SQLITE_CONSTRAINT/i.test(msg);
 }
