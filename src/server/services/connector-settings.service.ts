@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Db } from '../../db/client.js';
 import { appSettings } from '../../db/schema.js';
 import { notificationEventSchema, type NotificationEvent } from '../../shared/notification-events.js';
+import { quotaWindowDaysSchema } from '../../shared/schemas/connectors.js';
 import type {
   StoredConnectors,
   StoredNotifier,
@@ -13,6 +14,7 @@ import type {
   CreateNotifierBody,
   UpdateNotifierBody,
   NotifierTestBody,
+  QuotaWindowDays,
 } from '../../shared/schemas/connectors.js';
 import {
   NOTIFIER_REGISTRY,
@@ -64,10 +66,14 @@ export class ConnectorSettingsService {
    * (`default_quota` + `default_quota_window_days`) — NOT the encrypted `connectors` JSON blob.
    * `limit: null` = unlimited; `windowDays` is the concrete rolling-window day count. Read at
    * boot to seed the request policy and again on every settings save to reconfigure it live.
+   * The stored window is narrowed through `quotaWindowDaysSchema` so the value carries the
+   * allowed-set literal type (and a legacy/corrupt out-of-set value degrades to 30 rather than
+   * 502'ing the masked GET DTO that reuses the same constraint).
    */
-  async getDefaultQuota(): Promise<{ limit: number | null; windowDays: number }> {
+  async getDefaultQuota(): Promise<{ limit: number | null; windowDays: QuotaWindowDays }> {
     const row = await this.db.query.appSettings.findFirst({ where: eq(appSettings.id, SINGLETON_ID) });
-    return { limit: row?.defaultQuota ?? null, windowDays: row?.defaultQuotaWindowDays ?? 30 };
+    const window = quotaWindowDaysSchema.safeParse(row?.defaultQuotaWindowDays);
+    return { limit: row?.defaultQuota ?? null, windowDays: window.success ? window.data : 30 };
   }
 
   /**

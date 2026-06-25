@@ -41,16 +41,16 @@ const narratorrUrl = httpUrl.refine((v) => {
 export const QUOTA_WINDOW_DAYS = [1, 7, 30] as const;
 export type QuotaWindowDays = (typeof QUOTA_WINDOW_DAYS)[number];
 
-/** `windowDays` is constrained to the allowed set so the unit dropdown is the single source of truth. */
-const quotaWindowDaysSchema = z.union([z.literal(1), z.literal(7), z.literal(30)]);
+/** `windowDays` is constrained to the allowed set so the unit dropdown is the single source of
+ *  truth. Exported so the server can narrow the stored column value to the literal union. */
+export const quotaWindowDaysSchema = z.union([z.literal(1), z.literal(7), z.literal(30)]);
 
 /** Masked GET shape: limit (positive int or null=unlimited) + the resolved rolling-window days.
- *  windowDays is lenient (`number`) on the OUTBOUND DTO — the server composes it from the NOT NULL
- *  column, which is only ever written through the constrained update body. The allowed-set check
- *  lives on the input side (the update body), where untrusted values arrive. */
+ *  windowDays reuses the allowed-set schema so the GET/response contract rejects a window the UI
+ *  cannot represent — the constraint holds on BOTH sides of the wire, not just the update body. */
 const defaultQuotaDtoSchema = z.object({
   limit: z.number().int().positive().nullable(),
-  windowDays: z.number().int(),
+  windowDays: quotaWindowDaysSchema,
 });
 
 // ---- Stored shape -----------------------------------------------------------
@@ -158,7 +158,7 @@ export interface ConnectorSettingsDto {
   publicUrl: string | null;
   narratorr: { url: string; hasApiKey: boolean } | null;
   notifiers: NotifierDto[];
-  defaultQuota: { limit: number | null; windowDays: number };
+  defaultQuota: { limit: number | null; windowDays: QuotaWindowDays };
 }
 
 // ---- narratorr connector (shared by PUT + Test) -----------------------------

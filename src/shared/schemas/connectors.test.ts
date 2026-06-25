@@ -224,4 +224,19 @@ describe('connectorSettingsDtoSchema', () => {
   it('requires defaultQuota in the masked DTO', () => {
     expect(connectorSettingsDtoSchema.safeParse({ publicUrl: null, narratorr: null, notifiers: [] }).success).toBe(false);
   });
+
+  it('rejects an unsupported defaultQuota.windowDays in the masked DTO (constraint holds on the GET/response side too)', () => {
+    const dto = (windowDays: number) => ({
+      publicUrl: null,
+      narratorr: null,
+      notifiers: [],
+      defaultQuota: { limit: 10, windowDays },
+    });
+    for (const allowed of [1, 7, 30]) {
+      expect(connectorSettingsDtoSchema.safeParse(dto(allowed)).success).toBe(true);
+    }
+    for (const bad of [5, 31, 0, -7, 14]) {
+      expect(connectorSettingsDtoSchema.safeParse(dto(bad)).success).toBe(false);
+    }
+  });
 });
