@@ -99,8 +99,12 @@ export const requests = sqliteTable(
 // Singleton (id = 1). Seeded from config on first boot.
 export const appSettings = sqliteTable('app_settings', {
   id: integer('id').primaryKey(),
-  // null = unlimited. Overrides config.defaultRequestQuota once set in-app.
+  // null = unlimited. The app-wide default request quota, edited in the Settings UI.
   defaultQuota: integer('default_quota'),
+  // Rolling-window size (days) for the default quota — the friendly day/week/month unit
+  // mapped to a fixed day count {1,7,30}. NOT NULL so the cutoff calc always has a concrete
+  // value; default 30 seeds a fresh row and survives an omit-to-keep save.
+  defaultQuotaWindowDays: integer('default_quota_window_days').notNull().default(30),
   // Which roles are auto-approved on request create. MVP: ['admin'].
   autoApproveRoles: text('auto_approve_roles', { mode: 'json' })
     .notNull()

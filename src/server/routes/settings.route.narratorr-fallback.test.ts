@@ -43,12 +43,13 @@ let connectorSettings: ConnectorSettingsService;
 
 async function buildApp(): Promise<FastifyInstance> {
   const db = await createTestDb();
-  await new SettingsService(db).ensure(10);
+  await new SettingsService(db).ensure();
   connectorSettings = new ConnectorSettingsService(db, codec);
   const deps = {
     connectorSettings,
     narratorr: new NarratorrClientHolder(null),
     notifier: new Notifier([], null, silentLog),
+    requests: { reconfigureQuota: vi.fn() },
   } as unknown as AppDeps;
 
   const f = Fastify().withTypeProvider<ZodTypeProvider>();

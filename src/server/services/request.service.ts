@@ -131,6 +131,17 @@ export class RequestService {
   }
 
   /**
+   * Update the app-wide default quota (limit + rolling window) after a Settings save — mirrors
+   * the notifier dispatcher's reconfigure-on-save so the new default takes effect without a
+   * restart. Per-user overrides and admin-unlimited are unaffected; only the fall-through
+   * default and the rolling-window cutoff change.
+   */
+  reconfigureQuota(quota: { limit: number | null; windowDays: number }): void {
+    this.policy.defaultQuota = quota.limit;
+    this.policy.windowDays = quota.windowDays;
+  }
+
+  /**
    * Resolve a user's effective quota limit (null = unlimited). Auto-approve roles
    * are unlimited; everyone else gets their per-user override or the app default.
    */

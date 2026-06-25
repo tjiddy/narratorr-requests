@@ -46,7 +46,7 @@ async function buildApp(
   opts: { config?: Partial<AppConfig>; oidc?: AppDeps['oidc'] } = {},
 ): Promise<FastifyInstance> {
   const db = await createTestDb();
-  await new SettingsService(db).ensure(10);
+  await new SettingsService(db).ensure();
   const users = new UserService(db, {});
   usersSvc = users;
   const requests = new RequestService(db, stubNarratorr, {

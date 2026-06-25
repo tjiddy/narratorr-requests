@@ -6,6 +6,15 @@ import { CheckIcon, SendIcon, SlidersIcon, ServerIcon } from '../components/icon
 import { Field, SectionHeader, SettingsCard } from './settings-ui';
 import { inputCls, secretPlaceholder } from './settings-fields';
 import { initNarratorr, buildNarratorr, isNarratorrDirty, isPublicUrlDirty } from './settings-narratorr';
+import {
+  initDefaultQuota,
+  buildDefaultQuota,
+  isDefaultQuotaDirty,
+  isLimitValid,
+  daysLabel,
+  QUOTA_UNITS,
+  type QuotaUnit,
+} from './settings-default-quota';
 
 // The General + Narratorr connection sections. Each owns its form state and saves
 // independently (per-card save), seeded from its own slice of the settings DTO — the
@@ -23,7 +32,26 @@ function SaveButton({ pending }: { pending: boolean }) {
   );
 }
 
-export function GeneralSection({ saved }: { saved: string | null }) {
+// The General section: the section header over two independently-saved cards (Public URL +
+// Default request quota). Each card is keyed on its own slice of the DTO so a save reseeds
+// only that card (per-card save, mirroring the Narratorr section).
+export function GeneralSection({
+  publicUrl,
+  defaultQuota,
+}: {
+  publicUrl: ConnectorSettingsDto['publicUrl'];
+  defaultQuota: ConnectorSettingsDto['defaultQuota'];
+}) {
+  return (
+    <div className="flex flex-col gap-5">
+      <SectionHeader icon={SlidersIcon} title="General" subtitle="App-wide settings for this install." />
+      <PublicUrlCard key={publicUrl ?? ''} saved={publicUrl} />
+      <DefaultQuotaCard key={JSON.stringify(defaultQuota)} saved={defaultQuota} />
+    </div>
+  );
+}
+
+function PublicUrlCard({ saved }: { saved: string | null }) {
   const update = useUpdateConnectors();
   const [publicUrl, setPublicUrl] = useState(saved ?? '');
   const dirty = isPublicUrlDirty(publicUrl, saved);
@@ -33,35 +61,96 @@ export function GeneralSection({ saved }: { saved: string | null }) {
   }
 
   return (
-    <div className="flex flex-col gap-5">
-      <SectionHeader icon={SlidersIcon} title="General" subtitle="App-wide settings for this install." />
-      <SettingsCard delay="60ms">
-        <form
-          className="flex flex-col gap-4 p-5"
-          onSubmit={(e) => {
-            e.preventDefault();
-            save();
-          }}
+    <SettingsCard delay="60ms">
+      <form
+        className="flex flex-col gap-4 p-5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          save();
+        }}
+      >
+        <Field
+          label="Public URL"
+          hint="Where this app is reached (e.g. https://requests.example.com). Used to deep-link notifications to the queue."
         >
-          <Field
-            label="Public URL"
-            hint="Where this app is reached (e.g. https://requests.example.com). Used to deep-link notifications to the queue."
-          >
+          <input
+            className={inputCls}
+            value={publicUrl}
+            onChange={(e) => setPublicUrl(e.target.value)}
+            placeholder="https://requests.example.com"
+          />
+        </Field>
+        {dirty && (
+          <div className="flex justify-end">
+            <SaveButton pending={update.isPending} />
+          </div>
+        )}
+      </form>
+    </SettingsCard>
+  );
+}
+
+// The default request quota: a number (the limit) + a day/week/month unit, reading like
+// "3 requests per [week]". Blank/0 → unlimited. The window unit maps to a fixed rolling-window
+// day count, shown as a `= N days` hint. Pure decision logic lives in settings-default-quota.ts.
+function DefaultQuotaCard({ saved }: { saved: ConnectorSettingsDto['defaultQuota'] }) {
+  const update = useUpdateConnectors();
+  const initial = initDefaultQuota(saved);
+  const [quota, setQuota] = useState(initial);
+  const dirty = isDefaultQuotaDirty(quota, initial);
+  const valid = isLimitValid(quota.limit);
+
+  function save() {
+    if (!valid) return;
+    update.mutate({ defaultQuota: buildDefaultQuota(quota) });
+  }
+
+  return (
+    <SettingsCard delay="120ms">
+      <form
+        className="flex flex-col gap-4 p-5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          save();
+        }}
+      >
+        <Field
+          label="Default request quota"
+          hint="Applies only to users without a per-user quota override (overrides set on the Users page still win). Admins are always unlimited. Leave the limit blank for no cap."
+          error={valid ? undefined : 'Enter a whole number, or leave blank for unlimited.'}
+        >
+          <div className="flex flex-wrap items-center gap-3">
             <input
-              className={inputCls}
-              value={publicUrl}
-              onChange={(e) => setPublicUrl(e.target.value)}
-              placeholder="https://requests.example.com"
+              className={`${inputCls} w-24`}
+              inputMode="numeric"
+              value={quota.limit}
+              onChange={(e) => setQuota((s) => ({ ...s, limit: e.target.value }))}
+              placeholder="∞"
+              aria-label="Request limit (blank for unlimited)"
             />
-          </Field>
-          {dirty && (
-            <div className="flex justify-end">
-              <SaveButton pending={update.isPending} />
-            </div>
-          )}
-        </form>
-      </SettingsCard>
-    </div>
+            <span className="text-sm text-muted-foreground">requests per</span>
+            <select
+              className={`${inputCls} w-32 capitalize`}
+              value={quota.unit}
+              onChange={(e) => setQuota((s) => ({ ...s, unit: e.target.value as QuotaUnit }))}
+              aria-label="Quota window"
+            >
+              {QUOTA_UNITS.map((u) => (
+                <option key={u} value={u} className="capitalize">
+                  {u}
+                </option>
+              ))}
+            </select>
+            <span className="text-xs text-muted-foreground/70">{daysLabel(quota.unit)}</span>
+          </div>
+        </Field>
+        {dirty && valid && (
+          <div className="flex justify-end">
+            <SaveButton pending={update.isPending} />
+          </div>
+        )}
+      </form>
+    </SettingsCard>
   );
 }
 

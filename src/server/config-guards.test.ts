@@ -93,18 +93,6 @@ describe('config — env coercion', () => {
     await expect(loadConfig({ PORT: '60abc' })).rejects.toThrow(/Invalid environment config/);
   });
 
-  it('rejects a negative DEFAULT_REQUEST_QUOTA', async () => {
-    await expect(loadConfig({ DEFAULT_REQUEST_QUOTA: '-1' })).rejects.toThrow(/Invalid environment config/);
-  });
-
-  it('maps blank and zero DEFAULT_REQUEST_QUOTA to null (unlimited); a positive value passes through', async () => {
-    expect((await loadConfig({ DEFAULT_REQUEST_QUOTA: '' })).config.defaultRequestQuota).toBeNull();
-    vi.unstubAllEnvs();
-    expect((await loadConfig({ DEFAULT_REQUEST_QUOTA: '0' })).config.defaultRequestQuota).toBeNull();
-    vi.unstubAllEnvs();
-    expect((await loadConfig({ DEFAULT_REQUEST_QUOTA: '5' })).config.defaultRequestQuota).toBe(5);
-  });
-
   it('defaults LOCAL_AUTH to true when unset and disables it for falsey strings', async () => {
     // AUTH_BYPASS sidesteps the standard-mode no-auth-method throw so localAuth is the only var under test.
     expect((await loadConfig({ AUTH_BYPASS: '1', NODE_ENV: 'test' })).config.localAuth).toBe(true);

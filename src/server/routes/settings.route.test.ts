@@ -36,13 +36,15 @@ let narratorr: NarratorrClientHolder;
 
 async function buildApp(): Promise<FastifyInstance> {
   const db = await createTestDb();
-  await new SettingsService(db).ensure(10);
+  await new SettingsService(db).ensure();
   connectorSettings = new ConnectorSettingsService(db, codec);
   narratorr = new NarratorrClientHolder(null);
   deps = {
     connectorSettings,
     narratorr,
     notifier: new Notifier([], null, silentLog),
+    // reconfigure() refreshes the request-quota policy on every connector/notifier save.
+    requests: { reconfigureQuota: vi.fn() },
     log: silentLog,
   } as unknown as AppDeps;
 

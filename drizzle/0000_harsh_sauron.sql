@@ -1,6 +1,7 @@
 CREATE TABLE `app_settings` (
 	`id` integer PRIMARY KEY NOT NULL,
 	`default_quota` integer,
+	`default_quota_window_days` integer DEFAULT 30 NOT NULL,
 	`auto_approve_roles` text DEFAULT '["admin"]' NOT NULL,
 	`notify_config` text,
 	`connectors` text,

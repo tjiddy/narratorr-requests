@@ -212,6 +212,68 @@ describe('quota enforcement (rolling window)', () => {
   });
 });
 
+describe('resolveLimit — configured-default sourcing', () => {
+  it('returns the configured default for a non-override, non-admin user', () => {
+    const svc = new RequestService(db, client, policy({ defaultQuota: 7 }));
+    expect(svc.resolveLimit({ role: 'user', requestQuota: null })).toBe(7);
+  });
+
+  it('a per-user override still wins over the configured default', () => {
+    const svc = new RequestService(db, client, policy({ defaultQuota: 7 }));
+    expect(svc.resolveLimit({ role: 'user', requestQuota: 2 })).toBe(2);
+  });
+
+  it('an unlimited default (null) imposes no cap on a fall-through user', () => {
+    const svc = new RequestService(db, client, policy({ defaultQuota: null }));
+    expect(svc.resolveLimit({ role: 'user', requestQuota: null })).toBeNull();
+  });
+});
+
+describe('quotaUsage — configured rolling window', () => {
+  const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000);
+
+  it('counts only requests inside the configured window (cutoff uses windowDays)', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    const svc = new RequestService(db, client, policy({ windowDays: 7 }));
+    await db.insert(requests).values([
+      { publicId: 'rq_in', userId: user.id, asin: 'A1', title: 't', status: 'pending', requestedAt: daysAgo(6) },
+      { publicId: 'rq_out', userId: user.id, asin: 'A2', title: 't', status: 'pending', requestedAt: daysAgo(8) },
+    ]);
+    const usage = await svc.quotaUsage(user.id, 10);
+    expect(usage.used).toBe(1); // only the in-window request
+    expect(usage.windowDays).toBe(7);
+  });
+
+  it('a wider window includes a request a narrower one excludes (1 vs 7 vs 30)', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    await db
+      .insert(requests)
+      .values({ publicId: 'rq_x', userId: user.id, asin: 'A1', title: 't', status: 'pending', requestedAt: daysAgo(10) });
+    expect((await new RequestService(db, client, policy({ windowDays: 1 })).quotaUsage(user.id, 10)).used).toBe(0);
+    expect((await new RequestService(db, client, policy({ windowDays: 7 })).quotaUsage(user.id, 10)).used).toBe(0);
+    expect((await new RequestService(db, client, policy({ windowDays: 30 })).quotaUsage(user.id, 10)).used).toBe(1);
+  });
+});
+
+describe('reconfigureQuota — live settings save', () => {
+  it('updates the default limit + window applied to fall-through users', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    const svc = new RequestService(db, client, policy({ defaultQuota: 10, windowDays: 30 }));
+    expect(svc.resolveLimit({ role: 'user', requestQuota: null })).toBe(10);
+
+    svc.reconfigureQuota({ limit: 1, windowDays: 7 });
+    expect(svc.resolveLimit({ role: 'user', requestQuota: null })).toBe(1);
+    expect((await svc.quotaUsage(user.id, 1)).windowDays).toBe(7);
+  });
+
+  it('does not subject admins or per-user overrides to the new default', () => {
+    const svc = new RequestService(db, client, policy());
+    svc.reconfigureQuota({ limit: 1, windowDays: 1 });
+    expect(svc.resolveLimit({ role: 'admin', requestQuota: null })).toBeNull();
+    expect(svc.resolveLimit({ role: 'user', requestQuota: 5 })).toBe(5);
+  });
+});
+
 describe('admin decisions + handoff', () => {
   it('approve transitions pending → acquiring; deny → denied', async () => {
     const user = await insertUser(db, { role: 'user' });

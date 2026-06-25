@@ -31,6 +31,28 @@ const narratorrUrl = httpUrl.refine((v) => {
   }
 }, 'enter a valid http(s) URL including a host');
 
+// ---- Default request quota --------------------------------------------------
+// The app-wide default request quota, editable on the admin Settings page. It applies to
+// users without a per-user override (admins stay unlimited; per-user auto-approve users are
+// still capped). The window is exposed as friendly day/week/month units that map to a FIXED
+// rolling-window day count — no calendar period, no reset date. `limit: null` = unlimited.
+
+/** Allowed rolling-window sizes in days — the friendly day / week / month units. */
+export const QUOTA_WINDOW_DAYS = [1, 7, 30] as const;
+export type QuotaWindowDays = (typeof QUOTA_WINDOW_DAYS)[number];
+
+/** `windowDays` is constrained to the allowed set so the unit dropdown is the single source of truth. */
+const quotaWindowDaysSchema = z.union([z.literal(1), z.literal(7), z.literal(30)]);
+
+/** Masked GET shape: limit (positive int or null=unlimited) + the resolved rolling-window days.
+ *  windowDays is lenient (`number`) on the OUTBOUND DTO — the server composes it from the NOT NULL
+ *  column, which is only ever written through the constrained update body. The allowed-set check
+ *  lives on the input side (the update body), where untrusted values arrive. */
+const defaultQuotaDtoSchema = z.object({
+  limit: z.number().int().positive().nullable(),
+  windowDays: z.number().int(),
+});
+
 // ---- Stored shape -----------------------------------------------------------
 /**
  * A notifier as persisted. `type` is a BARE STRING (not the registry-derived
@@ -129,12 +151,14 @@ export const connectorSettingsDtoSchema = z.object({
     })
     .nullable(),
   notifiers: z.array(notifierDtoSchema),
+  defaultQuota: defaultQuotaDtoSchema,
 });
 /** Hand-written (the runtime schema's `notifiers` infers `unknown[]`; this keeps it typed). */
 export interface ConnectorSettingsDto {
   publicUrl: string | null;
   narratorr: { url: string; hasApiKey: boolean } | null;
   notifiers: NotifierDto[];
+  defaultQuota: { limit: number | null; windowDays: number };
 }
 
 // ---- narratorr connector (shared by PUT + Test) -----------------------------
@@ -152,6 +176,21 @@ export const updateConnectorSettingsBodySchema = z
   .object({
     publicUrl: httpUrl.nullable().optional(),
     narratorr: narratorrConnectorSchema.nullable().optional(),
+    // Default request quota. `limit`: a positive int, or null=unlimited — 0 (and a blank
+    // input mapped client-side to 0/null) collapses to null so "blank/0 = unlimited" matches
+    // the old DEFAULT_REQUEST_QUOTA semantics. `windowDays`: constrained to the allowed set;
+    // omitted → keep the stored window. The whole object omitted → keep both columns.
+    defaultQuota: z
+      .object({
+        limit: z
+          .number()
+          .int()
+          .min(0)
+          .nullable()
+          .transform((v) => (v === 0 ? null : v)),
+        windowDays: quotaWindowDaysSchema.optional(),
+      })
+      .optional(),
   })
   .strict();
 export type UpdateConnectorSettingsBody = z.infer<typeof updateConnectorSettingsBodySchema>;

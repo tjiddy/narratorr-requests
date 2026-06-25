@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- The default request quota (limit + a day/week/month rolling window) is now admin-editable
+  in the Settings UI, stored in `app_settings` — no redeploy. Per-user overrides still win and
+  admins remain unlimited.
+
+### Removed
+- `DEFAULT_REQUEST_QUOTA` env var (and the hardcoded 30-day window). The default quota is set
+  in Settings instead; a fresh DB seeds 10 requests per rolling 30 days.
+
 ## [1.0.0] - 2026-06-24
 
 Initial public release.

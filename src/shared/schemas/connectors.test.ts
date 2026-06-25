@@ -71,6 +71,37 @@ describe('updateConnectorSettingsBodySchema — narratorr + publicUrl only', () 
   });
 });
 
+describe('updateConnectorSettingsBodySchema — defaultQuota', () => {
+  const quota = (q: unknown) => parse({ defaultQuota: q }).defaultQuota;
+
+  it('accepts a positive int limit + an allowed window', () => {
+    expect(quota({ limit: 3, windowDays: 7 })).toEqual({ limit: 3, windowDays: 7 });
+    expect(quota({ limit: 1, windowDays: 1 })).toEqual({ limit: 1, windowDays: 1 });
+    expect(quota({ limit: 50, windowDays: 30 })).toEqual({ limit: 50, windowDays: 30 });
+  });
+
+  it('treats null and 0 as unlimited (limit → null)', () => {
+    expect(quota({ limit: null, windowDays: 30 })).toEqual({ limit: null, windowDays: 30 });
+    expect(quota({ limit: 0, windowDays: 30 })).toEqual({ limit: null, windowDays: 30 });
+  });
+
+  it('rejects a negative or non-integer limit', () => {
+    expect(accepts({ defaultQuota: { limit: -1, windowDays: 30 } })).toBe(false);
+    expect(accepts({ defaultQuota: { limit: 3.5, windowDays: 30 } })).toBe(false);
+  });
+
+  it('constrains windowDays to {1, 7, 30}; rejects others', () => {
+    for (const bad of [5, 31, 0, -7, 14, 365]) {
+      expect(accepts({ defaultQuota: { limit: 3, windowDays: bad } })).toBe(false);
+    }
+  });
+
+  it('windowDays is omit-to-keep (optional); the whole object is optional too', () => {
+    expect(quota({ limit: 3 })).toEqual({ limit: 3 }); // no windowDays → keep stored, server-side
+    expect(accepts({})).toBe(true); // defaultQuota omitted entirely
+  });
+});
+
 describe('testConnectorBodySchema — narratorr only', () => {
   it('accepts a narratorr candidate', () => {
     expect(testConnectorBodySchema.parse({ channel: 'narratorr' }).channel).toBe('narratorr');
@@ -174,15 +205,23 @@ describe('connectorSettingsDtoSchema', () => {
         { id: 'nf_1', name: 'Phone', type: 'ntfy', events: ['request.created'], config: { url: 'https://ntfy.sh', topic: 't', hasToken: false, priority: null } },
         { id: 'nf_2', name: 'Legacy', type: 'apprise', events: ['user.pending'], unknown: true },
       ],
+      defaultQuota: { limit: 10, windowDays: 30 },
     };
     expect(connectorSettingsDtoSchema.safeParse(dto).success).toBe(true);
   });
 
   it('accepts empty notifiers + null connections', () => {
-    expect(connectorSettingsDtoSchema.parse({ publicUrl: null, narratorr: null, notifiers: [] })).toEqual({
-      publicUrl: null,
-      narratorr: null,
-      notifiers: [],
-    });
+    expect(
+      connectorSettingsDtoSchema.parse({
+        publicUrl: null,
+        narratorr: null,
+        notifiers: [],
+        defaultQuota: { limit: null, windowDays: 30 },
+      }),
+    ).toEqual({ publicUrl: null, narratorr: null, notifiers: [], defaultQuota: { limit: null, windowDays: 30 } });
+  });
+
+  it('requires defaultQuota in the masked DTO', () => {
+    expect(connectorSettingsDtoSchema.safeParse({ publicUrl: null, narratorr: null, notifiers: [] }).success).toBe(false);
   });
 });

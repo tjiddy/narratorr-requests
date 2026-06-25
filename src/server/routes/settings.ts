@@ -95,11 +95,14 @@ export function registerSettingsRoutes(app: FastifyInstance, deps: AppDeps): voi
   // DB-level locking instead — see Mutex.)
   const writeLock = new Mutex();
 
-  // Rebuild the live narratorr client + notifier from the freshly-saved DB settings.
+  // Rebuild the live narratorr client + notifier from the freshly-saved DB settings, and
+  // refresh the request-quota policy so an edited default limit/window takes effect on the
+  // next request (no restart). Notifier-only saves re-apply the same quota — a cheap no-op read.
   async function reconfigure(): Promise<void> {
     const ncfg = await deps.connectorSettings.getNarratorrConfig();
     deps.narratorr.set(ncfg ? new NarratorrClient({ baseUrl: ncfg.url, apiKey: ncfg.apiKey }) : null);
     deps.notifier = buildNotifier(await deps.connectorSettings.getNotificationsConfig(), app.log);
+    deps.requests.reconfigureQuota(await deps.connectorSettings.getDefaultQuota());
   }
 
   a.get(
