@@ -65,12 +65,16 @@ async function main(): Promise<void> {
     app.log.warn('narratorr is not configured — search and requests will fail until it is set on the Settings page');
   }
 
+  // Seed the request policy from the SANITIZED quota (not the raw settingsRow columns), so boot
+  // enforcement and the Settings GET agree on the same narrowed values — a legacy/corrupt
+  // out-of-set window or non-positive limit degrades identically on both paths.
+  const defaultQuota = await connectorSettings.getDefaultQuota();
   const requests = new RequestService(
     db,
     narratorr,
     {
-      defaultQuota: settingsRow.defaultQuota,
-      windowDays: settingsRow.defaultQuotaWindowDays,
+      defaultQuota: defaultQuota.limit,
+      windowDays: defaultQuota.windowDays,
       autoApproveRoles: settingsRow.autoApproveRoles as Role[],
     },
     // Live-notifier accessor (NOT a captured instance): the settings route reassigns

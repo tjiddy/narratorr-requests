@@ -58,6 +58,11 @@ export class ConnectorSettingsService {
 
   async getStored(): Promise<StoredConnectors> {
     const row = await this.db.query.appSettings.findFirst({ where: eq(appSettings.id, SINGLETON_ID) });
+    return this.connectorsFrom(row);
+  }
+
+  /** The connector blob off a settings row (or a fresh EMPTY when the row/blob is absent). */
+  private connectorsFrom(row: { connectors: StoredConnectors | null } | undefined): StoredConnectors {
     return row?.connectors ?? { ...EMPTY };
   }
 
@@ -66,14 +71,33 @@ export class ConnectorSettingsService {
    * (`default_quota` + `default_quota_window_days`) — NOT the encrypted `connectors` JSON blob.
    * `limit: null` = unlimited; `windowDays` is the concrete rolling-window day count. Read at
    * boot to seed the request policy and again on every settings save to reconfigure it live.
-   * The stored window is narrowed through `quotaWindowDaysSchema` so the value carries the
-   * allowed-set literal type (and a legacy/corrupt out-of-set value degrades to 30 rather than
-   * 502'ing the masked GET DTO that reuses the same constraint).
+   * Stays a standalone single-SELECT accessor (the boot/reconfigure callers want just the quota);
+   * `getDto()` maps the same sanitizer off the row it already fetched.
    */
   async getDefaultQuota(): Promise<{ limit: number | null; windowDays: QuotaWindowDays }> {
     const row = await this.db.query.appSettings.findFirst({ where: eq(appSettings.id, SINGLETON_ID) });
+    return this.sanitizeQuota(row);
+  }
+
+  /**
+   * Narrow the two raw quota columns into a value that ALWAYS satisfies `defaultQuotaDtoSchema`
+   * (`limit: positive-int | null`, `windowDays ∈ {1,7,30}`), so a legacy / hand-edited / corrupt
+   * row can never 502 the masked Settings GET (which reuses those same constraints) nor seed the
+   * boot request policy with a value the write path would reject. Both columns degrade
+   * symmetrically: `windowDays` falls back to 30 on an out-of-set value, and `limit` falls back to
+   * `null` (unlimited) when the stored `default_quota` is not a positive integer (`0`, negative, or
+   * non-finite) — fresh-DB values (`NOT NULL DEFAULT 30` window, `0 → null` limit) pass through
+   * byte-for-byte unchanged.
+   */
+  private sanitizeQuota(
+    row: { defaultQuota: number | null; defaultQuotaWindowDays: number } | undefined,
+  ): { limit: number | null; windowDays: QuotaWindowDays } {
     const window = quotaWindowDaysSchema.safeParse(row?.defaultQuotaWindowDays);
-    return { limit: row?.defaultQuota ?? null, windowDays: window.success ? window.data : 30 };
+    const limit = row?.defaultQuota ?? null;
+    return {
+      limit: limit !== null && Number.isInteger(limit) && limit > 0 ? limit : null,
+      windowDays: window.success ? window.data : 30,
+    };
   }
 
   /**
@@ -145,9 +169,15 @@ export class ConnectorSettingsService {
     return provided;
   }
 
-  /** Masked view for the Settings page — secrets become has* booleans / host hints. */
+  /**
+   * Masked view for the Settings page — secrets become has* booleans / host hints. Reads the
+   * singleton row ONCE and maps both the connector DTO and the (sanitized) default-quota DTO off
+   * it — the connector blob and the quota columns live on the same row, so the most-called settings
+   * read needs a single SELECT, not one per concern.
+   */
   async getDto(): Promise<ConnectorSettingsDto> {
-    const c = await this.getStored();
+    const row = await this.db.query.appSettings.findFirst({ where: eq(appSettings.id, SINGLETON_ID) });
+    const c = this.connectorsFrom(row);
     return {
       publicUrl: c.publicUrl,
       narratorr: c.narratorr
@@ -157,23 +187,45 @@ export class ConnectorSettingsService {
           }
         : null,
       notifiers: c.notifiers.map((n) => this.toNotifierDto(n)),
-      defaultQuota: await this.getDefaultQuota(),
+      defaultQuota: this.sanitizeQuota(row),
     };
   }
 
+  /**
+   * Persist a connector + default-quota save. The connector blob and the quota columns live on the
+   * same singleton row, and a PUT body can carry both, so they're written in ONE atomic `UPDATE`
+   * with conditional columns — no half-applied save where (say) the connector change is durable but
+   * the quota write fails and `reconfigure()` never runs. `resolveNarratorr` (which can 400 on a
+   * missing required key) runs BEFORE the write, so a rejected body never touches the row.
+   *
+   * Per field: publicUrl omitted → keep, null → clear, value → set; narratorr omitted → keep, null →
+   * clear, object → resolve & set (the notifier list is untouched by this body). The `connectors`
+   * column is written only when a connector field is present; the quota columns only when
+   * `defaultQuota` is present, and `default_quota_window_days` only when `windowDays` is supplied
+   * (omit-to-keep), so a partial body never clobbers an untouched column.
+   */
   async update(body: UpdateConnectorSettingsBody): Promise<StoredConnectors> {
     const cur = await this.getStored();
     const next: StoredConnectors = { ...cur };
 
-    // publicUrl: omitted → keep; null → clear; value → set. narratorr: omitted → keep;
-    // null → clear; object → resolve & set. The notifier list is untouched by this body.
+    const hasConnectorFields = body.publicUrl !== undefined || body.narratorr !== undefined;
     if (body.publicUrl !== undefined) next.publicUrl = body.publicUrl;
     if (body.narratorr !== undefined) next.narratorr = this.resolveNarratorr(body.narratorr, cur.narratorr);
 
-    await this.persist(next);
-    // The default quota lives in its own columns (not the connectors blob), so it's a
-    // separate write — omitted → keep both; `windowDays` omitted → keep the stored window.
-    if (body.defaultQuota !== undefined) await this.persistDefaultQuota(body.defaultQuota);
+    const q = body.defaultQuota;
+    const [row] = await this.db
+      .update(appSettings)
+      .set({
+        ...(hasConnectorFields && { connectors: next }),
+        ...(q !== undefined && { defaultQuota: q.limit }),
+        ...(q?.windowDays !== undefined && { defaultQuotaWindowDays: q.windowDays }),
+        updatedAt: new Date(),
+      })
+      .where(eq(appSettings.id, SINGLETON_ID))
+      .returning();
+    // Guard a silent no-op: SettingsService.ensure() creates the singleton at boot, so a zero-row
+    // match means the row vanished and `next` would be a lie.
+    if (!row) throw new Error('app_settings singleton missing — settings update did not persist');
     return next;
   }
 
@@ -434,24 +486,5 @@ export class ConnectorSettingsService {
       .where(eq(appSettings.id, SINGLETON_ID))
       .returning();
     if (!row) throw new Error('app_settings singleton missing — connector update did not persist');
-  }
-
-  /**
-   * Persist the default quota to its dedicated columns. `limit` is already normalized by the
-   * schema (0/blank → null = unlimited). `windowDays` is omit-to-keep: when the body leaves it
-   * out we touch only the limit column, so a partial save never clobbers the stored window to
-   * null/default (the column stays NOT NULL with a concrete value either way).
-   */
-  private async persistDefaultQuota(q: NonNullable<UpdateConnectorSettingsBody['defaultQuota']>): Promise<void> {
-    const [row] = await this.db
-      .update(appSettings)
-      .set({
-        defaultQuota: q.limit,
-        ...(q.windowDays !== undefined && { defaultQuotaWindowDays: q.windowDays }),
-        updatedAt: new Date(),
-      })
-      .where(eq(appSettings.id, SINGLETON_ID))
-      .returning();
-    if (!row) throw new Error('app_settings singleton missing — default quota update did not persist');
   }
 }

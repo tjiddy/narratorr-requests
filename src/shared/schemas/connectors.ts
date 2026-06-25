@@ -41,6 +41,16 @@ const narratorrUrl = httpUrl.refine((v) => {
 export const QUOTA_WINDOW_DAYS = [1, 7, 30] as const;
 export type QuotaWindowDays = (typeof QUOTA_WINDOW_DAYS)[number];
 
+/**
+ * Upper bound on the default request quota limit. Mirrors the notifier-field cap precedent
+ * (`NOTIFIER_NAME_MAX` / `NOTIFIER_EVENTS_MAX` below) on the same "admin-only JSON row, keep a
+ * fat-fingered/abusive value from doing something silly" reasoning: a quota is requests-per-window,
+ * so a six-figure cap is already far past any real ceiling. Shared by the server write schema and
+ * the client `parseLimit` guard so the two can never drift. Without it, an absurdly long pasted
+ * digit string parses to a value past `Number.MAX_SAFE_INTEGER` (or `Infinity`), which then
+ * round-trips through `Number()`/`JSON.stringify` to `null` — silently *unlimited*, the wrong way. */
+export const DEFAULT_QUOTA_LIMIT_MAX = 100_000;
+
 /** `windowDays` is constrained to the allowed set so the unit dropdown is the single source of
  *  truth. Exported so the server can narrow the stored column value to the literal union. */
 export const quotaWindowDaysSchema = z.union([z.literal(1), z.literal(7), z.literal(30)]);
@@ -186,6 +196,7 @@ export const updateConnectorSettingsBodySchema = z
           .number()
           .int()
           .min(0)
+          .max(DEFAULT_QUOTA_LIMIT_MAX)
           .nullable()
           .transform((v) => (v === 0 ? null : v)),
         windowDays: quotaWindowDaysSchema.optional(),
