@@ -5,17 +5,6 @@ All notable changes to narratorr-requests are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- The default request quota (limit + a day/week/month rolling window) is now admin-editable
-  in the Settings UI, stored in `app_settings` — no redeploy. Per-user overrides still win and
-  admins remain unlimited.
-
-### Removed
-- `DEFAULT_REQUEST_QUOTA` env var (and the hardcoded 30-day window). The default quota is set
-  in Settings instead; a fresh DB seeds 10 requests per rolling 30 days.
-
 ## [1.0.0] - 2026-06-24
 
 Initial public release.
@@ -33,8 +22,9 @@ Initial public release.
   of authentication; the first user becomes admin, or pin one with `BOOTSTRAP_ADMIN`.
 - Admin user management: approve/reject pending users, promote/demote admins (self-guarded),
   and set per-user request quota + auto-approve.
-- Per-user request quotas (rolling 30-day window) with an app-wide default
-  (`DEFAULT_REQUEST_QUOTA`) and per-user overrides.
+- Per-user request quotas with an admin-configurable app-wide default — a limit plus a
+  day/week/month rolling window, set in the Settings UI and stored in `app_settings` (no
+  redeploy) — plus per-user overrides. Admins are unlimited; a fresh DB seeds 10 per 30 days.
 - In-app Settings (admin) to connect narratorr and add any number of notifiers — ntfy, email
   (SMTP), webhook, Discord, Slack, Telegram, Pushover, and Gotify — each firing on the events it
   subscribes to: a new request, a new signup, or a failed request. Notifier secrets are stored
