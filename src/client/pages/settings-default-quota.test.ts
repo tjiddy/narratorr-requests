@@ -3,16 +3,14 @@ import {
   UNIT_DAYS,
   unitToDays,
   daysLabel,
-  parseLimit,
-  isLimitValid,
   buildDefaultQuota,
   initDefaultQuota,
+  isDefaultQuotaValid,
   isDefaultQuotaDirty,
   type DefaultQuotaState,
 } from './settings-default-quota';
-import { DEFAULT_QUOTA_LIMIT_MAX } from '@shared/schemas/connectors';
 
-const state = (over: Partial<DefaultQuotaState> = {}): DefaultQuotaState => ({ limit: '3', unit: 'week', ...over });
+const state = (over: Partial<DefaultQuotaState> = {}): DefaultQuotaState => ({ mode: 'limited', limit: '3', unit: 'week', ...over });
 
 describe('unit ↔ days mapping', () => {
   it('maps each unit to its fixed day count (day=1, week=7, month=30)', () => {
@@ -22,54 +20,47 @@ describe('unit ↔ days mapping', () => {
     expect(UNIT_DAYS).toEqual({ day: 1, week: 7, month: 30 });
   });
 
-  it('seeds the form from a DTO, mapping days back to a unit', () => {
-    expect(initDefaultQuota({ limit: 3, windowDays: 7 })).toEqual({ limit: '3', unit: 'week' });
-    expect(initDefaultQuota({ limit: 5, windowDays: 1 })).toEqual({ limit: '5', unit: 'day' });
-    expect(initDefaultQuota({ limit: 10, windowDays: 30 })).toEqual({ limit: '10', unit: 'month' });
+  it('seeds the form from a limited DTO, mapping days back to a unit', () => {
+    expect(initDefaultQuota({ mode: 'limited', limit: 3, windowDays: 7 })).toEqual({ mode: 'limited', limit: '3', unit: 'week' });
+    expect(initDefaultQuota({ mode: 'limited', limit: 5, windowDays: 1 })).toEqual({ mode: 'limited', limit: '5', unit: 'day' });
+    expect(initDefaultQuota({ mode: 'limited', limit: 10, windowDays: 30 })).toEqual({ mode: 'limited', limit: '10', unit: 'month' });
   });
 
-  it('seeds a null limit (unlimited) as a blank field', () => {
-    expect(initDefaultQuota({ limit: null, windowDays: 30 })).toEqual({ limit: '', unit: 'month' });
+  it('seeds an unlimited DTO as no-cap mode + a blank limit (window retained)', () => {
+    expect(initDefaultQuota({ mode: 'unlimited', windowDays: 30 })).toEqual({ mode: 'unlimited', limit: '', unit: 'month' });
   });
 });
 
-describe('parseLimit / unlimited handling', () => {
-  it('treats blank and 0 as unlimited (null)', () => {
-    expect(parseLimit('')).toEqual({ ok: true, value: null });
-    expect(parseLimit('   ')).toEqual({ ok: true, value: null });
-    expect(parseLimit('0')).toEqual({ ok: true, value: null });
+describe('isDefaultQuotaValid', () => {
+  it('unlimited mode is always valid (limit field irrelevant)', () => {
+    expect(isDefaultQuotaValid(state({ mode: 'unlimited', limit: '' }))).toBe(true);
+    expect(isDefaultQuotaValid(state({ mode: 'unlimited', limit: 'junk' }))).toBe(true);
   });
 
-  it('parses a positive integer to its number', () => {
-    expect(parseLimit('3')).toEqual({ ok: true, value: 3 });
-    expect(parseLimit(' 42 ')).toEqual({ ok: true, value: 42 });
-  });
-
-  it('rejects decimals, negatives, and non-numeric input', () => {
-    for (const bad of ['3.5', '-1', 'abc', '1e3', '5x', '-0']) {
-      expect(parseLimit(bad).ok).toBe(false);
-      expect(isLimitValid(bad)).toBe(false);
+  it('limited mode requires a valid positive cap (rejects blank/0/decimal/sci/hex/negative)', () => {
+    expect(isDefaultQuotaValid(state({ mode: 'limited', limit: '3' }))).toBe(true);
+    for (const bad of ['', '0', '3.5', '-1', 'abc', '1e3', '0x10', '5x', '-0']) {
+      expect(isDefaultQuotaValid(state({ mode: 'limited', limit: bad }))).toBe(false);
     }
   });
 
-  it('accepts the ceiling but rejects values past DEFAULT_QUOTA_LIMIT_MAX', () => {
-    expect(parseLimit(String(DEFAULT_QUOTA_LIMIT_MAX))).toEqual({ ok: true, value: DEFAULT_QUOTA_LIMIT_MAX });
-    expect(parseLimit(String(DEFAULT_QUOTA_LIMIT_MAX + 1)).ok).toBe(false);
-    expect(isLimitValid(String(DEFAULT_QUOTA_LIMIT_MAX + 1))).toBe(false);
-  });
-
-  it('rejects a digit string so long it parses past the safe-integer range (no silent → null)', () => {
-    const huge = '9'.repeat(20); // Number(...) is past Number.MAX_SAFE_INTEGER
-    expect(parseLimit(huge).ok).toBe(false);
-    expect(isLimitValid(huge)).toBe(false);
+  it('limited rejects a digit string past the safe-integer range (no silent → unlimited)', () => {
+    const huge = '9'.repeat(20);
+    expect(isDefaultQuotaValid(state({ mode: 'limited', limit: huge }))).toBe(false);
   });
 });
 
 describe('buildDefaultQuota', () => {
-  it('builds { limit, windowDays } from the form, blank/0 → null limit', () => {
-    expect(buildDefaultQuota(state({ limit: '3', unit: 'week' }))).toEqual({ limit: 3, windowDays: 7 });
-    expect(buildDefaultQuota(state({ limit: '', unit: 'month' }))).toEqual({ limit: null, windowDays: 30 });
-    expect(buildDefaultQuota(state({ limit: '0', unit: 'day' }))).toEqual({ limit: null, windowDays: 1 });
+  it('builds a limited payload from the form', () => {
+    expect(buildDefaultQuota(state({ mode: 'limited', limit: '3', unit: 'week' }))).toEqual({ mode: 'limited', limit: 3, windowDays: 7 });
+  });
+
+  it('builds an unlimited payload, still sending the window', () => {
+    expect(buildDefaultQuota(state({ mode: 'unlimited', limit: '', unit: 'month' }))).toEqual({ mode: 'unlimited', windowDays: 30 });
+  });
+
+  it('a limited mode with an invalid limit degrades to unlimited rather than throwing', () => {
+    expect(buildDefaultQuota(state({ mode: 'limited', limit: '', unit: 'day' }))).toEqual({ mode: 'unlimited', windowDays: 1 });
   });
 });
 
@@ -82,26 +73,35 @@ describe('daysLabel', () => {
 });
 
 describe('isDefaultQuotaDirty', () => {
-  const saved = initDefaultQuota({ limit: 3, windowDays: 7 }); // { limit: '3', unit: 'week' }
+  const saved = initDefaultQuota({ mode: 'limited', limit: 3, windowDays: 7 }); // { mode:'limited', limit:'3', unit:'week' }
 
   it('is clean when nothing changed', () => {
     expect(isDefaultQuotaDirty(saved, saved)).toBe(false);
   });
 
-  it('is dirty when the limit changes', () => {
-    expect(isDefaultQuotaDirty(state({ limit: '5', unit: 'week' }), saved)).toBe(true);
+  it('is dirty when the mode changes', () => {
+    expect(isDefaultQuotaDirty(state({ mode: 'unlimited', limit: '3', unit: 'week' }), saved)).toBe(true);
   });
 
-  it('is dirty when the unit changes', () => {
-    expect(isDefaultQuotaDirty(state({ limit: '3', unit: 'month' }), saved)).toBe(true);
+  it('is dirty when the limit changes (within limited)', () => {
+    expect(isDefaultQuotaDirty(state({ mode: 'limited', limit: '5', unit: 'week' }), saved)).toBe(true);
   });
 
-  it('treats blank and 0 as the same (both unlimited) — not dirty against each other', () => {
-    const unlimited = initDefaultQuota({ limit: null, windowDays: 30 }); // { limit: '', unit: 'month' }
-    expect(isDefaultQuotaDirty(state({ limit: '0', unit: 'month' }), unlimited)).toBe(false);
+  it('is dirty when the unit changes (within limited)', () => {
+    expect(isDefaultQuotaDirty(state({ mode: 'limited', limit: '3', unit: 'month' }), saved)).toBe(true);
   });
 
-  it('is dirty when an invalid limit is typed (so the Save affordance shows to fix it)', () => {
-    expect(isDefaultQuotaDirty(state({ limit: '3.5', unit: 'week' }), saved)).toBe(true);
+  it('within unlimited, the typed limit is irrelevant — clean against another unlimited (same window)', () => {
+    const unlimited = initDefaultQuota({ mode: 'unlimited', windowDays: 30 }); // { mode:'unlimited', limit:'', unit:'month' }
+    expect(isDefaultQuotaDirty({ mode: 'unlimited', limit: '99', unit: 'month' }, unlimited)).toBe(false);
+  });
+
+  it('within unlimited, a window change is still dirty (the window persists on both modes)', () => {
+    const unlimited = initDefaultQuota({ mode: 'unlimited', windowDays: 30 });
+    expect(isDefaultQuotaDirty({ mode: 'unlimited', limit: '', unit: 'day' }, unlimited)).toBe(true);
+  });
+
+  it('is dirty when an invalid limit is typed in limited mode (so the Save affordance shows)', () => {
+    expect(isDefaultQuotaDirty(state({ mode: 'limited', limit: '3.5', unit: 'week' }), saved)).toBe(true);
   });
 });

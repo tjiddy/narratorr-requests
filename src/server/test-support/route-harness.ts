@@ -164,7 +164,7 @@ export async function buildRouteApp(opts: BuildRouteAppOpts): Promise<RouteHarne
     db,
     narratorrHolder,
     {
-      defaultQuota: 10,
+      defaultQuota: { mode: 'limited', limit: 10 },
       windowDays: 30,
       autoApproveRoles: ['admin'],
       ...opts.policy,

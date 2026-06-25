@@ -12,7 +12,7 @@ export function QuotaMeter() {
   if (!me) return null;
   const q = formatQuota(me.quota);
   return (
-    <Badge variant={q.unlimited ? 'info' : q.variant} className="text-xs">
+    <Badge variant={q.kind === 'unlimited' ? 'info' : q.variant} className="text-xs">
       {q.label}
     </Badge>
   );

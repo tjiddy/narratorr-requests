@@ -91,7 +91,7 @@ function notifyHarness() {
   const notifyingSvc = new RequestService(
     db,
     client,
-    { defaultQuota: 10, windowDays: 30, autoApproveRoles: ['admin'] },
+    { defaultQuota: { mode: 'limited', limit: 10 }, windowDays: 30, autoApproveRoles: ['admin'] },
     { getNotifier: () => holder.current, users: new UserService(db) },
   );
   return { notify, notifyingSvc, dispatched };
@@ -100,11 +100,7 @@ function notifyHarness() {
 beforeEach(async () => {
   db = await createTestDb();
   client = new PollClient();
-  svc = new RequestService(db, client, {
-    defaultQuota: 10,
-    windowDays: 30,
-    autoApproveRoles: ['admin'],
-  });
+  svc = new RequestService(db, client, { defaultQuota: { mode: 'limited', limit: 10 }, windowDays: 30, autoApproveRoles: ['admin'] });
   poller = new StatusPoller({ requests: svc, client, logger: noopLogger, jitterMs: 0 });
 });
 

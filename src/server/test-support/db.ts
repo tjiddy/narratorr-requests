@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import * as schema from '../../db/schema.js';
 import { users } from '../../db/schema.js';
 import type { Db } from '../../db/client.js';
-import type { Role, UserStatus } from '../../shared/schemas/user.js';
+import type { Role, UserStatus, RequestQuota } from '../../shared/schemas/user.js';
 import { publicId } from '../util/ids.js';
 
 const drizzleDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../drizzle');
@@ -25,7 +25,8 @@ export async function insertUser(
   opts: {
     role?: Role;
     status?: UserStatus;
-    requestQuota?: number | null;
+    /** Per-user quota override as the explicit mode union. Omitted → `inherit` (app default). */
+    requestQuota?: RequestQuota;
     username?: string;
     autoApprove?: boolean;
     provider?: string;
@@ -33,6 +34,7 @@ export async function insertUser(
     passwordHash?: string | null;
   } = {},
 ): Promise<{ id: number; publicId: string; role: Role; status: UserStatus }> {
+  const quota = opts.requestQuota ?? { mode: 'inherit' };
   const [row] = await db
     .insert(users)
     .values({
@@ -45,7 +47,8 @@ export async function insertUser(
       // approval queue is exercised explicitly where it matters.
       status: opts.status ?? 'active',
       role: opts.role ?? 'user',
-      requestQuota: opts.requestQuota ?? null,
+      requestQuotaMode: quota.mode,
+      requestQuotaLimit: quota.mode === 'limited' ? quota.limit : null,
       autoApprove: opts.autoApprove ?? false,
     })
     .returning();

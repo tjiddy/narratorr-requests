@@ -1,16 +1,61 @@
 import { describe, it, expect } from 'vitest';
-import { updateUserBodySchema, localCredentialsSchema } from './user.js';
+import { updateUserBodySchema, requestQuotaSchema, userDtoSchema, localCredentialsSchema } from './user.js';
+
+describe('requestQuotaSchema — four-mode discriminated union', () => {
+  it('accepts each mode in its valid shape', () => {
+    expect(requestQuotaSchema.safeParse({ mode: 'inherit' }).success).toBe(true);
+    expect(requestQuotaSchema.safeParse({ mode: 'unlimited' }).success).toBe(true);
+    expect(requestQuotaSchema.safeParse({ mode: 'limited', limit: 5 }).success).toBe(true);
+    expect(requestQuotaSchema.safeParse({ mode: 'blocked' }).success).toBe(true);
+  });
+
+  it('rejects a limit on a non-limited mode', () => {
+    expect(requestQuotaSchema.safeParse({ mode: 'inherit', limit: 5 }).success).toBe(false);
+    expect(requestQuotaSchema.safeParse({ mode: 'unlimited', limit: 5 }).success).toBe(false);
+    expect(requestQuotaSchema.safeParse({ mode: 'blocked', limit: 5 }).success).toBe(false);
+  });
+
+  it('rejects a missing / 0 / negative / non-integer limit on limited', () => {
+    expect(requestQuotaSchema.safeParse({ mode: 'limited' }).success).toBe(false);
+    expect(requestQuotaSchema.safeParse({ mode: 'limited', limit: 0 }).success).toBe(false);
+    expect(requestQuotaSchema.safeParse({ mode: 'limited', limit: -3 }).success).toBe(false);
+    expect(requestQuotaSchema.safeParse({ mode: 'limited', limit: 1.5 }).success).toBe(false);
+  });
+
+  it('rejects an unknown mode', () => {
+    expect(requestQuotaSchema.safeParse({ mode: 'banned' }).success).toBe(false);
+  });
+});
+
+describe('userDtoSchema.requestQuota — the read shape is the same union', () => {
+  const base = {
+    publicId: 'us_1',
+    username: 'u',
+    authProvider: 'local',
+    email: null,
+    thumb: null,
+    role: 'user' as const,
+    status: 'active' as const,
+    autoApprove: false,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  it('validates each mode as the read DTO', () => {
+    for (const requestQuota of [{ mode: 'inherit' }, { mode: 'unlimited' }, { mode: 'limited', limit: 4 }, { mode: 'blocked' }]) {
+      expect(userDtoSchema.safeParse({ ...base, requestQuota }).success).toBe(true);
+    }
+  });
+});
 
 describe('updateUserBodySchema', () => {
-  describe('requestQuota — int().min(0).nullable().optional()', () => {
-    it('rejects negative and non-integer values', () => {
-      expect(updateUserBodySchema.safeParse({ requestQuota: -1 }).success).toBe(false);
-      expect(updateUserBodySchema.safeParse({ requestQuota: 1.5 }).success).toBe(false);
+  describe('requestQuota — requestQuotaSchema.optional()', () => {
+    it('rejects a bare number / null (the overloaded shape is gone)', () => {
+      expect(updateUserBodySchema.safeParse({ requestQuota: 3 }).success).toBe(false);
+      expect(updateUserBodySchema.safeParse({ requestQuota: null }).success).toBe(false);
     });
 
-    it('accepts 0, null, and absent', () => {
-      expect(updateUserBodySchema.safeParse({ requestQuota: 0 }).success).toBe(true);
-      expect(updateUserBodySchema.safeParse({ requestQuota: null }).success).toBe(true);
+    it('accepts a mode object and an absent field (omit = no change)', () => {
+      expect(updateUserBodySchema.safeParse({ requestQuota: { mode: 'limited', limit: 3 } }).success).toBe(true);
+      expect(updateUserBodySchema.safeParse({ requestQuota: { mode: 'inherit' } }).success).toBe(true);
       expect(updateUserBodySchema.safeParse({}).success).toBe(true);
     });
   });

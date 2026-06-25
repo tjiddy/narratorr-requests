@@ -1,6 +1,6 @@
-import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, index, uniqueIndex, check } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
-import { USER_ROLES, USER_STATUSES } from '../shared/schemas/user.js';
+import { USER_ROLES, USER_STATUSES, REQUEST_QUOTA_MODES } from '../shared/schemas/user.js';
 import { REQUEST_STATUSES, ACTIVE_REQUEST_STATUSES } from '../shared/schemas/request.js';
 import type { StoredConnectors } from '../shared/schemas/connectors.js';
 
@@ -33,8 +33,11 @@ export const users = sqliteTable(
     // Approval state (orthogonal to role). New users land 'pending'; an admin
     // approves (→ 'active') or rejects (→ 'rejected') in the Users page.
     status: text('status', { enum: USER_STATUSES }).notNull().default('pending'),
-    // Per-user override of the app default. null = use the app default.
-    requestQuota: integer('request_quota'),
+    // Per-user quota override as an explicit MODE (inherit/unlimited/limited/blocked) — no
+    // overloaded `0`/`null`. `inherit` (the default) falls back to the app default; `limited`
+    // carries a positive `request_quota_limit`; the other modes hold null (CHECK-enforced below).
+    requestQuotaMode: text('request_quota_mode', { enum: REQUEST_QUOTA_MODES }).notNull().default('inherit'),
+    requestQuotaLimit: integer('request_quota_limit'), // null unless mode = 'limited'
     // Per-user auto-approve: this user's requests skip the pending queue. Orthogonal
     // to quota — an auto-approved user's requests still count against their limit.
     autoApprove: integer('auto_approve', { mode: 'boolean' }).notNull().default(false),
@@ -45,6 +48,15 @@ export const users = sqliteTable(
   (table) => [
     uniqueIndex('idx_users_provider_subject').on(table.authProvider, table.authSubject),
     index('idx_users_username').on(table.username),
+    // Mode↔limit coherence: a positive limit IFF the mode is 'limited', null otherwise. Makes a
+    // half-set per-user override (limited with no limit, or a stray limit on inherit) unstorable.
+    // Written so the predicate NEVER evaluates to NULL: SQLite treats a NULL CHECK as satisfied,
+    // so the naive `(mode='limited' AND limit>0) OR …` leaks the limited-with-null-limit case
+    // through. `(mode='limited') = (limit IS NOT NULL)` is a pure boolean both directions.
+    check(
+      'request_quota_mode_limit',
+      sql`(${table.requestQuotaMode} = 'limited') = (${table.requestQuotaLimit} IS NOT NULL) AND (${table.requestQuotaLimit} IS NULL OR ${table.requestQuotaLimit} > 0)`,
+    ),
   ],
 );
 
@@ -97,13 +109,18 @@ export const requests = sqliteTable(
 
 // ============ APP SETTINGS ============
 // Singleton (id = 1). Seeded from config on first boot.
-export const appSettings = sqliteTable('app_settings', {
+export const appSettings = sqliteTable(
+  'app_settings',
+  {
   id: integer('id').primaryKey(),
-  // null = unlimited. The app-wide default request quota, edited in the Settings UI.
-  defaultQuota: integer('default_quota'),
+  // The app-wide default request quota as an explicit MODE (unlimited/limited) — no overloaded
+  // `null`. `limited` carries a positive `default_quota_limit`; `unlimited` holds null
+  // (CHECK-enforced below). Seeds `limited` / 10 on a fresh row (see SettingsService.ensure).
+  defaultQuotaMode: text('default_quota_mode', { enum: ['unlimited', 'limited'] }).notNull().default('limited'),
+  defaultQuotaLimit: integer('default_quota_limit'), // null unless mode = 'limited'
   // Rolling-window size (days) for the default quota — the friendly day/week/month unit
   // mapped to a fixed day count {1,7,30}. NOT NULL so the cutoff calc always has a concrete
-  // value; default 30 seeds a fresh row and survives an omit-to-keep save.
+  // value; default 30 seeds a fresh row and survives an omit-to-keep save. Rides BOTH modes.
   defaultQuotaWindowDays: integer('default_quota_window_days').notNull().default(30),
   // Which roles are auto-approved on request create. MVP: ['admin'].
   autoApproveRoles: text('auto_approve_roles', { mode: 'json' })
@@ -120,7 +137,16 @@ export const appSettings = sqliteTable('app_settings', {
   updatedAt: integer('updated_at', { mode: 'timestamp' })
     .notNull()
     .default(sql`(unixepoch())`),
-});
+  },
+  (table) => [
+    // Mode↔limit coherence for the default quota: a positive limit IFF mode = 'limited'. Same
+    // never-NULL form as the users CHECK (see there) so an incoherent row can't slip through.
+    check(
+      'default_quota_mode_limit',
+      sql`(${table.defaultQuotaMode} = 'limited') = (${table.defaultQuotaLimit} IS NOT NULL) AND (${table.defaultQuotaLimit} IS NULL OR ${table.defaultQuotaLimit} > 0)`,
+    ),
+  ],
+);
 
 export type UserRow = typeof users.$inferSelect;
 export type NewUserRow = typeof users.$inferInsert;

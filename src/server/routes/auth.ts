@@ -47,7 +47,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
     const user = requireUser(request);
     const row = await deps.users.getById(user.id);
     if (!row) throw badRequest('NO_USER', 'session user no longer exists');
-    const quota = await deps.requests.quotaUsage(row.id, deps.requests.resolveLimit(row));
+    const quota = await deps.requests.quotaUsage(row.id, deps.requests.resolveQuota(row));
     return { ...deps.users.toDto(row), quota };
   });
 

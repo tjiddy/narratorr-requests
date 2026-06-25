@@ -38,7 +38,7 @@ describe('PATCH /api/admin/users/:publicId — self-guard', () => {
   it('still allows changing your OWN requestQuota / autoApprove → 200', async () => {
     const admin = await insertUser(h.db, { role: 'admin', status: 'active' });
     const cookie = h.cookieFor(admin);
-    expect((await patchUser(cookie, admin.publicId, { requestQuota: 7 })).statusCode).toBe(200);
+    expect((await patchUser(cookie, admin.publicId, { requestQuota: { mode: 'limited', limit: 7 } })).statusCode).toBe(200);
     expect((await patchUser(cookie, admin.publicId, { autoApprove: true })).statusCode).toBe(200);
   });
 

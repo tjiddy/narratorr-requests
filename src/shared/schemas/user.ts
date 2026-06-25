@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { quotaLimitSchema, quotaWindowDaysSchema } from './connectors.js';
 
 // Roles this app owns. MVP auto-approves admins only (PLAN decision #5); a
 // "trusted" role can be added later without a migration churn.
@@ -14,6 +15,24 @@ export const USER_STATUSES = ['pending', 'active', 'rejected'] as const;
 export const userStatusSchema = z.enum(USER_STATUSES);
 export type UserStatus = z.infer<typeof userStatusSchema>;
 
+// Per-user request-quota override as an explicit POLICY MODE (discriminated union), NOT an
+// overloaded `number | null`. The four modes are first-class admin intentions:
+//   • inherit   — no override; fall back to the app default.
+//   • unlimited — no cap for this user, even if the default is limited.
+//   • limited   — a per-user positive cap (rides the global rolling window).
+//   • blocked   — a hard admin block, distinct from "a cap of 0" (→ 403 QUOTA_BLOCKED).
+// Reused as BOTH the read shape (`userDtoSchema.requestQuota`) and the PATCH body field, so the
+// mode-first editor loads existing state, not just saves it. A never-overridden user reads `inherit`.
+export const requestQuotaSchema = z.discriminatedUnion('mode', [
+  z.strictObject({ mode: z.literal('inherit') }),
+  z.strictObject({ mode: z.literal('unlimited') }),
+  z.strictObject({ mode: z.literal('limited'), limit: quotaLimitSchema }),
+  z.strictObject({ mode: z.literal('blocked') }),
+]);
+export type RequestQuota = z.infer<typeof requestQuotaSchema>;
+export const REQUEST_QUOTA_MODES = ['inherit', 'unlimited', 'limited', 'blocked'] as const;
+export type RequestQuotaMode = (typeof REQUEST_QUOTA_MODES)[number];
+
 // Shape returned to the client for a user.
 export const userDtoSchema = z.object({
   publicId: z.string(),
@@ -25,32 +44,35 @@ export const userDtoSchema = z.object({
   thumb: z.string().nullable(),
   role: roleSchema,
   status: userStatusSchema,
-  requestQuota: z.number().int().nullable(), // null = use the app default
+  requestQuota: requestQuotaSchema, // the four-mode per-user override ({ mode:'inherit' } = app default)
   autoApprove: z.boolean(),
   createdAt: z.string(),
 });
 export type UserDto = z.infer<typeof userDtoSchema>;
 
 // Admin user management: partial update of a user. All fields optional; strict so
-// stray keys are rejected. requestQuota null = fall back to the app default.
-// `status` drives the approval queue (approve = active, reject = rejected).
+// stray keys are rejected. `requestQuota` omitted = no change; `{ mode:'inherit' }` = fall back to
+// the app default. `status` drives the approval queue (approve = active, reject = rejected).
 export const updateUserBodySchema = z
   .object({
     role: roleSchema.optional(),
     status: userStatusSchema.optional(),
-    requestQuota: z.number().int().min(0).nullable().optional(),
+    requestQuota: requestQuotaSchema.optional(),
     autoApprove: z.boolean().optional(),
   })
   .strict();
 export type UpdateUserBody = z.infer<typeof updateUserBodySchema>;
 
-// `GET /api/me` — the current user plus their rolling-window quota usage.
+// `GET /api/me` — the current user plus their RESOLVED effective rolling-window quota. `mode` is
+// authoritative (not `limit === null`): `unlimited` → limit/remaining null; `limited` → positive
+// limit + clamped remaining; `blocked` → limit null, remaining 0 (the badge renders "blocked").
 export const meDtoSchema = userDtoSchema.extend({
   quota: z.object({
-    limit: z.number().int().nullable(), // null = unlimited
+    mode: z.enum(['unlimited', 'limited', 'blocked']),
+    limit: z.number().int().positive().nullable(), // null for unlimited & blocked
     used: z.number().int(),
-    remaining: z.number().int().nullable(), // null = unlimited
-    windowDays: z.number().int(),
+    remaining: z.number().int().nullable(), // null for unlimited
+    windowDays: quotaWindowDaysSchema,
   }),
 });
 export type MeDto = z.infer<typeof meDtoSchema>;

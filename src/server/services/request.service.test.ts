@@ -43,7 +43,7 @@ const body = (asin: string, title = 'A Book'): CreateRequestBody => ({
 });
 
 const policy = (over: Partial<RequestPolicy> = {}): RequestPolicy => ({
-  defaultQuota: 10,
+  defaultQuota: { mode: 'limited', limit: 10 },
   windowDays: 30,
   autoApproveRoles: ['admin'],
   ...over,
@@ -103,7 +103,7 @@ describe('RequestService.create', () => {
 
   it('still enforces quota for an auto-approve user (auto-approve ≠ unlimited)', async () => {
     const user = await insertUser(db, { role: 'user', autoApprove: true });
-    const svc = new RequestService(db, client, policy({ defaultQuota: 1 }));
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 1 } }));
     await svc.create(user.id, body('B1'));
     await expect(svc.create(user.id, body('B2'))).rejects.toMatchObject({ code: 'QUOTA_EXCEEDED' });
   });
@@ -179,7 +179,7 @@ describe('insert-time unique-violation race', () => {
 describe('quota enforcement (rolling window)', () => {
   it('blocks a normal user past their limit but never an auto-approve admin', async () => {
     const user = await insertUser(db, { role: 'user' });
-    const svc = new RequestService(db, client, policy({ defaultQuota: 1 }));
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 1 } }));
     await svc.create(user.id, body('B1'));
     await expect(svc.create(user.id, body('B2'))).rejects.toMatchObject({ code: 'QUOTA_EXCEEDED' });
 
@@ -187,9 +187,28 @@ describe('quota enforcement (rolling window)', () => {
     await expect(svc.create(admin.id, body('B3'))).resolves.toBeTruthy();
   });
 
+  it('rejects a blocked user with 403 QUOTA_BLOCKED (distinct from the at-cap 429), regardless of usage', async () => {
+    const blocked = await insertUser(db, { role: 'user', requestQuota: { mode: 'blocked' } });
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 10 } }));
+    await expect(svc.create(blocked.id, body('B1'))).rejects.toMatchObject({
+      statusCode: 403,
+      code: 'QUOTA_BLOCKED',
+    });
+    // Nothing was written — a hard block stops the request before any insert.
+    const rows = await db.select().from(requests).where(eq(requests.userId, blocked.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  it('a per-user unlimited override imposes no cap even under a limited default', async () => {
+    const user = await insertUser(db, { role: 'user', requestQuota: { mode: 'unlimited' } });
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 1 } }));
+    await expect(svc.create(user.id, body('B1'))).resolves.toBeTruthy();
+    await expect(svc.create(user.id, body('B2'))).resolves.toBeTruthy(); // no cap despite default of 1
+  });
+
   it('does not count denied or non-user-caused failures, but does count user-caused failures', async () => {
     const user = await insertUser(db, { role: 'user' });
-    const svc = new RequestService(db, client, policy({ defaultQuota: 10 }));
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 10 } }));
     // Seed four requests in various terminal states.
     await db.insert(requests).values([
       { publicId: 'rq_open', userId: user.id, asin: 'A1', title: 't', status: 'pending' },
@@ -197,35 +216,46 @@ describe('quota enforcement (rolling window)', () => {
       { publicId: 'rq_failrefund', userId: user.id, asin: 'A3', title: 't', status: 'failed', userCausedFailure: false },
       { publicId: 'rq_failcharged', userId: user.id, asin: 'A4', title: 't', status: 'failed', userCausedFailure: true },
     ]);
-    const usage = await svc.quotaUsage(user.id, 10);
+    const usage = await svc.quotaUsage(user.id, { mode: 'limited', limit: 10 });
     expect(usage.used).toBe(2); // pending + user-caused failure only
     expect(usage.remaining).toBe(8);
   });
 
-  it('reports unlimited (null) for auto-approve roles', async () => {
+  it('reports unlimited for auto-approve roles (limit & remaining null)', async () => {
     const admin = await insertUser(db, { role: 'admin' });
-    const svc = new RequestService(db, client, policy({ defaultQuota: 1 }));
-    expect(svc.resolveLimit({ role: 'admin', requestQuota: 5 })).toBeNull();
-    const usage = await svc.quotaUsage(admin.id, svc.resolveLimit({ role: 'admin', requestQuota: null }));
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 1 } }));
+    expect(svc.resolveQuota({ role: 'admin', requestQuotaMode: 'limited', requestQuotaLimit: 5 })).toEqual({ mode: 'unlimited' });
+    const usage = await svc.quotaUsage(admin.id, svc.resolveQuota({ role: 'admin', requestQuotaMode: 'inherit', requestQuotaLimit: null }));
+    expect(usage.mode).toBe('unlimited');
     expect(usage.limit).toBeNull();
     expect(usage.remaining).toBeNull();
   });
 });
 
-describe('resolveLimit — configured-default sourcing', () => {
-  it('returns the configured default for a non-override, non-admin user', () => {
-    const svc = new RequestService(db, client, policy({ defaultQuota: 7 }));
-    expect(svc.resolveLimit({ role: 'user', requestQuota: null })).toBe(7);
+describe('resolveQuota — mode resolution + configured-default sourcing', () => {
+  it('inherits the configured limited default for a non-override, non-admin user', () => {
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 7 } }));
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'inherit', requestQuotaLimit: null })).toEqual({ mode: 'limited', limit: 7 });
   });
 
-  it('a per-user override still wins over the configured default', () => {
-    const svc = new RequestService(db, client, policy({ defaultQuota: 7 }));
-    expect(svc.resolveLimit({ role: 'user', requestQuota: 2 })).toBe(2);
+  it('a per-user limited override still wins over the configured default', () => {
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 7 } }));
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'limited', requestQuotaLimit: 2 })).toEqual({ mode: 'limited', limit: 2 });
   });
 
-  it('an unlimited default (null) imposes no cap on a fall-through user', () => {
-    const svc = new RequestService(db, client, policy({ defaultQuota: null }));
-    expect(svc.resolveLimit({ role: 'user', requestQuota: null })).toBeNull();
+  it('a per-user unlimited override imposes no cap even when the default is limited', () => {
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 7 } }));
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'unlimited', requestQuotaLimit: null })).toEqual({ mode: 'unlimited' });
+  });
+
+  it('a per-user blocked override resolves to blocked', () => {
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 7 } }));
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'blocked', requestQuotaLimit: null })).toEqual({ mode: 'blocked' });
+  });
+
+  it('inherit with an unlimited default imposes no cap on a fall-through user', () => {
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'unlimited' } }));
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'inherit', requestQuotaLimit: null })).toEqual({ mode: 'unlimited' });
   });
 });
 
@@ -239,7 +269,7 @@ describe('quotaUsage — configured rolling window', () => {
       { publicId: 'rq_in', userId: user.id, asin: 'A1', title: 't', status: 'pending', requestedAt: daysAgo(6) },
       { publicId: 'rq_out', userId: user.id, asin: 'A2', title: 't', status: 'pending', requestedAt: daysAgo(8) },
     ]);
-    const usage = await svc.quotaUsage(user.id, 10);
+    const usage = await svc.quotaUsage(user.id, { mode: 'limited', limit: 10 });
     expect(usage.used).toBe(1); // only the in-window request
     expect(usage.windowDays).toBe(7);
   });
@@ -249,28 +279,34 @@ describe('quotaUsage — configured rolling window', () => {
     await db
       .insert(requests)
       .values({ publicId: 'rq_x', userId: user.id, asin: 'A1', title: 't', status: 'pending', requestedAt: daysAgo(10) });
-    expect((await new RequestService(db, client, policy({ windowDays: 1 })).quotaUsage(user.id, 10)).used).toBe(0);
-    expect((await new RequestService(db, client, policy({ windowDays: 7 })).quotaUsage(user.id, 10)).used).toBe(0);
-    expect((await new RequestService(db, client, policy({ windowDays: 30 })).quotaUsage(user.id, 10)).used).toBe(1);
+    expect((await new RequestService(db, client, policy({ windowDays: 1 })).quotaUsage(user.id, { mode: 'limited', limit: 10 })).used).toBe(0);
+    expect((await new RequestService(db, client, policy({ windowDays: 7 })).quotaUsage(user.id, { mode: 'limited', limit: 10 })).used).toBe(0);
+    expect((await new RequestService(db, client, policy({ windowDays: 30 })).quotaUsage(user.id, { mode: 'limited', limit: 10 })).used).toBe(1);
   });
 });
 
 describe('reconfigureQuota — live settings save', () => {
   it('updates the default limit + window applied to fall-through users', async () => {
     const user = await insertUser(db, { role: 'user' });
-    const svc = new RequestService(db, client, policy({ defaultQuota: 10, windowDays: 30 }));
-    expect(svc.resolveLimit({ role: 'user', requestQuota: null })).toBe(10);
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 10 }, windowDays: 30 }));
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'inherit', requestQuotaLimit: null })).toEqual({ mode: 'limited', limit: 10 });
 
-    svc.reconfigureQuota({ limit: 1, windowDays: 7 });
-    expect(svc.resolveLimit({ role: 'user', requestQuota: null })).toBe(1);
-    expect((await svc.quotaUsage(user.id, 1)).windowDays).toBe(7);
+    svc.reconfigureQuota({ mode: 'limited', limit: 1, windowDays: 7 });
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'inherit', requestQuotaLimit: null })).toEqual({ mode: 'limited', limit: 1 });
+    expect((await svc.quotaUsage(user.id, { mode: 'limited', limit: 1 })).windowDays).toBe(7);
+  });
+
+  it('can switch the default to unlimited live', () => {
+    const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 10 } }));
+    svc.reconfigureQuota({ mode: 'unlimited', windowDays: 30 });
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'inherit', requestQuotaLimit: null })).toEqual({ mode: 'unlimited' });
   });
 
   it('does not subject admins or per-user overrides to the new default', () => {
     const svc = new RequestService(db, client, policy());
-    svc.reconfigureQuota({ limit: 1, windowDays: 1 });
-    expect(svc.resolveLimit({ role: 'admin', requestQuota: null })).toBeNull();
-    expect(svc.resolveLimit({ role: 'user', requestQuota: 5 })).toBe(5);
+    svc.reconfigureQuota({ mode: 'limited', limit: 1, windowDays: 1 });
+    expect(svc.resolveQuota({ role: 'admin', requestQuotaMode: 'inherit', requestQuotaLimit: null })).toEqual({ mode: 'unlimited' });
+    expect(svc.resolveQuota({ role: 'user', requestQuotaMode: 'limited', requestQuotaLimit: 5 })).toEqual({ mode: 'limited', limit: 5 });
   });
 });
 

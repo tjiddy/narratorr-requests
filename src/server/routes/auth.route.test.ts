@@ -49,11 +49,7 @@ async function buildApp(
   await new SettingsService(db).ensure();
   const users = new UserService(db, {});
   usersSvc = users;
-  const requests = new RequestService(db, stubNarratorr, {
-    defaultQuota: 10,
-    windowDays: 30,
-    autoApproveRoles: ['admin'],
-  });
+  const requests = new RequestService(db, stubNarratorr, { defaultQuota: { mode: 'limited', limit: 10 }, windowDays: 30, autoApproveRoles: ['admin'] });
   const config = {
     authMode: 'standard',
     sessionSecret: SESSION_SECRET,

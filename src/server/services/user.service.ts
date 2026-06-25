@@ -64,10 +64,19 @@ export class UserService {
       thumb: row.thumb,
       role: row.role,
       status: row.status,
-      requestQuota: row.requestQuota,
+      requestQuota: this.requestQuotaDto(row),
       autoApprove: row.autoApprove,
       createdAt: row.createdAt.toISOString(),
     };
+  }
+
+  /** Serialize the two per-user quota columns into the four-mode union. `limited` carries the
+   *  positive limit (CHECK-guaranteed); every other mode is a bare `{ mode }`. */
+  private requestQuotaDto(row: Pick<UserRow, 'requestQuotaMode' | 'requestQuotaLimit'>): UserDto['requestQuota'] {
+    if (row.requestQuotaMode === 'limited' && row.requestQuotaLimit !== null) {
+      return { mode: 'limited', limit: row.requestQuotaLimit };
+    }
+    return { mode: row.requestQuotaMode === 'limited' ? 'inherit' : row.requestQuotaMode };
   }
 
   async getById(id: number): Promise<UserRow | undefined> {
@@ -98,10 +107,15 @@ export class UserService {
    *  override, and/or the auto-approve flag. The "can't change your own role/status"
    *  guard lives in the route, where the acting admin's identity is known. */
   async updateUser(pid: string, patch: UpdateUserBody): Promise<UserRow> {
-    const set: Partial<Pick<UserRow, 'role' | 'status' | 'requestQuota' | 'autoApprove'>> = {};
+    const set: Partial<Pick<UserRow, 'role' | 'status' | 'requestQuotaMode' | 'requestQuotaLimit' | 'autoApprove'>> = {};
     if (patch.role !== undefined) set.role = patch.role;
     if (patch.status !== undefined) set.status = patch.status;
-    if (patch.requestQuota !== undefined) set.requestQuota = patch.requestQuota;
+    if (patch.requestQuota !== undefined) {
+      // Mode → columns: a `limited` override sets the positive limit; every other mode nulls it,
+      // keeping the row CHECK-coherent.
+      set.requestQuotaMode = patch.requestQuota.mode;
+      set.requestQuotaLimit = patch.requestQuota.mode === 'limited' ? patch.requestQuota.limit : null;
+    }
     if (patch.autoApprove !== undefined) set.autoApprove = patch.autoApprove;
     if (Object.keys(set).length === 0) {
       const existing = await this.getByPublicId(pid);
