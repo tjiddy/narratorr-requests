@@ -1,3 +1,4 @@
+import { DEFAULT_QUOTA_LIMIT_MAX } from '@shared/schemas/connectors';
 import type { ConnectorSettingsDto, UpdateConnectorSettingsBody, QuotaWindowDays } from '@shared/schemas/connectors';
 
 // Default-request-quota card form state + decision logic. Pulled out of SettingsConnection as
@@ -36,8 +37,12 @@ export const daysLabel = (unit: QuotaUnit): string => `= ${UNIT_DAYS[unit]} days
 
 /**
  * Parse the typed limit into a payload value. Blank/0 → null (unlimited), matching the old
- * DEFAULT_REQUEST_QUOTA semantics. A positive integer → that number. Anything else (decimal,
- * negative, non-numeric) is invalid — the caller blocks the save.
+ * DEFAULT_REQUEST_QUOTA semantics. A positive integer up to {@link DEFAULT_QUOTA_LIMIT_MAX} → that
+ * number. Anything else (decimal, negative, non-numeric, past the ceiling, or a digit string so
+ * long it parses past the safe-integer range) is invalid — the caller blocks the save. Guarding the
+ * ceiling + `Number.isSafeInteger` here mirrors the server `.max()` cap so the client rejects the
+ * same values the API would, instead of letting an out-of-range value `Number()`-round to `Infinity`
+ * → `null` and silently submit "unlimited".
  */
 export type LimitParse = { ok: true; value: number | null } | { ok: false };
 
@@ -46,6 +51,7 @@ export const parseLimit = (raw: string): LimitParse => {
   if (t === '') return { ok: true, value: null };
   if (!/^\d+$/.test(t)) return { ok: false }; // decimals, negatives, junk
   const n = Number(t);
+  if (!Number.isSafeInteger(n) || n > DEFAULT_QUOTA_LIMIT_MAX) return { ok: false }; // past the shared ceiling / unsafe
   return { ok: true, value: n === 0 ? null : n };
 };
 

@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { createTestDb } from '../test-support/db.js';
+import { FakeNarratorrClient } from '../test-support/route-harness.js';
 import { SettingsService } from './settings.service.js';
 import { ConnectorSettingsService } from './connector-settings.service.js';
+import { RequestService, resolveRequestPolicy } from './request.service.js';
 import { SecretCodec, deriveSettingsKey } from '../util/secret-codec.js';
 import { appSettings } from '../../db/schema.js';
+import { connectorSettingsDtoSchema } from '../../shared/schemas/connectors.js';
 import type { Db } from '../../db/client.js';
 import type { CreateNotifierBody, KnownNotifierDto, StoredConnectors } from '../../shared/schemas/connectors.js';
 
@@ -415,5 +418,104 @@ describe('ConnectorSettingsService — default quota (dedicated columns)', () =>
     await svc.update({ defaultQuota: { limit: 3, windowDays: 7 } });
     await svc.update({ publicUrl: 'https://app.example.com' }); // unrelated save
     expect(await svc.getDefaultQuota()).toEqual({ limit: 3, windowDays: 7 });
+  });
+});
+
+describe('ConnectorSettingsService — quota storage-boundary sanitization (legacy/corrupt rows)', () => {
+  // Inject corrupt quota columns the way a legacy / hand-edited / corrupt DB could hold them —
+  // the write path constrains these (NOT NULL DEFAULT 30 window, 0→null limit, schema-capped),
+  // so they're only reachable by writing the columns directly, exactly as done here.
+  const corrupt = (cols: { defaultQuota?: number | null; defaultQuotaWindowDays?: number }) =>
+    db.update(appSettings).set(cols).where(eq(appSettings.id, 1));
+
+  it('degrades an out-of-set window to 30 — getDefaultQuota AND the GET DTO both stay valid', async () => {
+    await corrupt({ defaultQuotaWindowDays: 14 }); // not in {1,7,30}
+    expect((await svc.getDefaultQuota()).windowDays).toBe(30);
+    // The masked GET must not 502: its defaultQuota validates against the response contract.
+    const dto = await svc.getDto();
+    expect(connectorSettingsDtoSchema.safeParse(dto).success).toBe(true);
+    expect(dto.defaultQuota.windowDays).toBe(30);
+  });
+
+  it('degrades a non-positive limit (0, negative) to null — getDefaultQuota AND the GET DTO both stay valid', async () => {
+    for (const bad of [0, -5]) {
+      await corrupt({ defaultQuota: bad });
+      expect((await svc.getDefaultQuota()).limit).toBeNull();
+      const dto = await svc.getDto();
+      expect(connectorSettingsDtoSchema.safeParse(dto).success).toBe(true); // would 502 if limit stayed 0/-5
+      expect(dto.defaultQuota.limit).toBeNull();
+    }
+  });
+
+  it('passes a healthy stored quota through unchanged (degrade only touches corrupt values)', async () => {
+    await corrupt({ defaultQuota: 7, defaultQuotaWindowDays: 7 });
+    expect(await svc.getDefaultQuota()).toEqual({ limit: 7, windowDays: 7 });
+  });
+
+  it('the boot seam (resolveRequestPolicy) seeds from the SANITIZED quota, not the raw corrupt row', async () => {
+    // resolveRequestPolicy is the exact function src/server/index.ts calls to seed RequestService.
+    // Asserting on its output directly — not an in-test reconstruction of the wiring — means a
+    // regression that read settingsRow.defaultQuota{,WindowDays} raw fails HERE (limit 0 / window 5
+    // would surface instead of the sanitized null / 30).
+    await corrupt({ defaultQuota: 0, defaultQuotaWindowDays: 5 });
+    const policy = await resolveRequestPolicy(svc, ['admin']);
+    expect(policy).toEqual({ defaultQuota: null, windowDays: 30, autoApproveRoles: ['admin'] });
+
+    // And the policy actually drives enforcement: a non-admin is unlimited (sanitized null), and
+    // the rolling window the service enforces is the sanitized 30.
+    const requests = new RequestService(db, new FakeNarratorrClient(), policy);
+    expect(requests.resolveLimit({ role: 'user', requestQuota: null })).toBeNull();
+    expect((await requests.quotaUsage(1, null)).windowDays).toBe(30);
+  });
+});
+
+describe('ConnectorSettingsService — atomic settings write + single-read getDto', () => {
+  it('writes connector blob + quota columns in ONE statement when the body carries both', async () => {
+    // The atomicity guarantee: a combined save issues a single UPDATE (not connector-then-quota as
+    // two statements, where a mid-way failure would half-apply the save). Counting writes is the
+    // observable proxy for atomicity — two .update() calls is exactly the regression AC#5 closes.
+    const updateSpy = vi.spyOn(db, 'update');
+    await svc.update({ publicUrl: 'https://app.example.com', defaultQuota: { limit: 4, windowDays: 7 } });
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    updateSpy.mockRestore();
+
+    const row = await db.query.appSettings.findFirst();
+    expect(row?.connectors?.publicUrl).toBe('https://app.example.com');
+    expect(row).toMatchObject({ defaultQuota: 4, defaultQuotaWindowDays: 7 });
+  });
+
+  it('a rejected body (missing required narratorr key) leaves BOTH the connector blob and quota columns intact', async () => {
+    await svc.update({ narratorr: { url: 'http://n:3000', apiKey: 'orig' }, defaultQuota: { limit: 4, windowDays: 7 } });
+    // A combined save whose narratorr clears the required key must 400 BEFORE any write — no
+    // half-applied row where the quota changed but the connector validation failed.
+    await expect(
+      svc.update({ narratorr: { url: 'http://n:3000', apiKey: '' }, defaultQuota: { limit: 9, windowDays: 1 } }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(await svc.getNarratorrConfig()).toEqual({ url: 'http://n:3000', apiKey: 'orig' });
+    expect(await svc.getDefaultQuota()).toEqual({ limit: 4, windowDays: 7 }); // quota untouched
+  });
+
+  it('getDto reads the singleton row exactly ONCE for both the connector and quota DTOs', async () => {
+    // The single-read guarantee: the old implementation called getStored() + getDefaultQuota(),
+    // issuing two findFirst SELECTs against the same row. Counting the reads is what fails on a
+    // regression to that shape — a values-only round-trip assertion would pass either way.
+    await svc.update({ publicUrl: 'https://app.example.com', defaultQuota: { limit: 6, windowDays: 1 } });
+    const readSpy = vi.spyOn(db.query.appSettings, 'findFirst');
+    const dto = await svc.getDto();
+    expect(readSpy).toHaveBeenCalledTimes(1);
+    readSpy.mockRestore();
+
+    // …and the single read still maps both concerns correctly.
+    expect(dto.publicUrl).toBe('https://app.example.com');
+    expect(dto.defaultQuota).toEqual({ limit: 6, windowDays: 1 });
+  });
+
+  it('getDto round-trips both the connector and quota DTOs from a single read', async () => {
+    await svc.createNotifier(ntfyBody());
+    await svc.update({ publicUrl: 'https://app.example.com', defaultQuota: { limit: 6, windowDays: 1 } });
+    const dto = await svc.getDto();
+    expect(dto.publicUrl).toBe('https://app.example.com');
+    expect(dto.notifiers).toHaveLength(1);
+    expect(dto.defaultQuota).toEqual({ limit: 6, windowDays: 1 });
   });
 });

@@ -10,6 +10,7 @@ import {
   isDefaultQuotaDirty,
   type DefaultQuotaState,
 } from './settings-default-quota';
+import { DEFAULT_QUOTA_LIMIT_MAX } from '@shared/schemas/connectors';
 
 const state = (over: Partial<DefaultQuotaState> = {}): DefaultQuotaState => ({ limit: '3', unit: 'week', ...over });
 
@@ -49,6 +50,18 @@ describe('parseLimit / unlimited handling', () => {
       expect(parseLimit(bad).ok).toBe(false);
       expect(isLimitValid(bad)).toBe(false);
     }
+  });
+
+  it('accepts the ceiling but rejects values past DEFAULT_QUOTA_LIMIT_MAX', () => {
+    expect(parseLimit(String(DEFAULT_QUOTA_LIMIT_MAX))).toEqual({ ok: true, value: DEFAULT_QUOTA_LIMIT_MAX });
+    expect(parseLimit(String(DEFAULT_QUOTA_LIMIT_MAX + 1)).ok).toBe(false);
+    expect(isLimitValid(String(DEFAULT_QUOTA_LIMIT_MAX + 1))).toBe(false);
+  });
+
+  it('rejects a digit string so long it parses past the safe-integer range (no silent → null)', () => {
+    const huge = '9'.repeat(20); // Number(...) is past Number.MAX_SAFE_INTEGER
+    expect(parseLimit(huge).ok).toBe(false);
+    expect(isLimitValid(huge)).toBe(false);
   });
 });
 

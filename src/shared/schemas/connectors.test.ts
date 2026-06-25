@@ -8,6 +8,7 @@ import {
   updateConnectorSettingsBodySchema,
   createNotifierBodySchema,
   notifierTestBodySchema,
+  DEFAULT_QUOTA_LIMIT_MAX,
 } from './connectors';
 
 // `httpUrl` is a private constant; its behavior is exercised through the exported
@@ -99,6 +100,13 @@ describe('updateConnectorSettingsBodySchema — defaultQuota', () => {
   it('windowDays is omit-to-keep (optional); the whole object is optional too', () => {
     expect(quota({ limit: 3 })).toEqual({ limit: 3 }); // no windowDays → keep stored, server-side
     expect(accepts({})).toBe(true); // defaultQuota omitted entirely
+  });
+
+  it('caps the limit at DEFAULT_QUOTA_LIMIT_MAX (accepts the boundary, rejects past it)', () => {
+    expect(quota({ limit: DEFAULT_QUOTA_LIMIT_MAX, windowDays: 30 })).toEqual({ limit: DEFAULT_QUOTA_LIMIT_MAX, windowDays: 30 });
+    expect(accepts({ defaultQuota: { limit: DEFAULT_QUOTA_LIMIT_MAX + 1, windowDays: 30 } })).toBe(false);
+    // A wildly oversized value (the pasted-digit-string tail) is rejected, not silently round-tripped.
+    expect(accepts({ defaultQuota: { limit: 10 ** 12, windowDays: 30 } })).toBe(false);
   });
 });
 
