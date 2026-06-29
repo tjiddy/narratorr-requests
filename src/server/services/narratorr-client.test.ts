@@ -154,6 +154,43 @@ describe('NarratorrClient error handling', () => {
   });
 });
 
+describe('NarratorrClient.getSystem (build-info probe, narratorr #1709)', () => {
+  it('calls GET /api/v1/system with X-Api-Key and parses version out of the body', async () => {
+    let seenKey: string | null = null;
+    server.use(
+      http.get(`${MOCK_BASE_URL}/api/v1/system`, ({ request }) => {
+        seenKey = request.headers.get('x-api-key');
+        return HttpResponse.json({ version: 'v1.2.3', commit: 'deadbee', os: 'Linux' });
+      }),
+    );
+    const sys = await client.getSystem();
+    expect(sys.version).toBe('v1.2.3');
+    expect(sys.commit).toBe('deadbee');
+    expect(seenKey).toBe('test-key');
+  });
+
+  it('tolerates a lean body carrying only version (consumer-lenient contract)', async () => {
+    server.use(
+      http.get(`${MOCK_BASE_URL}/api/v1/system`, () => HttpResponse.json({ version: 'v9.9.9' })),
+    );
+    await expect(client.getSystem()).resolves.toMatchObject({ version: 'v9.9.9' });
+  });
+
+  it('flags a body missing version as CONTRACT_MISMATCH', async () => {
+    server.use(
+      http.get(`${MOCK_BASE_URL}/api/v1/system`, () => HttpResponse.json({ commit: 'abc1234' })),
+    );
+    const err = await client.getSystem().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NarratorrError);
+    expect((err as NarratorrError).upstreamCode).toBe('CONTRACT_MISMATCH');
+  });
+
+  it('maps a transport failure to upstreamStatus 0 / NETWORK', async () => {
+    server.use(http.get(`${MOCK_BASE_URL}/api/v1/system`, () => HttpResponse.error()));
+    await expect(client.getSystem()).rejects.toMatchObject({ upstreamStatus: 0, upstreamCode: 'NETWORK' });
+  });
+});
+
 describe('NarratorrClient.ping (Settings "Test" probe)', () => {
   it('resolves when the probe book 404s (reachable + authenticated)', async () => {
     // Default handlers 404 the bogus `__healthcheck__` id — that is the success signal.

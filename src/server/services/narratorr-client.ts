@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import { v1AudibleSearchSchema, type V1AudibleResult } from '../../shared/schemas/v1/metadata.js';
 import { v1BookSchema, type V1Book } from '../../shared/schemas/v1/books.js';
+import { v1SystemSchema, type V1System } from '../../shared/schemas/v1/system.js';
 import { errorEnvelopeSchema } from '../../shared/schemas/v1/common.js';
 import { ApiError } from '../util/errors.js';
 
@@ -90,6 +91,17 @@ export class NarratorrClient {
   }
 
   /**
+   * Narratorr's build-info probe (narratorr #1709) — `{ version, commit, buildTime, … }`.
+   * Used by the admin System Information card to surface the connected narratorr's version
+   * and reachability. We assert only `version`; a body missing it is a CONTRACT_MISMATCH.
+   * NOTE: this is the NATIVE `/api/v1/system`, NOT `/api/v1/system/status` (the
+   * Prowlarr/Readarr compat shim — the wrong surface).
+   */
+  async getSystem(): Promise<V1System> {
+    return this.request('GET', '/api/v1/system', v1SystemSchema);
+  }
+
+  /**
    * Connectivity probe for the Settings "Test" button. A bogus book id that returns a
    * structured 404 proves the URL is reachable AND the API key authenticated — so we
    * treat a 404 as success and let any other error (network, 401/403, contract) surface.
@@ -172,4 +184,4 @@ export class NarratorrClient {
   }
 }
 
-export type INarratorrClient = Pick<NarratorrClient, 'searchMetadata' | 'addBook' | 'getBook'>;
+export type INarratorrClient = Pick<NarratorrClient, 'searchMetadata' | 'addBook' | 'getBook' | 'getSystem'>;
