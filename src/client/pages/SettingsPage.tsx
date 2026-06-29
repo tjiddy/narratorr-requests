@@ -1,21 +1,24 @@
 import { useState } from 'react';
 import type { ElementType } from 'react';
 import { useConnectorSettings } from '../hooks';
-import { SlidersIcon, ServerIcon, BellIcon } from '../components/icons';
+import { SlidersIcon, ServerIcon, BellIcon, ActivityIcon } from '../components/icons';
 import { GeneralSection, NarratorrSection } from './SettingsConnection';
 import { NotifiersSection } from './SettingsNotifiers';
+import { SystemSection } from './SettingsSystem';
 
-// Settings shell: a narratorr-style left-nav sidebar over three sections (General /
-// Narratorr / Notifications). Sections are switched in local state rather than routed —
-// the page lives under one `/settings` route and sub-routes would buy no visual gain. Each
-// section owns its own form state + per-card save; only the active one is mounted.
+// Settings shell: a narratorr-style left-nav sidebar over four sections (General /
+// Narratorr / Notifications / System). Sections are switched in local state rather than
+// routed — the page lives under one `/settings` route and sub-routes would buy no visual
+// gain. Each section owns its own form state + per-card save; only the active one is
+// mounted. (System is read-only and fetches its own data.)
 
-type SectionKey = 'general' | 'narratorr' | 'notifications';
+type SectionKey = 'general' | 'narratorr' | 'notifications' | 'system';
 
 const NAV: { key: SectionKey; label: string; icon: ElementType }[] = [
   { key: 'general', label: 'General', icon: SlidersIcon },
   { key: 'narratorr', label: 'Narratorr', icon: ServerIcon },
   { key: 'notifications', label: 'Notifications', icon: BellIcon },
+  { key: 'system', label: 'System', icon: ActivityIcon },
 ];
 
 export function SettingsPage() {
@@ -63,6 +66,7 @@ export function SettingsPage() {
             {active === 'general' && <GeneralSection publicUrl={data.publicUrl} defaultQuota={data.defaultQuota} />}
             {active === 'narratorr' && <NarratorrSection key={JSON.stringify(data.narratorr)} saved={data.narratorr} />}
             {active === 'notifications' && <NotifiersSection notifiers={data.notifiers} publicUrl={data.publicUrl} />}
+            {active === 'system' && <SystemSection />}
           </div>
         </div>
       )}

@@ -12,6 +12,7 @@ import type {
   UpdateNotifierBody,
   NotifierTestBody,
 } from '@shared/schemas/connectors';
+import type { SystemInfoDto } from '@shared/schemas/system';
 
 export class ApiError extends Error {
   constructor(
@@ -108,6 +109,8 @@ export const localLogin = (email: string, password: string) =>
 
 export const localSignup = (email: string, password: string) =>
   postCredentials('/api/auth/local/signup', email, password);
+
+export const getSystemInfo = () => fetch('/api/admin/system', opts()).then(parse<SystemInfoDto>);
 
 export const getConnectorSettings = () =>
   fetch('/api/admin/settings/connectors', opts()).then(parse<ConnectorSettingsDto>);

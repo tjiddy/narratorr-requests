@@ -22,6 +22,7 @@ import {
   updateUser,
   listUserRequests,
   getConnectorSettings,
+  getSystemInfo,
   updateConnectorSettings,
   testConnector,
   createNotifier,
@@ -102,6 +103,12 @@ export function useDecide() {
     onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Action failed'),
   });
 }
+
+// --- System information (admin) ----------------------------------------------
+export const useSystemInfo = () =>
+  // Read-only diagnostics; refetch on a slow interval so narratorr reachability stays
+  // roughly live without hammering the upstream probe.
+  useQuery({ queryKey: ['admin', 'system'], queryFn: getSystemInfo, refetchInterval: 30_000 });
 
 // --- Connector settings (admin) ----------------------------------------------
 export const useConnectorSettings = () =>
