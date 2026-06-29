@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { resolveAppVersion, resolveBuiltAt, APP_VERSION, APP_BUILT_AT } from './version.js';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { resolveAppVersion, resolveBuiltAt } from './version.js';
 
 // F1 — directly assert the build-provenance contract: the baked composition AND the
 // local/dev fallback. Deleting the "dev"/null fallback or changing the branch@sha shape
@@ -33,11 +33,33 @@ describe('resolveBuiltAt (timestamp + fallback)', () => {
   });
 });
 
-describe('module constants under an unbaked runtime (vitest has no tsup define)', () => {
-  it('degrade to the dev/null fallback when build args are unset', () => {
-    // CI/dev run with no APP_GIT_* / APP_BUILD_TIME env, so the constants must take the
-    // fallback — the exact contract a plain local `pnpm build` / `pnpm dev` ships.
-    expect(APP_VERSION).toBe('dev');
-    expect(APP_BUILT_AT).toBeNull();
+// The module constants are computed once at module-eval from process.env (the reads tsup's
+// define rewrites at build time). To assert the wiring deterministically we must CONTROL that
+// env input — stub the keys, reset the module registry, then dynamically re-import so the
+// module body re-evaluates against the stubbed env (host APP_GIT_* values can't leak in).
+describe('module constants (env-controlled re-import)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it('degrade to the dev/null fallback when build args are unset', async () => {
+    vi.stubEnv('APP_GIT_BRANCH', '');
+    vi.stubEnv('APP_GIT_SHA', '');
+    vi.stubEnv('APP_BUILD_TIME', '');
+    vi.resetModules();
+    const mod = await import('./version.js');
+    expect(mod.APP_VERSION).toBe('dev');
+    expect(mod.APP_BUILT_AT).toBeNull();
+  });
+
+  it('flow the baked branch@sha and timestamp through when build args are set', async () => {
+    vi.stubEnv('APP_GIT_BRANCH', 'main');
+    vi.stubEnv('APP_GIT_SHA', 'a1b2c3d');
+    vi.stubEnv('APP_BUILD_TIME', '2026-06-29T00:00:00.000Z');
+    vi.resetModules();
+    const mod = await import('./version.js');
+    expect(mod.APP_VERSION).toBe('main@a1b2c3d');
+    expect(mod.APP_BUILT_AT).toBe('2026-06-29T00:00:00.000Z');
   });
 });
