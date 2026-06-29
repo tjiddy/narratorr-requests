@@ -175,6 +175,11 @@ jobs:
           if echo "$SYSTEM_JSON" | grep -q '"version":"dev"'; then
             echo "::error::build did not bake a version (got \"dev\")"; exit 1
           fi
+          # The build timestamp (APP_BUILD_TIME) must be baked too — a null builtAt means it
+          # was dropped from the tsup define / Docker arg path.
+          if echo "$SYSTEM_JSON" | grep -q '"builtAt":null'; then
+            echo "::error::build did not bake a build timestamp (builtAt is null)"; exit 1
+          fi
           echo "Smoke test passed (HTTP $HTTP_STATUS, Node $NODE_VERSION)"
 
       - name: Create GitHub Release
