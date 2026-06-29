@@ -258,5 +258,19 @@ export function narratorrV1Handlers(baseUrl: string = MOCK_BASE_URL): RequestHan
       if (!state) return HttpResponse.json(errorBody('NOT_FOUND', 'book not found'), { status: 404 });
       return HttpResponse.json(toBook(state, Date.now()));
     }),
+
+    // 4. Build-info probe (narratorr #1709). Returns narratorr's own version + build details
+    //    under X-Api-Key auth — the System Information card's narratorr line reads `version`.
+    http.get(`${baseUrl}/api/v1/system`, ({ request }) => {
+      const unauth = requireApiKey(request);
+      if (unauth) return unauth;
+      return HttpResponse.json({
+        version: 'v1.0.0',
+        commit: 'abc1234',
+        buildTime: '2026-06-01T00:00:00.000Z',
+        nodeVersion: 'v24.10.0',
+        os: 'Linux 6.8.0',
+      });
+    }),
   ];
 }

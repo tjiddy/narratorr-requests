@@ -43,4 +43,8 @@ export class NarratorrClientHolder implements INarratorrClient {
   getBook(publicId: string) {
     return this.require().getBook(publicId);
   }
+
+  getSystem() {
+    return this.require().getSystem();
+  }
 }

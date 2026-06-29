@@ -10,6 +10,7 @@ import { requests } from '../../db/schema.js';
 import type { Db } from '../../db/client.js';
 import type { FastifyBaseLogger } from 'fastify';
 import type { V1Book } from '../../shared/schemas/v1/books.js';
+import type { V1System } from '../../shared/schemas/v1/system.js';
 import type { BookStatus } from '../../shared/schemas/book.js';
 
 const noopLogger = {
@@ -39,6 +40,9 @@ class PollClient implements INarratorrClient {
   async getBook(id: string): Promise<V1Book> {
     if (this.error) throw this.error;
     return { id, title: 't', authors: [], narrators: [], status: this.status };
+  }
+  async getSystem(): Promise<V1System> {
+    return { version: 'v1.0.0' };
   }
 }
 

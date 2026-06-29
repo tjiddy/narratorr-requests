@@ -5,6 +5,7 @@ import { registerRequestRoutes } from './requests.js';
 import { registerSettingsRoutes } from './settings.js';
 import { NarratorrError, type INarratorrClient } from '../services/narratorr-client.js';
 import type { V1Book } from '../../shared/schemas/v1/books.js';
+import type { V1System } from '../../shared/schemas/v1/system.js';
 
 let h: RouteHarness;
 beforeEach(async () => {
@@ -73,6 +74,9 @@ describe('POST /api/requests — terminal handoff failure emits request.failed',
     }
     async getBook(id: string): Promise<V1Book> {
       return { id, title: 'A Book', authors: [], narrators: [], status: 'searching' };
+    }
+    async getSystem(): Promise<V1System> {
+      return { version: 'v1.0.0' };
     }
   }
 

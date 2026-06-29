@@ -16,6 +16,9 @@ function fakeClient() {
     async getBook() {
       throw new Error('n/a');
     },
+    async getSystem() {
+      throw new Error('n/a');
+    },
   };
   return { client, calls: () => calls };
 }

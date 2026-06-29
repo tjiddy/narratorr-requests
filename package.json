@@ -10,7 +10,7 @@
     "dev:server": "tsx watch src/server/index.ts",
     "dev:client": "vite",
     "build": "pnpm build:client && pnpm build:server",
-    "build:server": "tsup src/server/index.ts --format esm --out-dir dist/server --target node24",
+    "build:server": "tsup",
     "build:client": "vite build",
     "start": "node dist/server/index.js",
     "typecheck": "tsc --noEmit",
