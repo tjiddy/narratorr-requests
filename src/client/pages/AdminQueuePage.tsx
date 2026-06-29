@@ -5,7 +5,7 @@ import { useAdminQueue, useDecide } from '../hooks';
 import { StatusBadge } from '../components/StatusBadge';
 import { REQUEST_STATUS_LABELS } from '../components/status';
 import { EmptyState } from '../components/EmptyState';
-import { InboxIcon } from '../components/icons';
+import { InboxIcon, HeadphonesIcon } from '../components/icons';
 import { Button } from '../components/Button';
 import { requestFailureReason } from '../components/request-failure';
 
@@ -33,6 +33,12 @@ function QueueRow({ r }: { r: RequestDto }) {
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium">{r.title}</p>
           {r.author && <p className="truncate text-sm text-muted-foreground">{r.author}</p>}
+          {r.narrator && (
+            <p className="mt-0.5 flex items-center gap-1.5 text-sm text-muted-foreground">
+              <HeadphonesIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+              <span className="truncate">{r.narrator}</span>
+            </p>
+          )}
           <p className="text-xs text-muted-foreground/70">
             by {r.requester.username} · {new Date(r.requestedAt).toLocaleDateString()}
           </p>
