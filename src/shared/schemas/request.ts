@@ -143,6 +143,14 @@ export const OPEN_REQUEST_STATUSES = ['pending', 'approved', 'acquiring', 'avail
 /** Statuses that block a duplicate open request for the same (user, asin). */
 export const ACTIVE_REQUEST_STATUSES = ['pending', 'approved', 'acquiring'] as const;
 
+/**
+ * The admin queue's "Approved" filter spans the whole post-approval lifecycle, not just
+ * the transient `approved` row: once approved, a request moves approved → acquiring →
+ * available within a poll tick, so an exact-status match would read ~empty. This is the
+ * set an admin means by "requests I've approved".
+ */
+export const APPROVED_REQUEST_STATUSES = ['approved', 'acquiring', 'available'] as const;
+
 // Snapshot fields are denormalized onto the request at create time so the queue
 // renders even if the upstream catalog entry changes or disappears.
 export const createRequestBodySchema = z

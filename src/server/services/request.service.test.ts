@@ -10,7 +10,7 @@ import { requests } from '../../db/schema.js';
 import type { Db } from '../../db/client.js';
 import type { V1Book } from '../../shared/schemas/v1/books.js';
 import type { BookStatus } from '../../shared/schemas/book.js';
-import type { CreateRequestBody } from '../../shared/schemas/request.js';
+import type { CreateRequestBody, RequestStatus } from '../../shared/schemas/request.js';
 
 /** Configurable fake — controls the book status the handoff/poll observes. */
 class FakeClient implements INarratorrClient {
@@ -106,6 +106,36 @@ describe('RequestService.create', () => {
     const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 1 } }));
     await svc.create(user.id, body('B1'));
     await expect(svc.create(user.id, body('B2'))).rejects.toMatchObject({ code: 'QUOTA_EXCEEDED' });
+  });
+});
+
+describe('list — admin queue status filter', () => {
+  const seedAll = async (userId: number) => {
+    const statuses: RequestStatus[] = ['pending', 'approved', 'acquiring', 'available', 'denied', 'failed'];
+    for (const status of statuses) {
+      await db.insert(requests).values({ publicId: `rq_${status}`, userId, asin: status, title: status, status });
+    }
+  };
+
+  it('"approved" returns the whole post-approval lifecycle, not just the transient approved row', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    const svc = new RequestService(db, client, policy());
+    await seedAll(user.id);
+
+    const approved = await svc.list({ status: 'approved', limit: 50, offset: 0 });
+    expect(approved.total).toBe(3);
+    expect(new Set(approved.data.map((r) => r.status))).toEqual(new Set(['approved', 'acquiring', 'available']));
+  });
+
+  it('every other status still filters exactly — no grouping leak', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    const svc = new RequestService(db, client, policy());
+    await seedAll(user.id);
+
+    for (const status of ['pending', 'available', 'denied', 'failed'] as const) {
+      const res = await svc.list({ status, limit: 50, offset: 0 });
+      expect(res.data.map((r) => r.status)).toEqual([status]);
+    }
   });
 });
 
