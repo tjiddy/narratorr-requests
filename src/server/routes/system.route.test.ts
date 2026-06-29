@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { writeFileSync, rmSync } from 'node:fs';
 import { buildRouteApp, type RouteHarness } from '../test-support/route-harness.js';
 import { registerSystemRoutes } from './system.js';
 import { NarratorrError, type INarratorrClient } from '../services/narratorr-client.js';
@@ -144,6 +146,25 @@ describe('GET /api/admin/system — narratorr reachability', () => {
     const res = await getSystem(h.asRole('admin'));
     expect(res.statusCode).toBe(200);
     expect(res.json().narratorr.state).toBe('unavailable');
+  });
+});
+
+// AC2/B5 — positive path: a real DB file reports its byte length (the null-producing
+// paths below don't prove databaseSizeBytes is ever populated from fs.stat).
+describe('GET /api/admin/system — database size (regular file)', () => {
+  const dbPath = join(tmpdir(), `sys-db-size-${process.pid}.db`);
+  afterEach(() => rmSync(dbPath, { force: true }));
+
+  it('regular DB file → databaseSizeBytes equals the file byte length, 200', async () => {
+    writeFileSync(dbPath, 'x'.repeat(4096)); // 4096 ASCII bytes
+    h = await buildRouteApp({
+      register: registerSystemRoutes,
+      enableTestRoleOverride: true,
+      config: { databasePath: dbPath },
+    });
+    const res = await getSystem(h.asRole('admin'));
+    expect(res.statusCode).toBe(200);
+    expect(res.json().databaseSizeBytes).toBe(4096);
   });
 });
 
