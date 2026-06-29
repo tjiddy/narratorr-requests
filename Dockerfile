@@ -10,9 +10,20 @@ COPY pnpm-lock.yaml package.json ./
 RUN pnpm install --frozen-lockfile
 
 # Source + the bits the build needs (migrations are committed under drizzle/).
-COPY tsconfig.json vite.config.ts ./
+COPY tsconfig.json tsup.config.ts vite.config.ts ./
 COPY src/ src/
 COPY drizzle/ drizzle/
+
+# Build-time provenance for the System Information card. `.git` is NOT in the build
+# context (.dockerignore excludes it), so CI computes branch / short SHA / timestamp and
+# forwards them here as ARGs → env. tsup's `define` (tsup.config.ts) bakes them into the
+# server bundle. Unset (a plain `docker build` with no args) degrades to "dev" / null.
+ARG APP_GIT_BRANCH=""
+ARG APP_GIT_SHA=""
+ARG APP_BUILD_TIME=""
+ENV APP_GIT_BRANCH=$APP_GIT_BRANCH \
+    APP_GIT_SHA=$APP_GIT_SHA \
+    APP_BUILD_TIME=$APP_BUILD_TIME
 RUN pnpm build
 
 # ---- Deps stage: production-only node_modules (native @libsql built for this libc) ----

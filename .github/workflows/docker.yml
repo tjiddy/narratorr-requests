@@ -104,6 +104,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Build-time provenance for the System Information card. The build itself can't read
+      # .git (excluded from the Docker context), so compute it here where the checkout's git
+      # metadata exists and forward it as build-args. ref_name is the branch (dev) or tag
+      # (release); short SHA is the first 7 of the commit.
+      - name: Compute build metadata
+        id: buildinfo
+        run: |
+          {
+            echo "branch=${{ github.ref_name }}"
+            echo "sha=$(echo "${{ github.sha }}" | cut -c1-7)"
+            echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v7
         with:
@@ -112,6 +125,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_GIT_BRANCH=${{ steps.buildinfo.outputs.branch }}
+            APP_GIT_SHA=${{ steps.buildinfo.outputs.sha }}
+            APP_BUILD_TIME=${{ steps.buildinfo.outputs.built }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -146,11 +163,18 @@ jobs:
           done
           HTTP_STATUS=$(curl -sf -o /dev/null -w '%{http_code}' http://localhost:3199/api/health || echo 000)
           NODE_VERSION=$(docker exec smoke-test node --version || echo unknown)
-          echo "health=$HTTP_STATUS node=$NODE_VERSION"
+          # AUTH_BYPASS makes every request the dev admin, so the admin-only System endpoint is
+          # reachable here — assert the build baked a real version (not the "dev" fallback).
+          SYSTEM_JSON=$(curl -sf http://localhost:3199/api/admin/system || echo '{}')
+          echo "health=$HTTP_STATUS node=$NODE_VERSION system=$SYSTEM_JSON"
           docker rm -f smoke-test > /dev/null 2>&1 || true
 
           [ "$HTTP_STATUS" = "200" ] || { echo "::error::smoke test failed — /api/health returned $HTTP_STATUS"; exit 1; }
           echo "$NODE_VERSION" | grep -q '^v24\.' || { echo "::error::expected Node v24.*, got $NODE_VERSION"; exit 1; }
+          echo "$SYSTEM_JSON" | grep -q '"version":' || { echo "::error::/api/admin/system missing version field"; exit 1; }
+          if echo "$SYSTEM_JSON" | grep -q '"version":"dev"'; then
+            echo "::error::build did not bake a version (got \"dev\")"; exit 1
+          fi
           echo "Smoke test passed (HTTP $HTTP_STATUS, Node $NODE_VERSION)"
 
       - name: Create GitHub Release
