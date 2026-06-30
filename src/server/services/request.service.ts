@@ -11,7 +11,7 @@ import type {
   RequestDto,
   RequestStatus,
 } from '../../shared/schemas/request.js';
-import { OPEN_REQUEST_STATUSES, ACTIVE_REQUEST_STATUSES } from '../../shared/schemas/request.js';
+import { OPEN_REQUEST_STATUSES, ACTIVE_REQUEST_STATUSES, APPROVED_REQUEST_STATUSES } from '../../shared/schemas/request.js';
 import type { Role, RequestQuotaMode } from '../../shared/schemas/user.js';
 import type { DefaultQuota, QuotaWindowDays } from '../../shared/schemas/connectors.js';
 import { ADD_BOOK_ERROR_CODES, type V1Book } from '../../shared/schemas/v1/books.js';
@@ -126,9 +126,15 @@ export class RequestService {
     limit: number;
     offset: number;
   }): Promise<{ data: RequestDto[]; total: number }> {
+    // "approved" filters the whole post-approval lifecycle (APPROVED_REQUEST_STATUSES),
+    // not the transient `approved` row; every other status filters exactly.
     const conds = [
       opts.userId !== undefined ? eq(requests.userId, opts.userId) : undefined,
-      opts.status !== undefined ? eq(requests.status, opts.status) : undefined,
+      opts.status === undefined
+        ? undefined
+        : opts.status === 'approved'
+          ? inArray(requests.status, [...APPROVED_REQUEST_STATUSES])
+          : eq(requests.status, opts.status),
     ].filter(Boolean);
     const where = conds.length ? and(...conds) : undefined;
 

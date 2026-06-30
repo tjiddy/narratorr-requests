@@ -55,9 +55,11 @@ admin + active unless `BOOTSTRAP_ADMIN` pins a specific identity.
 ### Sessions
 
 Sessions are stateless HMAC-signed tokens carried in a cookie that is `httpOnly`,
-`SameSite=Lax`, `Secure` in production, and scoped to a 7-day TTL. Verification uses a
-constant-time compare; a tampered signature, a malformed token, or an expired token is
-rejected.
+`SameSite=Lax`, scoped to a 7-day TTL, and marked `Secure` whenever there is TLS in front of the
+app (`config.behindTls`, which defaults true under `NODE_ENV=production`). A production deploy run
+over plain HTTP with no TLS terminator must set `BEHIND_TLS=false` so the browser will store and
+send the cookie — otherwise login silently never persists. Verification uses a constant-time
+compare; a tampered signature, a malformed token, or an expired token is rejected.
 
 ### Rate limiting
 

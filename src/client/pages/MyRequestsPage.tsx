@@ -2,7 +2,7 @@ import type { RequestDto } from '@shared/schemas/request';
 import { useMyRequests } from '../hooks';
 import { StatusBadge } from '../components/StatusBadge';
 import { EmptyState } from '../components/EmptyState';
-import { InboxIcon } from '../components/icons';
+import { InboxIcon, HeadphonesIcon } from '../components/icons';
 import { requestFailureReason } from '../components/request-failure';
 import { QuotaMeter } from '../components/QuotaMeter';
 
@@ -18,6 +18,12 @@ function RequestRow({ r }: { r: RequestDto }) {
       <div className="min-w-0 flex-1">
         <p className="truncate font-medium">{r.title}</p>
         {r.author && <p className="truncate text-sm text-muted-foreground">{r.author}</p>}
+        {r.narrator && (
+          <p className="mt-0.5 flex items-center gap-1.5 text-sm text-muted-foreground">
+            <HeadphonesIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+            <span className="truncate">{r.narrator}</span>
+          </p>
+        )}
         <p className="text-xs text-muted-foreground/70">
           Requested {new Date(r.requestedAt).toLocaleDateString()}
         </p>

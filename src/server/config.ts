@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
 // Load .env for native dev (no-op if absent / already in env). Production passes
@@ -15,6 +16,35 @@ try {
 // this module (src/server in dev, dist/server after bundling) — NOT process.cwd().
 export const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const resolveFromRoot = (p: string) => (path.isAbsolute(p) ? p : path.resolve(APP_ROOT, p));
+
+// useUnknownInCatchVariables-safe error description (no `as Error`).
+const describeErr = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * Resolve a possibly file-sourced secret (Docker `_FILE` convention): prefer `<NAME>_FILE`
+ * (read the file + `.trim()`; throw a startup error if it is unreadable OR empty-after-trim),
+ * else fall back to the raw `process.env[<NAME>]` (untrimmed, unchanged — may be `undefined`).
+ * Does NOT make the secret required; it only enforces that an explicitly-set `_FILE` is usable.
+ * The file value is returned straight to the caller — never written back to `process.env`, so
+ * `docker inspect` / `/proc/<pid>/environ` never expose it.
+ */
+function readSecret(name: string): string | undefined {
+  const filePath = process.env[`${name}_FILE`];
+  if (filePath !== undefined && filePath.trim() !== '') {
+    const resolved = filePath.trim();
+    let raw: string;
+    try {
+      raw = readFileSync(resolved, 'utf8');
+    } catch (err: unknown) {
+      // Name the var + path, never the contents.
+      throw new Error(`${name}_FILE ("${resolved}") could not be read: ${describeErr(err)}`, { cause: err });
+    }
+    const value = raw.trim();
+    if (value === '') throw new Error(`${name}_FILE ("${resolved}") is empty after trimming.`);
+    return value;
+  }
+  return process.env[name]; // unchanged: raw, untrimmed, possibly undefined
+}
 
 // empty/absent → default, otherwise coerce STRICTLY (Number("60abc") = NaN, which
 // z.number() rejects — unlike parseInt which would yield 60).
@@ -64,9 +94,13 @@ const envSchema = z.object({
     .default('./narratorr-requests.db')
     .transform((v) => resolveFromRoot(v || './narratorr-requests.db')),
 
+  // Declared here only so the env surface stays documented in one schema — the actual runtime
+  // value is sourced via readSecret() below (supports the _FILE convention) and bypasses this
+  // field's parsed value, so schema-level constraints added here won't apply.
   SESSION_SECRET: z.string().optional(),
   // Optional: dedicated key for encrypting connector secrets at rest. When unset,
   // the key is derived from SESSION_SECRET (see secret-codec.deriveSettingsKey).
+  // Same readSecret() bypass as SESSION_SECRET above applies here too.
   SETTINGS_KEY: z.string().optional(),
 
   // Auth.
@@ -87,6 +121,13 @@ const envSchema = z.object({
   // off; 'true' = trust all proxies; or a CIDR/IP list or hop count passed to Fastify.
   // Named to match narratorr's env (both map to Fastify's `trustProxy`).
   TRUSTED_PROXIES: z.string().default(''),
+
+  // "There is TLS in front of us" signal. Raw string (like SESSION_SECRET) so the default can
+  // depend on isProd in the post-parse block below — the schema transform runs pre-isProd and
+  // can't express that. Gates the TLS-assuming surfaces: CSP `upgrade-insecure-requests`, the
+  // HSTS header, and the `Secure` session cookie. Set BEHIND_TLS=false to run a prod image over
+  // plain HTTP (else assets fail with ERR_SSL_PROTOCOL_ERROR and login won't persist).
+  BEHIND_TLS: z.string().optional(),
 
   // The default request quota (limit + rolling window) is no longer env-configured — it's
   // admin-editable in the Settings UI and stored in app_settings. A fresh DB seeds a sane
@@ -127,7 +168,7 @@ if (authMode === 'bypass' && !isLoopbackBind && !env.ALLOW_INSECURE_AUTH_BYPASS)
 
 // Session secret: required in prod; dev auto-generates an ephemeral one (sessions
 // drop on restart, which is fine locally).
-let sessionSecret = env.SESSION_SECRET;
+let sessionSecret = readSecret('SESSION_SECRET');
 if (!sessionSecret) {
   if (isProd) throw new Error('SESSION_SECRET is required in production.');
   sessionSecret = randomBytes(32).toString('hex');
@@ -162,6 +203,28 @@ export function parseOidcProviders(ids: string[]): OidcProviderConfig[] {
       const v = process.env[`OIDC_${id.toUpperCase()}_${suffix}`];
       return v && v.trim() !== '' ? v.trim() : undefined;
     };
+    // Like key(), plus the `_FILE` branch for secret values. Unreadable `_FILE` throws (a
+    // mis-mounted file must surface, not silently disable the secret); empty-after-trim maps to
+    // undefined to match key()'s blank → undefined (the secret is optional). `_FILE` wins over
+    // the plain var. id is uppercased to match key() (provider ids are validated lowercase).
+    const secret = (suffix: string) => {
+      const fileVar = process.env[`OIDC_${id.toUpperCase()}_${suffix}_FILE`];
+      if (fileVar !== undefined && fileVar.trim() !== '') {
+        const resolved = fileVar.trim();
+        let raw: string;
+        try {
+          raw = readFileSync(resolved, 'utf8');
+        } catch (e: unknown) {
+          throw new Error(
+            `OIDC_${id.toUpperCase()}_${suffix}_FILE ("${resolved}") could not be read: ${describeErr(e)}`,
+            { cause: e },
+          );
+        }
+        const v = raw.trim();
+        return v === '' ? undefined : v;
+      }
+      return key(suffix);
+    };
     const issuer = key('ISSUER');
     const clientId = key('CLIENT_ID');
     const redirectUri = key('REDIRECT_URI');
@@ -182,7 +245,7 @@ export function parseOidcProviders(ids: string[]): OidcProviderConfig[] {
       label: key('LABEL') ?? id.charAt(0).toUpperCase() + id.slice(1),
       issuer: issuer as string,
       clientId: clientId as string,
-      clientSecret: key('CLIENT_SECRET'),
+      clientSecret: secret('CLIENT_SECRET'),
       redirectUri: redirectUri as string,
       scope: key('SCOPE') ?? 'openid profile email',
       subjectClaim: key('SUBJECT_CLAIM'),
@@ -216,6 +279,14 @@ const oidcProviders = authMode === 'standard' ? parseOidcProviders(env.OIDC_PROV
 const bootstrapAdmin = parseBootstrapAdmin(env.BOOTSTRAP_ADMIN);
 const trustProxy = parseTrustProxy(env.TRUSTED_PROXIES);
 
+// Default-on in production (the common topology is behind a TLS-terminating proxy), so prod
+// stays byte-identical to today. Reuse TRUTHY (1/true/yes/on) like every sibling flag; a blank
+// string falls back to isProd. A prod plain-HTTP deploy must set BEHIND_TLS=false explicitly.
+const behindTls =
+  env.BEHIND_TLS !== undefined && env.BEHIND_TLS.trim() !== ''
+    ? TRUTHY.includes(env.BEHIND_TLS.trim().toLowerCase())
+    : isProd;
+
 // A standard-mode install with no way in is a misconfiguration — fail fast at boot.
 if (authMode === 'standard' && !localAuth && oidcProviders.length === 0) {
   throw new Error(
@@ -232,8 +303,9 @@ export const config = {
   corsOrigin: env.CORS_ORIGIN,
   databasePath: env.DATABASE_PATH,
   sessionSecret,
-  settingsKey: env.SETTINGS_KEY,
+  settingsKey: readSecret('SETTINGS_KEY'),
   trustProxy,
+  behindTls,
   authMode,
   localAuth,
   oidcProviders,

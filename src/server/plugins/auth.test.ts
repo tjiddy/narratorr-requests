@@ -110,8 +110,8 @@ describe('auth plugin — session cookie security flags', () => {
       payload: { email: 'owner@example.com', password: 'password123' },
     });
 
-  it('a login Set-Cookie carries HttpOnly, SameSite=Lax, Max-Age; Secure absent when not prod', async () => {
-    const h = await build({ config: { isProd: false }, register: registerAuthRoutes });
+  it('a login Set-Cookie carries HttpOnly, SameSite=Lax, Max-Age; Secure absent when not behind TLS', async () => {
+    const h = await build({ config: { behindTls: false }, register: registerAuthRoutes });
     const res = await signup(h.app);
     expect(res.statusCode).toBe(200);
 
@@ -122,13 +122,57 @@ describe('auth plugin — session cookie security flags', () => {
     expect(line).not.toMatch(/;\s*Secure/i);
   });
 
-  it('Secure is set on the login cookie when isProd', async () => {
-    const h = await build({ config: { isProd: true }, register: registerAuthRoutes });
+  it('Secure is set on the login cookie when behind TLS', async () => {
+    const h = await build({ config: { behindTls: true }, register: registerAuthRoutes });
     const res = await signup(h.app);
     expect(res.statusCode).toBe(200);
 
     const line = sessionSetCookie(res);
     expect(line).toMatch(/;\s*Secure/i);
     expect(line).toContain('HttpOnly');
+  });
+
+  it('prod over plain HTTP (isProd=true, behindTls=false) → Secure ABSENT — the regression this fix prevents', async () => {
+    // The whole point of BEHIND_TLS: a prod image run without a TLS terminator must NOT mark the
+    // cookie Secure, or the browser drops it over http:// and login silently never persists.
+    const h = await build({ config: { isProd: true, behindTls: false }, register: registerAuthRoutes });
+    const res = await signup(h.app);
+    expect(res.statusCode).toBe(200);
+
+    const line = sessionSetCookie(res);
+    expect(line).not.toMatch(/;\s*Secure/i);
+    expect(line).toContain('HttpOnly');
+  });
+});
+
+// clearSessionCookie gates the clear-cookie's Secure attribute on behindTls too. Asserted directly
+// (not just via login) so a regression back to `config.isProd` on the clear path is caught: a prod
+// plain-HTTP deploy emitting a Secure clear-cookie over http:// would fail to clear the session.
+describe('auth plugin — logout clear-cookie security flags', () => {
+  function clearSetCookie(res: LightMyRequestResponse): string {
+    const raw = res.headers['set-cookie'] ?? [];
+    const lines = Array.isArray(raw) ? raw : [raw];
+    return lines.find((l) => l.startsWith(`${SESSION_COOKIE}=`)) ?? '';
+  }
+
+  const logout = (app: FastifyInstance) => app.inject({ method: 'POST', url: '/api/auth/logout' });
+
+  it('prod over plain HTTP (isProd=true, behindTls=false) → clear-cookie lacks Secure', async () => {
+    const h = await build({ config: { isProd: true, behindTls: false }, register: registerAuthRoutes });
+    const res = await logout(h.app);
+    expect(res.statusCode).toBe(200);
+
+    const line = clearSetCookie(res);
+    expect(line).not.toBe('');
+    expect(line).not.toMatch(/;\s*Secure/i);
+  });
+
+  it('behind TLS (behindTls=true) → clear-cookie carries Secure', async () => {
+    const h = await build({ config: { behindTls: true }, register: registerAuthRoutes });
+    const res = await logout(h.app);
+    expect(res.statusCode).toBe(200);
+
+    const line = clearSetCookie(res);
+    expect(line).toMatch(/;\s*Secure/i);
   });
 });
