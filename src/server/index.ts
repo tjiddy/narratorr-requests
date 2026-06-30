@@ -24,6 +24,7 @@ import { SecretCodec, deriveSettingsKey } from './util/secret-codec.js';
 import { errorHandlerPlugin } from './plugins/error-handler.js';
 import { authRateLimitOptions } from './plugins/rate-limit.js';
 import { authPlugin } from './plugins/auth.js';
+import { buildHelmetOptions } from './plugins/helmet-options.js';
 import { registerRoutes } from './routes/index.js';
 import { errorBody } from '../shared/schemas/v1/common.js';
 import type { AppDeps } from './services/deps.js';
@@ -114,27 +115,11 @@ async function main(): Promise<void> {
   const serveClient = existsSync(path.join(clientDir, 'index.html'));
 
   // Browser hardening when we serve the SPA (CSP, frame-ancestors, referrer policy).
-  // Skipped under Vite dev so HMR/inline scripts aren't blocked.
+  // Skipped under Vite dev so HMR/inline scripts aren't blocked. The TLS-assuming headers
+  // (CSP `upgrade-insecure-requests` + HSTS) are gated on `behindTls` so a plain-HTTP deploy
+  // doesn't blank-screen on `ERR_SSL_PROTOCOL_ERROR` — see buildHelmetOptions.
   if (serveClient) {
-    await app.register(helmet, {
-      contentSecurityPolicy: {
-        directives: {
-          defaultSrc: ["'self'"],
-          baseUri: ["'self'"],
-          objectSrc: ["'none'"],
-          frameAncestors: ["'none'"],
-          imgSrc: ["'self'", 'https:', 'data:'],
-          // scriptSrc stays strict 'self' — the no-flash boot script is served as an
-          // external /theme-init.js (not inline) so no hash/nonce is needed.
-          scriptSrc: ["'self'"],
-          // Google Fonts: stylesheet from fonts.googleapis.com, font files from
-          // fonts.gstatic.com (mirrors Narratorr's helmet-options.ts).
-          styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-          fontSrc: ["'self'", 'https://fonts.gstatic.com'],
-        },
-      },
-      referrerPolicy: { policy: 'no-referrer' },
-    });
+    await app.register(helmet, buildHelmetOptions({ behindTls: config.behindTls }));
   }
 
   await app.register(cors, { origin: config.corsOrigin, credentials: true });

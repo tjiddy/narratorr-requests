@@ -88,6 +88,47 @@ describe('config — auth method requirement (standard mode)', () => {
   });
 });
 
+describe('config — BEHIND_TLS derivation', () => {
+  // AUTH_BYPASS is neutralized in the non-prod cases that omit a SESSION_SECRET so the standard-mode
+  // boot doesn't trip another guard; LOCAL_AUTH defaults on so there's always a way in. The prod
+  // cases supply SESSION_SECRET (required in prod) and neutralize AUTH_BYPASS (refused in prod).
+  it('absent + prod → true (default-on so prod stays byte-identical)', async () => {
+    const mod = await loadConfig({ NODE_ENV: 'production', SESSION_SECRET: 's', AUTH_BYPASS: '', OIDC_PROVIDERS: '' });
+    expect(mod.config.behindTls).toBe(true);
+  });
+
+  it('absent + non-prod → false', async () => {
+    const mod = await loadConfig({ NODE_ENV: 'test', AUTH_BYPASS: '' });
+    expect(mod.config.behindTls).toBe(false);
+  });
+
+  it('explicit false under prod → false (the prod plain-HTTP topology)', async () => {
+    const mod = await loadConfig({
+      NODE_ENV: 'production',
+      SESSION_SECRET: 's',
+      AUTH_BYPASS: '',
+      OIDC_PROVIDERS: '',
+      BEHIND_TLS: 'false',
+    });
+    expect(mod.config.behindTls).toBe(false);
+  });
+
+  it('explicit true under non-prod → true', async () => {
+    const mod = await loadConfig({ NODE_ENV: 'test', AUTH_BYPASS: '', BEHIND_TLS: 'true' });
+    expect(mod.config.behindTls).toBe(true);
+  });
+
+  it('TRUTHY variants (1/yes/on) coerce to true; blank falls back to isProd', async () => {
+    for (const v of ['1', 'yes', 'on']) {
+      vi.unstubAllEnvs();
+      expect((await loadConfig({ NODE_ENV: 'test', AUTH_BYPASS: '', BEHIND_TLS: v })).config.behindTls).toBe(true);
+    }
+    // Blank string is not "set" → falls back to isProd (false here).
+    vi.unstubAllEnvs();
+    expect((await loadConfig({ NODE_ENV: 'test', AUTH_BYPASS: '', BEHIND_TLS: '' })).config.behindTls).toBe(false);
+  });
+});
+
 describe('config — env coercion', () => {
   it('rejects a non-numeric PORT', async () => {
     await expect(loadConfig({ PORT: '60abc' })).rejects.toThrow(/Invalid environment config/);
