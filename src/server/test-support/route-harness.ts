@@ -186,6 +186,7 @@ export async function buildRouteApp(opts: BuildRouteAppOpts): Promise<RouteHarne
     sessionSecret: SESSION_SECRET,
     settingsKey: undefined,
     trustProxy: false,
+    behindTls: false,
     authMode: 'standard',
     localAuth: true,
     oidcProviders: [],

@@ -88,6 +88,13 @@ const envSchema = z.object({
   // Named to match narratorr's env (both map to Fastify's `trustProxy`).
   TRUSTED_PROXIES: z.string().default(''),
 
+  // "There is TLS in front of us" signal. Raw string (like SESSION_SECRET) so the default can
+  // depend on isProd in the post-parse block below — the schema transform runs pre-isProd and
+  // can't express that. Gates the TLS-assuming surfaces: CSP `upgrade-insecure-requests`, the
+  // HSTS header, and the `Secure` session cookie. Set BEHIND_TLS=false to run a prod image over
+  // plain HTTP (else assets fail with ERR_SSL_PROTOCOL_ERROR and login won't persist).
+  BEHIND_TLS: z.string().optional(),
+
   // The default request quota (limit + rolling window) is no longer env-configured — it's
   // admin-editable in the Settings UI and stored in app_settings. A fresh DB seeds a sane
   // default (10 requests / rolling 30 days) via SettingsService.ensure().
@@ -216,6 +223,14 @@ const oidcProviders = authMode === 'standard' ? parseOidcProviders(env.OIDC_PROV
 const bootstrapAdmin = parseBootstrapAdmin(env.BOOTSTRAP_ADMIN);
 const trustProxy = parseTrustProxy(env.TRUSTED_PROXIES);
 
+// Default-on in production (the common topology is behind a TLS-terminating proxy), so prod
+// stays byte-identical to today. Reuse TRUTHY (1/true/yes/on) like every sibling flag; a blank
+// string falls back to isProd. A prod plain-HTTP deploy must set BEHIND_TLS=false explicitly.
+const behindTls =
+  env.BEHIND_TLS !== undefined && env.BEHIND_TLS.trim() !== ''
+    ? TRUTHY.includes(env.BEHIND_TLS.trim().toLowerCase())
+    : isProd;
+
 // A standard-mode install with no way in is a misconfiguration — fail fast at boot.
 if (authMode === 'standard' && !localAuth && oidcProviders.length === 0) {
   throw new Error(
@@ -234,6 +249,7 @@ export const config = {
   sessionSecret,
   settingsKey: env.SETTINGS_KEY,
   trustProxy,
+  behindTls,
   authMode,
   localAuth,
   oidcProviders,

@@ -19,7 +19,10 @@ export function sessionCookieOptions(config: AppConfig): CookieSerializeOptions 
     path: '/',
     httpOnly: true,
     sameSite: 'lax',
-    secure: config.isProd,
+    // Gated on behindTls (not isProd): a prod plain-HTTP deploy (BEHIND_TLS=false) must NOT set
+    // Secure, or the browser refuses to store/send the cookie over http:// and login never
+    // persists. Defaults to isProd, so the prod-behind-TLS path is unchanged (still Secure).
+    secure: config.behindTls,
     maxAge: Math.floor(SESSION_TTL_MS / 1000),
   };
 }
@@ -31,7 +34,7 @@ export function setSessionCookie(reply: FastifyReply, config: AppConfig, user: {
 }
 
 export function clearSessionCookie(reply: FastifyReply, config: AppConfig): void {
-  reply.clearCookie(SESSION_COOKIE, { path: '/', ...(config.isProd ? { secure: true } : {}) });
+  reply.clearCookie(SESSION_COOKIE, { path: '/', ...(config.behindTls ? { secure: true } : {}) });
 }
 
 /**
