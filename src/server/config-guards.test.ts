@@ -23,7 +23,17 @@ function secretFile(contents: string): string {
 const MISSING_PATH = join(secretsDir, 'does-not-exist');
 afterAll(() => rmSync(secretsDir, { recursive: true, force: true }));
 
+// readSecret() prefers <NAME>_FILE over the plain var, so an ambient SESSION_SECRET_FILE /
+// SETTINGS_KEY_FILE (host env or a local .env) would silently change which branch a plain-env /
+// no-_FILE test exercises. Neutralize them by default (stubbed to '' → readSecret treats blank as
+// unset); a test exercising the _FILE path re-stubs them via the `env` arg, which wins (applied
+// after, in the second loop).
+const FILE_SECRET_VARS = ['SESSION_SECRET_FILE', 'SETTINGS_KEY_FILE'];
+
 async function loadConfig(env: Record<string, string>) {
+  for (const k of FILE_SECRET_VARS) {
+    if (!(k in env)) vi.stubEnv(k, '');
+  }
   for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
   vi.resetModules();
   return import('./config.js');

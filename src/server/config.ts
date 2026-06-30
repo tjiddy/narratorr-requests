@@ -35,7 +35,7 @@ function readSecret(name: string): string | undefined {
     let raw: string;
     try {
       raw = readFileSync(resolved, 'utf8');
-    } catch (err) {
+    } catch (err: unknown) {
       // Name the var + path, never the contents.
       throw new Error(`${name}_FILE ("${resolved}") could not be read: ${describeErr(err)}`, { cause: err });
     }
@@ -210,7 +210,7 @@ export function parseOidcProviders(ids: string[]): OidcProviderConfig[] {
         let raw: string;
         try {
           raw = readFileSync(resolved, 'utf8');
-        } catch (e) {
+        } catch (e: unknown) {
           throw new Error(
             `OIDC_${id.toUpperCase()}_${suffix}_FILE ("${resolved}") could not be read: ${describeErr(e)}`,
             { cause: e },

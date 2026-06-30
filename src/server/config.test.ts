@@ -1,17 +1,35 @@
-import { describe, it, expect, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseOidcProviders, parseBootstrapAdmin, parseTrustProxy } from './config.js';
 
-// parseOidcProviders reads OIDC_<ID>_* from process.env; track + clean up what we set.
+// parseOidcProviders reads OIDC_<ID>_* (incl. the new OIDC_<ID>_CLIENT_SECRET_FILE) straight from
+// process.env, and the secret() wrapper prefers _FILE over the plain var. An ambient OIDC_* (host
+// env or a local .env) would silently change which branch a no-_FILE / plain-secret test
+// exercises, so snapshot + strip all OIDC_* keys before each test for a clean slate and restore
+// them after. setEnv() tracks per-test mutations for the same teardown.
+const savedOidcEnv: Record<string, string | undefined> = {};
 const touched: string[] = [];
 function setEnv(key: string, value: string) {
   touched.push(key);
   process.env[key] = value;
 }
+beforeEach(() => {
+  for (const k of Object.keys(process.env)) {
+    if (k.startsWith('OIDC_')) {
+      savedOidcEnv[k] = process.env[k];
+      delete process.env[k];
+    }
+  }
+});
 afterEach(() => {
   for (const k of touched.splice(0)) delete process.env[k];
+  for (const k of Object.keys(savedOidcEnv)) {
+    const v = savedOidcEnv[k];
+    if (v !== undefined) process.env[k] = v;
+    delete savedOidcEnv[k];
+  }
 });
 
 // Real on-disk secret files for the _FILE-sourcing tests.
