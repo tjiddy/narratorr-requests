@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
 // Load .env for native dev (no-op if absent / already in env). Production passes
@@ -15,6 +16,35 @@ try {
 // this module (src/server in dev, dist/server after bundling) — NOT process.cwd().
 export const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const resolveFromRoot = (p: string) => (path.isAbsolute(p) ? p : path.resolve(APP_ROOT, p));
+
+// useUnknownInCatchVariables-safe error description (no `as Error`).
+const describeErr = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * Resolve a possibly file-sourced secret (Docker `_FILE` convention): prefer `<NAME>_FILE`
+ * (read the file + `.trim()`; throw a startup error if it is unreadable OR empty-after-trim),
+ * else fall back to the raw `process.env[<NAME>]` (untrimmed, unchanged — may be `undefined`).
+ * Does NOT make the secret required; it only enforces that an explicitly-set `_FILE` is usable.
+ * The file value is returned straight to the caller — never written back to `process.env`, so
+ * `docker inspect` / `/proc/<pid>/environ` never expose it.
+ */
+function readSecret(name: string): string | undefined {
+  const filePath = process.env[`${name}_FILE`];
+  if (filePath !== undefined && filePath.trim() !== '') {
+    const resolved = filePath.trim();
+    let raw: string;
+    try {
+      raw = readFileSync(resolved, 'utf8');
+    } catch (err: unknown) {
+      // Name the var + path, never the contents.
+      throw new Error(`${name}_FILE ("${resolved}") could not be read: ${describeErr(err)}`, { cause: err });
+    }
+    const value = raw.trim();
+    if (value === '') throw new Error(`${name}_FILE ("${resolved}") is empty after trimming.`);
+    return value;
+  }
+  return process.env[name]; // unchanged: raw, untrimmed, possibly undefined
+}
 
 // empty/absent → default, otherwise coerce STRICTLY (Number("60abc") = NaN, which
 // z.number() rejects — unlike parseInt which would yield 60).
@@ -134,7 +164,7 @@ if (authMode === 'bypass' && !isLoopbackBind && !env.ALLOW_INSECURE_AUTH_BYPASS)
 
 // Session secret: required in prod; dev auto-generates an ephemeral one (sessions
 // drop on restart, which is fine locally).
-let sessionSecret = env.SESSION_SECRET;
+let sessionSecret = readSecret('SESSION_SECRET');
 if (!sessionSecret) {
   if (isProd) throw new Error('SESSION_SECRET is required in production.');
   sessionSecret = randomBytes(32).toString('hex');
@@ -169,6 +199,28 @@ export function parseOidcProviders(ids: string[]): OidcProviderConfig[] {
       const v = process.env[`OIDC_${id.toUpperCase()}_${suffix}`];
       return v && v.trim() !== '' ? v.trim() : undefined;
     };
+    // Like key(), plus the `_FILE` branch for secret values. Unreadable `_FILE` throws (a
+    // mis-mounted file must surface, not silently disable the secret); empty-after-trim maps to
+    // undefined to match key()'s blank → undefined (the secret is optional). `_FILE` wins over
+    // the plain var. id is uppercased to match key() (provider ids are validated lowercase).
+    const secret = (suffix: string) => {
+      const fileVar = process.env[`OIDC_${id.toUpperCase()}_${suffix}_FILE`];
+      if (fileVar !== undefined && fileVar.trim() !== '') {
+        const resolved = fileVar.trim();
+        let raw: string;
+        try {
+          raw = readFileSync(resolved, 'utf8');
+        } catch (e: unknown) {
+          throw new Error(
+            `OIDC_${id.toUpperCase()}_${suffix}_FILE ("${resolved}") could not be read: ${describeErr(e)}`,
+            { cause: e },
+          );
+        }
+        const v = raw.trim();
+        return v === '' ? undefined : v;
+      }
+      return key(suffix);
+    };
     const issuer = key('ISSUER');
     const clientId = key('CLIENT_ID');
     const redirectUri = key('REDIRECT_URI');
@@ -189,7 +241,7 @@ export function parseOidcProviders(ids: string[]): OidcProviderConfig[] {
       label: key('LABEL') ?? id.charAt(0).toUpperCase() + id.slice(1),
       issuer: issuer as string,
       clientId: clientId as string,
-      clientSecret: key('CLIENT_SECRET'),
+      clientSecret: secret('CLIENT_SECRET'),
       redirectUri: redirectUri as string,
       scope: key('SCOPE') ?? 'openid profile email',
       subjectClaim: key('SUBJECT_CLAIM'),
@@ -247,7 +299,7 @@ export const config = {
   corsOrigin: env.CORS_ORIGIN,
   databasePath: env.DATABASE_PATH,
   sessionSecret,
-  settingsKey: env.SETTINGS_KEY,
+  settingsKey: readSecret('SETTINGS_KEY'),
   trustProxy,
   behindTls,
   authMode,
