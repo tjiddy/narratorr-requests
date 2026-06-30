@@ -94,9 +94,13 @@ const envSchema = z.object({
     .default('./narratorr-requests.db')
     .transform((v) => resolveFromRoot(v || './narratorr-requests.db')),
 
+  // Declared here only so the env surface stays documented in one schema — the actual runtime
+  // value is sourced via readSecret() below (supports the _FILE convention) and bypasses this
+  // field's parsed value, so schema-level constraints added here won't apply.
   SESSION_SECRET: z.string().optional(),
   // Optional: dedicated key for encrypting connector secrets at rest. When unset,
   // the key is derived from SESSION_SECRET (see secret-codec.deriveSettingsKey).
+  // Same readSecret() bypass as SESSION_SECRET above applies here too.
   SETTINGS_KEY: z.string().optional(),
 
   // Auth.
