@@ -1,4 +1,7 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, afterAll } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parseOidcProviders, parseBootstrapAdmin, parseTrustProxy } from './config.js';
 
 // parseOidcProviders reads OIDC_<ID>_* from process.env; track + clean up what we set.
@@ -10,6 +13,17 @@ function setEnv(key: string, value: string) {
 afterEach(() => {
   for (const k of touched.splice(0)) delete process.env[k];
 });
+
+// Real on-disk secret files for the _FILE-sourcing tests.
+const secretsDir = mkdtempSync(join(tmpdir(), 'nr-oidc-secrets-'));
+let fileSeq = 0;
+function secretFile(contents: string): string {
+  const p = join(secretsDir, `secret-${fileSeq++}`);
+  writeFileSync(p, contents, 'utf8');
+  return p;
+}
+const MISSING_PATH = join(secretsDir, 'does-not-exist');
+afterAll(() => rmSync(secretsDir, { recursive: true, force: true }));
 
 describe('parseOidcProviders', () => {
   it('builds a provider config with sensible defaults', () => {
@@ -52,6 +66,59 @@ describe('parseOidcProviders', () => {
     setEnv('OIDC_DUP_CLIENT_ID', 'x');
     setEnv('OIDC_DUP_REDIRECT_URI', 'https://x/cb');
     expect(() => parseOidcProviders(['dup', 'dup'])).toThrow(/Duplicate OIDC provider id/);
+  });
+});
+
+describe('parseOidcProviders — CLIENT_SECRET _FILE sourcing', () => {
+  // The three required keys, so the provider builds and we can assert on clientSecret.
+  function setRequired(id: string) {
+    const U = id.toUpperCase();
+    setEnv(`OIDC_${U}_ISSUER`, 'https://idp.example.com');
+    setEnv(`OIDC_${U}_CLIENT_ID`, 'cid');
+    setEnv(`OIDC_${U}_REDIRECT_URI`, 'https://r.example.com/cb');
+  }
+
+  it('sources the client secret from _FILE, trimmed', () => {
+    setRequired('plex');
+    setEnv('OIDC_PLEX_CLIENT_SECRET_FILE', secretFile('oidc-file-secret\n'));
+    const [p] = parseOidcProviders(['plex']);
+    expect(p?.clientSecret).toBe('oidc-file-secret');
+  });
+
+  it('still honors the plain OIDC_<ID>_CLIENT_SECRET (trimmed) when no _FILE is set', () => {
+    setRequired('plex');
+    setEnv('OIDC_PLEX_CLIENT_SECRET', '  plain-oidc-secret  ');
+    const [p] = parseOidcProviders(['plex']);
+    expect(p?.clientSecret).toBe('plain-oidc-secret');
+  });
+
+  it('lets _FILE take precedence over the plain var', () => {
+    setRequired('plex');
+    setEnv('OIDC_PLEX_CLIENT_SECRET', 'plain-loser');
+    setEnv('OIDC_PLEX_CLIENT_SECRET_FILE', secretFile('from-file-wins\n'));
+    const [p] = parseOidcProviders(['plex']);
+    expect(p?.clientSecret).toBe('from-file-wins');
+  });
+
+  it('coalesces an empty-after-trim _FILE to undefined (optional secret)', () => {
+    setRequired('plex');
+    setEnv('OIDC_PLEX_CLIENT_SECRET_FILE', secretFile('   \n'));
+    const [p] = parseOidcProviders(['plex']);
+    expect(p?.clientSecret).toBeUndefined();
+  });
+
+  it('throws (does NOT coalesce) when the _FILE is unreadable, naming the var + path, never contents', () => {
+    setRequired('plex');
+    setEnv('OIDC_PLEX_CLIENT_SECRET_FILE', MISSING_PATH);
+    let message = '';
+    try {
+      parseOidcProviders(['plex']);
+    } catch (e) {
+      message = e instanceof Error ? e.message : String(e);
+    }
+    expect(message).toMatch(/OIDC_PLEX_CLIENT_SECRET_FILE/);
+    expect(message).toMatch(/could not be read/);
+    expect(message).toContain(MISSING_PATH);
   });
 });
 
