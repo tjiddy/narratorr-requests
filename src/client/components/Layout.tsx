@@ -6,6 +6,7 @@ import type { MeDto } from '@shared/schemas/user';
 import { logout } from '../api';
 import { useTheme } from '../hooks';
 import { Button } from './Button';
+import { ErrorBoundary } from './ErrorBoundary';
 import { SunIcon, MoonIcon, HeadphonesIcon, SearchIcon, InboxIcon, ActivityIcon, UsersIcon, SettingsIcon } from './icons';
 
 type NavItem = {
@@ -97,7 +98,9 @@ export function Layout({ me }: { me: MeDto }) {
         </div>
       </header>
       <main className="mx-auto max-w-5xl px-4 py-8">
-        <Outlet />
+        <ErrorBoundary>
+          <Outlet />
+        </ErrorBoundary>
       </main>
     </div>
   );
