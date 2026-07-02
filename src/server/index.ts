@@ -12,7 +12,7 @@ import { runMigrations } from '../db/migrate.js';
 import { createDb } from '../db/client.js';
 import { UserService } from './services/user.service.js';
 import { SettingsService } from './services/settings.service.js';
-import { RequestService, resolveRequestPolicy } from './services/request.service.js';
+import { RequestService, resolveRequestPolicy, sanitizeAutoApproveRoles } from './services/request.service.js';
 import { SearchService } from './services/search.service.js';
 import { StatusPoller } from './services/status-poller.js';
 import { NarratorrClient } from './services/narratorr-client.js';
@@ -28,7 +28,6 @@ import { buildHelmetOptions } from './plugins/helmet-options.js';
 import { registerRoutes } from './routes/index.js';
 import { errorBody } from '../shared/schemas/v1/common.js';
 import type { AppDeps } from './services/deps.js';
-import type { Role } from '../shared/schemas/user.js';
 import './types.js';
 
 async function main(): Promise<void> {
@@ -74,7 +73,7 @@ async function main(): Promise<void> {
   const requests = new RequestService(
     db,
     narratorr,
-    await resolveRequestPolicy(connectorSettings, settingsRow.autoApproveRoles as Role[]),
+    await resolveRequestPolicy(connectorSettings, sanitizeAutoApproveRoles(settingsRow.autoApproveRoles, app.log)),
     // Live-notifier accessor (NOT a captured instance): the settings route reassigns
     // deps.notifier on every notifier-config save, so read it at dispatch time. The app
     // logger makes a lost request.failed (rejected lookup/dispatch) diagnosable.

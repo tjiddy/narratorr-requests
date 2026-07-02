@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { Db } from '../../db/client.js';
 import { appSettings } from '../../db/schema.js';
 import { notificationEventSchema, type NotificationEvent } from '../../shared/notification-events.js';
-import { quotaWindowDaysSchema } from '../../shared/schemas/connectors.js';
+import { quotaWindowDaysSchema, storedConnectorsSchema } from '../../shared/schemas/connectors.js';
 import type {
   StoredConnectors,
   StoredNotifier,
@@ -42,6 +42,17 @@ interface SettingsLogger {
 const NOOP_LOGGER: SettingsLogger = { warn() {} };
 
 /**
+ * A stored secret is "usable" only when it's a non-empty string. A non-string / empty value (a
+ * corrupt or hand-edited blob whose secret survives the envelope schema as `unknown`) is treated
+ * as unconfigured — CONSISTENTLY by `reveal()` (runtime → null) and the masked has-secret booleans
+ * (DTO → false), so the two surfaces can never disagree about whether a secret is set. A real
+ * `enc:v1:…` (or legacy plaintext) string is usable; only non-strings / '' become false.
+ */
+function isUsableSecret(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+/**
  * Reads/writes the connector config (narratorr connection + the notifier list) persisted
  * in `app_settings.connectors`. Secrets are encrypted at rest; this service is the single
  * place that decrypts (for runtime use) or masks (for the API). Notifier secret handling
@@ -61,9 +72,29 @@ export class ConnectorSettingsService {
     return this.connectorsFrom(row);
   }
 
-  /** The connector blob off a settings row (or a fresh EMPTY when the row/blob is absent). */
+  /**
+   * The connector blob off a settings row, VALIDATED at the storage boundary so a corrupt /
+   * hand-edited / legacy blob can never throw out of a boot or Settings read. Three cases:
+   *   • absent / null → the quiet fresh-install default `{ ...EMPTY }`, no warn (the normal state).
+   *   • non-null but failing the envelope schema → `{ ...EMPTY }` + exactly one WARN, mirroring
+   *     `sanitizeQuota`. A coarse whole-blob reset (per-field salvage is out of scope): the admin
+   *     re-enters config rather than the app crash-looping on `value.startsWith is not a function`.
+   *   • healthy → round-trips unchanged (secret VALUES / notifier `events` stay `unknown` at the
+   *     schema layer, guarded downstream by `reveal()` + `safeEvents()`, so the cast back to
+   *     `StoredConnectors` is the intended parse-boundary narrowing).
+   */
   private connectorsFrom(row: { connectors: StoredConnectors | null } | undefined): StoredConnectors {
-    return row?.connectors ?? { ...EMPTY };
+    const raw = row?.connectors ?? null;
+    if (raw == null) return { ...EMPTY };
+    const parsed = storedConnectorsSchema.safeParse(raw);
+    if (!parsed.success) {
+      this.logger.warn(
+        { issues: parsed.error.issues },
+        'stored connectors blob failed the envelope schema — treating connectors as unconfigured (re-enter them in Settings)',
+      );
+      return { ...EMPTY };
+    }
+    return parsed.data as unknown as StoredConnectors;
   }
 
   /**
@@ -108,8 +139,12 @@ export class ConnectorSettingsService {
    * with no SETTINGS_KEY) returns null AND logs a loud WARN, so a connector silently going
    * dark is diagnosable rather than indistinguishable from "never configured".
    */
-  private reveal(value: string | null, field: string): string | null {
-    if (!value) return null;
+  private reveal(value: unknown, field: string): string | null {
+    // A non-string / empty secret (a corrupt blob whose value survived the envelope schema as
+    // `unknown`) is treated as unconfigured — same outcome as an undecryptable one, but SILENT
+    // (no per-read warn: getDto()/getNotificationsConfig() call reveal()/hostHint() more than once
+    // per row). This also stops `codec.isEncrypted(value)` (a `.startsWith`) throwing on a non-string.
+    if (!isUsableSecret(value)) return null;
     if (!this.codec.isEncrypted(value)) return value; // legacy plaintext, tolerated
     const plain = this.codec.decrypt(value);
     if (plain === null) {
@@ -185,7 +220,7 @@ export class ConnectorSettingsService {
       narratorr: c.narratorr
         ? {
             url: c.narratorr.url,
-            hasApiKey: Boolean(c.narratorr.apiKey),
+            hasApiKey: isUsableSecret(c.narratorr.apiKey),
           }
         : null,
       notifiers: c.notifiers.map((n) => this.toNotifierDto(n)),
@@ -360,7 +395,7 @@ export class ConnectorSettingsService {
     const out: Record<string, unknown> = {};
     for (const f of def.fields) {
       const sf = def.secretFields.find((s) => s.field === f.key);
-      out[f.key] = sf ? this.reveal((stored[f.key] as string | null) ?? null, `${def.type}.${f.key}`) : stored[f.key];
+      out[f.key] = sf ? this.reveal(stored[f.key], `${def.type}.${f.key}`) : stored[f.key];
     }
     return out;
   }
@@ -375,7 +410,7 @@ export class ConnectorSettingsService {
     for (const f of def.fields) {
       const sf = def.secretFields.find((s) => s.field === f.key);
       if (sf) {
-        out[sf.maskedField] = Boolean(stored[f.key]);
+        out[sf.maskedField] = isUsableSecret(stored[f.key]);
         if (sf.hintField) out[sf.hintField] = this.hostHint(stored[f.key]);
       } else {
         out[f.key] = stored[f.key];
