@@ -179,10 +179,11 @@ describe('list — offset paging + tie-stability (AC1/AC4)', () => {
     expect(new Set(ids).size).toBe(55); // no duplicate publicId across the pages
   });
 
-  it('tie stability: rows sharing a requestedAt second page through with no dup and no gap', async () => {
+  it('tie stability: rows sharing a requestedAt second page in the exact desc(id) tiebreak order', async () => {
     const user = await insertUser(db, { role: 'user' });
-    // All 12 rows share the SAME requestedAt second — without the id tiebreak the ordering
-    // between them is undefined, so offset pages could skip or duplicate a tied row.
+    // All 12 rows share the SAME requestedAt second. Insert t0..t11 in order, so their
+    // autoincrement ids ascend with the suffix. The secondary sort key desc(requests.id)
+    // must therefore produce the strict reverse: t11, t10, …, t0.
     const tied = new Date('2026-01-01T00:00:00.000Z');
     for (let i = 0; i < 12; i++) await seedRequest(user.id, `t${i}`, tied);
     const svc = new RequestService(db, client, policy());
@@ -192,8 +193,12 @@ describe('list — offset paging + tie-stability (AC1/AC4)', () => {
       const page = await svc.list({ userId: user.id, limit: 5, offset });
       seen.push(...page.data.map((r) => r.publicId));
     }
-    // The union of every page is EXACTLY the seeded set: 12 distinct publicIds, none lost, none repeated.
-    expect(seen).toHaveLength(12);
+    // Assert the CONCRETE tiebreak order, not just the distinct set: if desc(requests.id)
+    // were dropped, SQLite would fall back to ascending rowid (t0…t11) among the ties and
+    // this exact sequence would fail — so the assertion is mutation-sensitive to AC4's key.
+    const expected = Array.from({ length: 12 }, (_, i) => `rq_t${11 - i}`);
+    expect(seen).toEqual(expected);
+    // And, as a corollary, the pages neither drop nor duplicate a tied row.
     expect(new Set(seen).size).toBe(12);
   });
 
