@@ -26,10 +26,18 @@ const stubNarratorr = {
 } as unknown as INarratorrClient;
 
 // A stub OIDC provider entry for exercising the generic OIDC routes without a real IdP.
-function fakeOidc(profile = { subject: 'oidc-sub-1', username: 'oidcuser', email: null, thumb: null }) {
+// `capture`, when supplied, records the URL string the route hands to handleCallback so a
+// test can assert the route's reconstruction (config origin + incoming query, never Host).
+function fakeOidc(
+  profile = { subject: 'oidc-sub-1', username: 'oidcuser', email: null, thumb: null },
+  capture?: (url: string) => void,
+) {
   const service = {
     buildAuthUrl: () => Promise.resolve('https://idp.example.com/authorize?x=1'),
-    handleCallback: () => Promise.resolve(profile),
+    handleCallback: (url: string) => {
+      capture?.(url);
+      return Promise.resolve(profile);
+    },
   };
   const config = { id: 'test', label: 'Test', redirectUri: 'http://localhost/api/auth/oidc/test/callback' };
   return new Map([['test', { service, config }]]) as unknown as AppDeps['oidc'];
@@ -306,6 +314,34 @@ describe('generic OIDC routes', () => {
     notifySpy.mockClear();
     await a.inject({ method: 'GET', url: '/api/auth/oidc/test/callback?code=x&state=y' });
     expect(notifySpy).not.toHaveBeenCalled();
+    await a.close();
+  });
+
+  it('hands handleCallback a URL rebuilt from the configured redirectUri + incoming query, ignoring a hostile Host', async () => {
+    // Guards the security seam in auth.ts: the callback URL is reconstructed from the CONFIGURED
+    // redirectUri origin/path plus only the incoming query — never from the attacker-controllable
+    // Host header. Without this assertion a regression to a Host-derived base, or a dropped
+    // code/state passthrough, would break every prod OIDC login while the suite stayed green.
+    let captured: string | undefined;
+    const a = await buildApp({ oidc: fakeOidc(undefined, (url) => { captured = url; }) });
+
+    await a.inject({
+      method: 'GET',
+      url: '/api/auth/oidc/test/callback?code=x&state=y',
+      headers: { host: 'evil.example' }, // hostile base — must NOT leak into the reconstructed URL
+    });
+
+    expect(captured).toBeDefined();
+    const parsed = new URL(captured!);
+    // Base comes from config, not the Host header (AC1).
+    expect(parsed.origin).toBe('http://localhost');
+    expect(parsed.pathname).toBe('/api/auth/oidc/test/callback');
+    expect(parsed.host).not.toBe('evil.example');
+    // Incoming code/state pass through (AC2).
+    expect(parsed.searchParams.get('code')).toBe('x');
+    expect(parsed.searchParams.get('state')).toBe('y');
+    // Both halves together: config base + request query (AC3).
+    expect(captured).toBe('http://localhost/api/auth/oidc/test/callback?code=x&state=y');
     await a.close();
   });
 
