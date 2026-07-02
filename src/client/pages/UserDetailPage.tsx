@@ -18,6 +18,7 @@ import {
   isRequestQuotaDirty,
   type RequestQuotaState,
 } from './parseQuota';
+import { selectUserDetailState } from './selectUserDetailState';
 import type { RequestQuotaMode } from '@shared/schemas/user';
 
 type UpdateUser = ReturnType<typeof useUpdateUser>;
@@ -26,10 +27,18 @@ type UserRequests = ReturnType<typeof useUserRequests>;
 export function UserDetailPage() {
   const { publicId } = useParams<{ publicId: string }>();
   const users = useUsers();
-  const user = users.data?.data.find((u) => u.publicId === publicId);
+  const state = selectUserDetailState(users, publicId);
 
-  if (users.isLoading) return <p className="text-sm text-muted-foreground/70">Loading…</p>;
-  if (!user) {
+  if (state.kind === 'loading') return <p className="text-sm text-muted-foreground/70">Loading…</p>;
+  if (state.kind === 'error') {
+    return (
+      <div className="flex flex-col gap-4">
+        <Link to="/users" className="text-sm text-muted-foreground hover:text-foreground">← Users</Link>
+        <p className="text-sm text-destructive">Could not load user.</p>
+      </div>
+    );
+  }
+  if (state.kind === 'not-found') {
     return (
       <div className="flex flex-col gap-4">
         <Link to="/users" className="text-sm text-muted-foreground hover:text-foreground">← Users</Link>
@@ -38,7 +47,7 @@ export function UserDetailPage() {
     );
   }
   // key on publicId so the editor state resets when navigating between users.
-  return <UserDetail key={user.publicId} user={user} />;
+  return <UserDetail key={state.user.publicId} user={state.user} />;
 }
 
 function UserDetail({ user }: { user: UserDto }) {
