@@ -462,7 +462,7 @@ export class ConnectorSettingsService {
    * Resolve a secret field on update: a non-empty value is encrypted; an empty string
    * clears it; `undefined` keeps the existing (already-encrypted) value. This is what
    * lets the UI send `••••` (omit) for an unchanged secret without ever seeing it.
-   * Request input is ALWAYS treated as plaintext (encrypt, never encryptIfNeeded) so a
+   * Request input is ALWAYS treated as plaintext (never sniffed for an `enc:` prefix) so a
    * literal "enc:v1:…" submitted by a client can't be stored as if it were ciphertext.
    */
   private resolveSecret(provided: string | undefined, existing: string | null | undefined): string | null {
