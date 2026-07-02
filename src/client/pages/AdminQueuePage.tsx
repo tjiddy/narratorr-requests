@@ -117,7 +117,7 @@ function QueueRow({ r }: { r: RequestDto }) {
 export function AdminQueuePage() {
   const [filter, setFilter] = useState<RequestStatus | 'all'>('pending');
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
-  const { data, isLoading, isFetching } = useAdminQueue(filter === 'all' ? undefined : filter, limit);
+  const { data, isLoading, isFetching, error } = useAdminQueue(filter === 'all' ? undefined : filter, limit);
 
   return (
     <div>
@@ -141,6 +141,7 @@ export function AdminQueuePage() {
         </select>
       </div>
       {isLoading && <p className="text-sm text-muted-foreground/70">Loading…</p>}
+      {error && <p className="text-sm text-destructive">Could not load the request queue.</p>}
       {data && data.data.length === 0 && (
         <EmptyState
           icon={InboxIcon}
