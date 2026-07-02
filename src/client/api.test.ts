@@ -103,4 +103,15 @@ describe('requestBookFrom body builder', () => {
     });
     expect(await captureBody({ ...base, cover: null })).toMatchObject({ coverUrl: null });
   });
+
+  it('preserves a public https cover', async () => {
+    const body = await captureBody({ ...base, cover: 'https://m.media-amazon.com/images/I/x.jpg' });
+    expect(body.coverUrl).toBe('https://m.media-amazon.com/images/I/x.jpg');
+  });
+
+  it('drops a cover that fails the shared SSRF guard to null instead of failing the create', async () => {
+    expect((await captureBody({ ...base, cover: 'http://m.media-amazon.com/x.jpg' })).coverUrl).toBeNull();
+    expect((await captureBody({ ...base, cover: 'https://192.168.0.22/x.jpg' })).coverUrl).toBeNull();
+    expect((await captureBody({ ...base, cover: 'not a url' })).coverUrl).toBeNull();
+  });
 });

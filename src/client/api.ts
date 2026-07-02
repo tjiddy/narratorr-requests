@@ -1,5 +1,6 @@
 import type { MeDto, UserDto, UpdateUserBody, AuthProvidersDto } from '@shared/schemas/user';
 import type { RequestDto, RequestStatus } from '@shared/schemas/request';
+import { isPublicHttpsUrl } from '@shared/schemas/request';
 import type { V1AudibleResult } from '@shared/schemas/v1/metadata';
 import type { ListEnvelope } from '@shared/schemas/v1/common';
 import type {
@@ -62,7 +63,10 @@ export function requestBookFrom(result: V1AudibleResult) {
     title: result.title,
     author: result.authors[0]?.name ?? null,
     narrator: result.narrators[0]?.name ?? null,
-    coverUrl: result.cover,
+    // The cover is decoration and the server's createRequestBodySchema rejects a
+    // non-public-https coverUrl (SSRF refine) — drop a non-conforming cover to null
+    // rather than failing the whole create over it.
+    coverUrl: result.cover && isPublicHttpsUrl(result.cover) ? result.cover : null,
   };
   return fetch('/api/requests', opts({
     method: 'POST',

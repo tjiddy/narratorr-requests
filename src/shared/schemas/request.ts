@@ -104,8 +104,9 @@ function isInternalHost(hostname: string): boolean {
   return false; // a regular DNS name — public (DNS rebinding is a known residual gap)
 }
 
-/** https scheme + non-internal host. Unparseable input fails the refine (never throws). */
-function isPublicHttpsUrl(value: string): boolean {
+/** https scheme + non-internal host. Unparseable input fails the refine (never throws).
+ *  Exported so the client can pre-drop a non-conforming cover instead of failing the create. */
+export function isPublicHttpsUrl(value: string): boolean {
   let url: URL;
   try {
     url = new URL(value);
