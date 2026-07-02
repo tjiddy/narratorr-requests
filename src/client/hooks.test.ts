@@ -95,6 +95,10 @@ import {
   useMyRequestsPaged,
   useAdminQueue,
   useUserRequests,
+  useUsers,
+  useConnectorSettings,
+  useSystemInfo,
+  useAuthProviders,
   useLocalAuth,
   useTheme,
 } from './hooks';
@@ -155,6 +159,16 @@ describe('qk query-key builders', () => {
     expect(qk.adminQueue(undefined)).toEqual(['admin', 'requests', 'all']);
     expect(qk.adminQueue('pending')).toEqual(['admin', 'requests', 'pending']);
   });
+
+  // Registry stability (AC5): each moved key's serialized value must equal its former
+  // inline literal, so the centralization refactor churns no cache keys.
+  it('preserves the serialized value of every centralized key (no cache-key churn)', () => {
+    expect(qk.adminRequests).toEqual(['admin', 'requests']);
+    expect(qk.users).toEqual(['admin', 'users']);
+    expect(qk.connectors).toEqual(['admin', 'settings', 'connectors']);
+    expect(qk.system).toEqual(['admin', 'system']);
+    expect(qk.authProviders).toEqual(['auth', 'providers']);
+  });
 });
 
 // F2 — pin the AC-critical paged hook wiring so a future edit can't silently drop the
@@ -211,6 +225,36 @@ describe('paged request list hooks — key isolation, limit pass-through, pollin
   });
 });
 
+// AC1/AC3 — the query hooks whose keys moved into `qk` must read from the registry entry,
+// and the two broad invalidations (users, admin-requests) must stay prefixes of the paged
+// keys they refresh. Reading `.queryKey` off the mocked useQuery options (no jsdom).
+describe('centralized read-site keys + prefix guards', () => {
+  it('useUsers keys on qk.users, a prefix of qk.userRequests', () => {
+    expect(query(useUsers()).queryKey).toEqual(qk.users);
+    // Broad invalidate of qk.users still refreshes every per-user request list.
+    expect(qk.userRequests('us_abc', 150).slice(0, qk.users.length)).toEqual(qk.users);
+  });
+
+  it('qk.adminRequests is a prefix of both admin-queue key variants', () => {
+    expect(qk.adminQueue('pending').slice(0, qk.adminRequests.length)).toEqual(qk.adminRequests);
+    expect(qk.adminQueue(undefined).slice(0, qk.adminRequests.length)).toEqual(qk.adminRequests);
+    expect(qk.adminQueuePaged('pending', 100).slice(0, qk.adminRequests.length)).toEqual(qk.adminRequests);
+    expect(qk.adminQueuePaged(undefined, 50).slice(0, qk.adminRequests.length)).toEqual(qk.adminRequests);
+  });
+
+  it('useConnectorSettings keys on qk.connectors', () => {
+    expect(query(useConnectorSettings()).queryKey).toEqual(qk.connectors);
+  });
+
+  it('useSystemInfo keys on qk.system', () => {
+    expect(query(useSystemInfo()).queryKey).toEqual(qk.system);
+  });
+
+  it('useAuthProviders keys on qk.authProviders', () => {
+    expect(query(useAuthProviders()).queryKey).toEqual(qk.authProviders);
+  });
+});
+
 describe('useRequestBook', () => {
   it('toasts "already available" and invalidates myRequests + me on an available result', () => {
     cb(useRequestBook()).onSuccess(req({ status: 'available', title: 'Dune' }));
@@ -243,9 +287,11 @@ describe('useDecide', () => {
     expect(success).toHaveBeenCalledWith('Approved “Dune”');
     h.onSuccess(req({ title: 'Dune' }), { action: 'deny' });
     expect(success).toHaveBeenCalledWith('Denied “Dune”');
-    // DRY-1 guard: the hardcoded invalidation tuple must match qk.adminQueue's prefix.
-    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['admin', 'requests'] });
-    expect(qk.adminQueue(undefined).slice(0, 2)).toEqual(['admin', 'requests']);
+    // DRY-1 guard: the invalidation keys on qk.adminRequests, which stays a prefix of
+    // both admin-queue key variants so every loaded queue page still refetches.
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: qk.adminRequests });
+    expect(qk.adminQueue(undefined).slice(0, qk.adminRequests.length)).toEqual(qk.adminRequests);
+    expect(qk.adminQueuePaged('pending', 100).slice(0, qk.adminRequests.length)).toEqual(qk.adminRequests);
   });
 
   it('surfaces ApiError message, else "Action failed", on error', () => {
@@ -263,7 +309,7 @@ describe('useUpdateUser', () => {
   it('toasts the saved username and invalidates admin/users', () => {
     cb(useUpdateUser()).onSuccess(user);
     expect(success).toHaveBeenCalledWith('Saved changes to todd');
-    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['admin', 'users'] });
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: qk.users });
   });
 
   it('surfaces ApiError message, else "Failed to update user", on error', () => {
@@ -280,7 +326,7 @@ describe('useUpdateConnectors', () => {
 
   it('writes the connectors cache directly (not invalidate) and toasts "Settings saved"', () => {
     cb(useUpdateConnectors()).onSuccess(dto);
-    expect(hoisted.qc.setQueryData).toHaveBeenCalledWith(['admin', 'settings', 'connectors'], dto);
+    expect(hoisted.qc.setQueryData).toHaveBeenCalledWith(qk.connectors, dto);
     expect(success).toHaveBeenCalledWith('Settings saved');
     expect(hoisted.qc.invalidateQueries).not.toHaveBeenCalled();
   });
@@ -315,12 +361,12 @@ describe('useTestConnector', () => {
 describe('notifier mutation hooks — cache invalidation + toast contract', () => {
   // The notifier list is carried by the connectors query, so create/update/delete must
   // invalidate that exact key (not setQueryData) to refetch the committed list + reset
-  // freshly-masked secrets. Pin the verbatim key so a drift would fail here.
-  const CONNECTORS_KEY = ['admin', 'settings', 'connectors'];
+  // freshly-masked secrets. All three assert the shared qk.connectors entry, so a drift
+  // between the four connectors sites would fail here.
 
   it('useCreateNotifier invalidates the connectors key and toasts "Notifier added"', () => {
     cb(useCreateNotifier()).onSuccess();
-    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: CONNECTORS_KEY });
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: qk.connectors });
     expect(hoisted.qc.setQueryData).not.toHaveBeenCalled();
     expect(success).toHaveBeenCalledWith('Notifier added');
   });
@@ -335,7 +381,7 @@ describe('notifier mutation hooks — cache invalidation + toast contract', () =
 
   it('useUpdateNotifier invalidates the connectors key and toasts "Notifier saved"', () => {
     cb(useUpdateNotifier()).onSuccess();
-    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: CONNECTORS_KEY });
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: qk.connectors });
     expect(success).toHaveBeenCalledWith('Notifier saved');
   });
 
@@ -349,7 +395,7 @@ describe('notifier mutation hooks — cache invalidation + toast contract', () =
 
   it('useDeleteNotifier invalidates the connectors key and toasts "Notifier deleted"', () => {
     cb(useDeleteNotifier()).onSuccess();
-    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: CONNECTORS_KEY });
+    expect(hoisted.qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: qk.connectors });
     expect(success).toHaveBeenCalledWith('Notifier deleted');
   });
 

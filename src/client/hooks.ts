@@ -43,11 +43,24 @@ export const qk = {
   // under it, so invalidating the prefix still refreshes every loaded page.
   myRequests: ['requests', 'mine'] as const,
   myRequestsPaged: (limit: number) => ['requests', 'mine', 'paged', limit] as const,
+  // The bare `['admin','requests']` prefix a decide-mutation invalidates; the queue
+  // variants key their `status`/`limit` under it, so invalidating the prefix refetches
+  // every loaded admin-queue page.
+  adminRequests: ['admin', 'requests'] as const,
   adminQueue: (status?: RequestStatus) => ['admin', 'requests', status ?? 'all'] as const,
   adminQueuePaged: (status: RequestStatus | undefined, limit: number) =>
     ['admin', 'requests', status ?? 'all', limit] as const,
+  // The bare `['admin','users']` prefix (user list + the per-user request lists nest
+  // under it); an update invalidates the prefix so both refresh together.
+  users: ['admin', 'users'] as const,
   userRequests: (publicId: string, limit: number) =>
     ['admin', 'users', publicId, 'requests', limit] as const,
+  // The connectors settings blob — one entry shared by the query, its optimistic
+  // setQueryData write, and the notifier mutations that invalidate it. These must agree
+  // byte-for-byte or save → cache-write → invalidate silently no-ops.
+  connectors: ['admin', 'settings', 'connectors'] as const,
+  system: ['admin', 'system'] as const,
+  authProviders: ['auth', 'providers'] as const,
 };
 
 export const useMe = () =>
@@ -99,7 +112,7 @@ export function useRequestBook() {
 }
 
 export const useUsers = () =>
-  useQuery({ queryKey: ['admin', 'users'], queryFn: listUsers });
+  useQuery({ queryKey: qk.users, queryFn: listUsers });
 
 export const useUserRequests = (publicId: string, limit: number) =>
   useQuery({
@@ -114,7 +127,7 @@ export function useUpdateUser() {
     mutationFn: (v: { publicId: string; patch: UpdateUserBody }) => updateUser(v.publicId, v.patch),
     onSuccess: (user) => {
       toast.success(`Saved changes to ${user.username}`);
-      void qc.invalidateQueries({ queryKey: ['admin', 'users'] });
+      void qc.invalidateQueries({ queryKey: qk.users });
     },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Failed to update user'),
   });
@@ -127,7 +140,7 @@ export function useDecide() {
       decideRequest(v.publicId, v.action, v.note),
     onSuccess: (req, v) => {
       toast.success(v.action === 'approve' ? `Approved “${req.title}”` : `Denied “${req.title}”`);
-      void qc.invalidateQueries({ queryKey: ['admin', 'requests'] });
+      void qc.invalidateQueries({ queryKey: qk.adminRequests });
     },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Action failed'),
   });
@@ -137,14 +150,14 @@ export function useDecide() {
 export const useSystemInfo = () =>
   // Read-only diagnostics; refetch on a slow interval so narratorr reachability stays
   // roughly live without hammering the upstream probe.
-  useQuery({ queryKey: ['admin', 'system'], queryFn: getSystemInfo, refetchInterval: 30_000 });
+  useQuery({ queryKey: qk.system, queryFn: getSystemInfo, refetchInterval: 30_000 });
 
 // --- Connector settings (admin) ----------------------------------------------
 export const useConnectorSettings = () =>
   // No refetch-on-focus: the Settings form remounts on cache change, so a background
   // refetch would discard in-progress edits.
   useQuery({
-    queryKey: ['admin', 'settings', 'connectors'],
+    queryKey: qk.connectors,
     queryFn: getConnectorSettings,
     refetchOnWindowFocus: false,
   });
@@ -154,7 +167,7 @@ export function useUpdateConnectors() {
   return useMutation({
     mutationFn: (body: UpdateConnectorSettingsBody) => updateConnectorSettings(body),
     onSuccess: (dto) => {
-      qc.setQueryData(['admin', 'settings', 'connectors'], dto);
+      qc.setQueryData(qk.connectors, dto);
       toast.success('Settings saved');
     },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Save failed'),
@@ -171,15 +184,16 @@ export function useTestConnector() {
 
 // --- Notifiers (admin) -------------------------------------------------------
 // Mutations refetch the connector settings (which carries the notifier list) so the
-// list reflects the committed state — and the masked secrets reset cleanly.
-const CONNECTORS_KEY = ['admin', 'settings', 'connectors'] as const;
+// list reflects the committed state — and the masked secrets reset cleanly. They
+// invalidate `qk.connectors`, the same entry the connectors query reads and the save
+// writes, so all four sites agree through one registry entry.
 
 export function useCreateNotifier() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: CreateNotifierBody) => createNotifier(body),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: CONNECTORS_KEY });
+      void qc.invalidateQueries({ queryKey: qk.connectors });
       toast.success('Notifier added');
     },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Could not add notifier'),
@@ -191,7 +205,7 @@ export function useUpdateNotifier() {
   return useMutation({
     mutationFn: ({ id, body }: { id: string; body: UpdateNotifierBody }) => updateNotifier(id, body),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: CONNECTORS_KEY });
+      void qc.invalidateQueries({ queryKey: qk.connectors });
       toast.success('Notifier saved');
     },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Could not save notifier'),
@@ -203,7 +217,7 @@ export function useDeleteNotifier() {
   return useMutation({
     mutationFn: (id: string) => deleteNotifier(id),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: CONNECTORS_KEY });
+      void qc.invalidateQueries({ queryKey: qk.connectors });
       toast.success('Notifier deleted');
     },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Could not delete notifier'),
@@ -222,7 +236,7 @@ export function useTestNotifier() {
 // Drives the server-rendered login screen. Static for the session (provider config
 // only changes via env + restart), so no refetch-on-focus.
 export const useAuthProviders = () =>
-  useQuery({ queryKey: ['auth', 'providers'], queryFn: getAuthProviders, staleTime: Infinity, retry: false });
+  useQuery({ queryKey: qk.authProviders, queryFn: getAuthProviders, staleTime: Infinity, retry: false });
 
 /** Local signup/login. On success the server set a session cookie — refetch `me` so
  *  App routes to the app (or the pending screen). Errors surface on the form, not a toast. */
