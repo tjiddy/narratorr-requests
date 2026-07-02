@@ -137,8 +137,8 @@ export type RequestStatus = z.infer<typeof requestStatusSchema>;
 
 /**
  * "Open" = still occupying a quota slot and still de-duplicated against new
- * requests for the same book. `failed` is excluded here (refunded) unless it
- * was user-caused — that nuance lives in the quota query, not this list.
+ * requests for the same book. `failed` is excluded here (refunded) — a failed
+ * request never counts toward quota.
  */
 export const OPEN_REQUEST_STATUSES = ['pending', 'approved', 'acquiring', 'available'] as const;
 

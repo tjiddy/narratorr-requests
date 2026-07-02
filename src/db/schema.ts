@@ -81,9 +81,6 @@ export const requests = sqliteTable(
     // (nullable until approved + handed off).
     narratorrBookId: text('narratorr_book_id'), // bk_...
     note: text('note'),
-    // Quota accounting: a `failed` request is normally refunded, EXCEPT when the
-    // failure was the user's fault (PLAN decision #5). Defaults false.
-    userCausedFailure: integer('user_caused_failure', { mode: 'boolean' }).notNull().default(false),
     failureReason: text('failure_reason'),
     requestedAt: integer('requested_at', { mode: 'timestamp' })
       .notNull()
