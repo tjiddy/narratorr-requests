@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { RequestService, type RequestPolicy, type RequestFailureNotifyDeps } from './request.service.js';
+import { RequestService, sanitizeAutoApproveRoles, type RequestPolicy, type RequestFailureNotifyDeps } from './request.service.js';
 import { NarratorrError, type INarratorrClient } from './narratorr-client.js';
 import { UserService } from './user.service.js';
 import type { Notifier, NotificationPayload } from './notifications/index.js';
@@ -819,5 +819,31 @@ describe('applyBook (poller reconciliation)', () => {
     const [fresh] = await db.select().from(requests).where(eq(requests.id, row!.id));
     expect(fresh?.status).toBe('acquiring');
     expect(fresh?.narratorrBookId).toBe('bk_new'); // late id persisted despite the null return
+  });
+});
+
+describe('sanitizeAutoApproveRoles — storage-boundary narrowing (tier 5)', () => {
+  it('passes a valid role array through unchanged, with no warn', () => {
+    const warn = vi.fn();
+    expect(sanitizeAutoApproveRoles(['admin', 'user'], { warn })).toEqual(['admin', 'user']);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('degrades a non-array to ["admin"] + exactly one warn', () => {
+    const warn = vi.fn();
+    expect(sanitizeAutoApproveRoles(42, { warn })).toEqual(['admin']);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('degrades a non-array string to ["admin"] + exactly one warn', () => {
+    const warn = vi.fn();
+    expect(sanitizeAutoApproveRoles('admin', { warn })).toEqual(['admin']);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('degrades an array containing an unrecognized role to ["admin"] + exactly one warn', () => {
+    const warn = vi.fn();
+    expect(sanitizeAutoApproveRoles(['nope'], { warn })).toEqual(['admin']);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });

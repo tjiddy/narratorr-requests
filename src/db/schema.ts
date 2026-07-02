@@ -1,6 +1,6 @@
 import { sqliteTable, text, integer, index, uniqueIndex, check } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
-import { USER_ROLES, USER_STATUSES, REQUEST_QUOTA_MODES } from '../shared/schemas/user.js';
+import { USER_ROLES, USER_STATUSES, REQUEST_QUOTA_MODES, type Role } from '../shared/schemas/user.js';
 import { REQUEST_STATUSES, ACTIVE_REQUEST_STATUSES } from '../shared/schemas/request.js';
 import type { StoredConnectors } from '../shared/schemas/connectors.js';
 
@@ -125,7 +125,7 @@ export const appSettings = sqliteTable(
   // Which roles are auto-approved on request create. MVP: ['admin'].
   autoApproveRoles: text('auto_approve_roles', { mode: 'json' })
     .notNull()
-    .$type<string[]>()
+    .$type<Role[]>()
     .default(sql`'["admin"]'`),
   // Legacy placeholder, never written — superseded by `connectors` below. Kept so the
   // migration diff stays a clean ADD COLUMN (dropping it makes drizzle-kit prompt).

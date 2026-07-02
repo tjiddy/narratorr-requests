@@ -1,4 +1,5 @@
 import { and, desc, eq, gte, inArray, or, sql } from 'drizzle-orm';
+import { z } from 'zod';
 import type { Db } from '../../db/client.js';
 import { requests, users, type RequestRow } from '../../db/schema.js';
 import type { Notifier } from './notifications/index.js';
@@ -12,7 +13,7 @@ import type {
   RequestStatus,
 } from '../../shared/schemas/request.js';
 import { OPEN_REQUEST_STATUSES, ACTIVE_REQUEST_STATUSES, APPROVED_REQUEST_STATUSES } from '../../shared/schemas/request.js';
-import type { Role, RequestQuotaMode } from '../../shared/schemas/user.js';
+import { roleSchema, type Role, type RequestQuotaMode } from '../../shared/schemas/user.js';
 import type { DefaultQuota, QuotaWindowDays } from '../../shared/schemas/connectors.js';
 import { ADD_BOOK_ERROR_CODES, type V1Book } from '../../shared/schemas/v1/books.js';
 import type { INarratorrClient } from './narratorr-client.js';
@@ -68,6 +69,18 @@ export async function resolveRequestPolicy(
 ): Promise<RequestPolicy> {
   const quota = await source.getDefaultQuota();
   return { defaultQuota: toDefaultEffective(quota), windowDays: quota.windowDays, autoApproveRoles };
+}
+
+/**
+ * Narrow stored `auto_approve_roles` JSON into a `Role[]` so a legacy / hand-edited / non-array value
+ * can't ride an unvalidated `as Role[]` cast into the boot policy. Mirrors the connector/quota
+ * degrade-and-warn discipline: any failure (non-array, or an unknown role) warns exactly ONCE and
+ * falls back to `['admin']`; a valid array passes through. Exported so it's spy-logger testable.
+ */
+export function sanitizeAutoApproveRoles(raw: unknown, logger: { warn(obj: unknown, msg?: string): void }): Role[] {
+  const parsed = z.array(roleSchema).safeParse(raw);
+  if (!parsed.success) logger.warn({ raw }, 'auto_approve_roles failed the role schema — falling back to ["admin"]');
+  return parsed.success ? parsed.data : ['admin'];
 }
 
 /** Effective rolling-window usage for the `/api/me` quota badge. `mode` is authoritative:
@@ -224,12 +237,8 @@ export class RequestService {
   async quotaUsage(userId: number, effective: EffectiveQuota): Promise<QuotaUsage> {
     const used = await this.countInWindow(userId);
     const windowDays = this.policy.windowDays;
-    if (effective.mode === 'limited') {
-      return { mode: 'limited', limit: effective.limit, used, remaining: Math.max(0, effective.limit - used), windowDays };
-    }
-    if (effective.mode === 'blocked') {
-      return { mode: 'blocked', limit: null, used, remaining: 0, windowDays };
-    }
+    if (effective.mode === 'limited') return { mode: 'limited', limit: effective.limit, used, remaining: Math.max(0, effective.limit - used), windowDays };
+    if (effective.mode === 'blocked') return { mode: 'blocked', limit: null, used, remaining: 0, windowDays };
     return { mode: 'unlimited', limit: null, used, remaining: null, windowDays };
   }
 
