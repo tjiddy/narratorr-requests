@@ -143,6 +143,81 @@ describe('list — admin queue status filter', () => {
   });
 });
 
+describe('list — offset paging + tie-stability (AC1/AC4)', () => {
+  /** Insert one request row directly (single statement — :memory: libSQL breaks across
+   *  db.transaction() per CLAUDE.md). `requestedAt` is settable to force second-resolution ties. */
+  const seedRequest = (userId: number, asin: string, requestedAt?: Date) =>
+    db.insert(requests).values({
+      publicId: `rq_${asin}`,
+      userId,
+      asin,
+      title: asin,
+      status: 'pending',
+      ...(requestedAt ? { requestedAt } : {}),
+    });
+
+  it('default page returns 50 rows with total = the full seeded count (unfiltered by the page limit)', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    for (let i = 0; i < 55; i++) await seedRequest(user.id, `b${i}`);
+    const svc = new RequestService(db, client, policy());
+
+    const first = await svc.list({ userId: user.id, limit: 50, offset: 0 });
+    expect(first.data).toHaveLength(50);
+    expect(first.total).toBe(55); // total counts all matching rows, not just the page
+  });
+
+  it('adjacent offset pages cover the whole set with no overlap and no missing rows', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    for (let i = 0; i < 55; i++) await seedRequest(user.id, `b${i}`);
+    const svc = new RequestService(db, client, policy());
+
+    const page1 = await svc.list({ userId: user.id, limit: 50, offset: 0 });
+    const page2 = await svc.list({ userId: user.id, limit: 50, offset: 50 });
+    expect(page2.data).toHaveLength(5); // last page = the remainder
+
+    const ids = [...page1.data, ...page2.data].map((r) => r.publicId);
+    expect(new Set(ids).size).toBe(55); // no duplicate publicId across the pages
+  });
+
+  it('tie stability: rows sharing a requestedAt second page in the exact desc(id) tiebreak order', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    // All 12 rows share the SAME requestedAt second. Insert t0..t11 in order, so their
+    // autoincrement ids ascend with the suffix. The secondary sort key desc(requests.id)
+    // must therefore produce the strict reverse: t11, t10, …, t0.
+    const tied = new Date('2026-01-01T00:00:00.000Z');
+    for (let i = 0; i < 12; i++) await seedRequest(user.id, `t${i}`, tied);
+    const svc = new RequestService(db, client, policy());
+
+    const seen: string[] = [];
+    for (let offset = 0; offset < 12; offset += 5) {
+      const page = await svc.list({ userId: user.id, limit: 5, offset });
+      seen.push(...page.data.map((r) => r.publicId));
+    }
+    // Assert the CONCRETE tiebreak order, not just the distinct set: if desc(requests.id)
+    // were dropped, SQLite would fall back to ascending rowid (t0…t11) among the ties and
+    // this exact sequence would fail — so the assertion is mutation-sensitive to AC4's key.
+    const expected = Array.from({ length: 12 }, (_, i) => `rq_t${11 - i}`);
+    expect(seen).toEqual(expected);
+    // And, as a corollary, the pages neither drop nor duplicate a tied row.
+    expect(new Set(seen).size).toBe(12);
+  });
+
+  it('total respects the status filter — it counts filtered rows, not the table grand total', async () => {
+    const user = await insertUser(db, { role: 'user' });
+    // 3 rows in the approved lifecycle (APPROVED_REQUEST_STATUSES) + 2 pending.
+    await db.insert(requests).values({ publicId: 'rq_a', userId: user.id, asin: 'a', title: 'a', status: 'approved' });
+    await db.insert(requests).values({ publicId: 'rq_b', userId: user.id, asin: 'b', title: 'b', status: 'acquiring' });
+    await db.insert(requests).values({ publicId: 'rq_c', userId: user.id, asin: 'c', title: 'c', status: 'available' });
+    await db.insert(requests).values({ publicId: 'rq_d', userId: user.id, asin: 'd', title: 'd', status: 'pending' });
+    await db.insert(requests).values({ publicId: 'rq_e', userId: user.id, asin: 'e', title: 'e', status: 'pending' });
+    const svc = new RequestService(db, client, policy());
+
+    const approved = await svc.list({ userId: user.id, status: 'approved', limit: 50, offset: 0 });
+    expect(approved.total).toBe(3); // only the APPROVED_REQUEST_STATUSES rows, not all 5
+    expect(approved.data).toHaveLength(3);
+  });
+});
+
 describe('insert-time unique-violation race', () => {
   // The preflight findActiveDuplicate() at create():154 returns before insertRequest(),
   // so a pre-seeded duplicate alone only retests preflight dedupe and never reaches the

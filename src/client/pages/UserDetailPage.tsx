@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import type { UserDto } from '@shared/schemas/user';
+import { DEFAULT_LIMIT } from '@shared/schemas/v1/common';
 import { useMe, useUsers, useUpdateUser, useUserRequests } from '../hooks';
 import { Badge } from '../components/Badge';
 import { Button } from '../components/Button';
@@ -8,6 +9,8 @@ import { StatusBadge } from '../components/StatusBadge';
 import { EmptyState } from '../components/EmptyState';
 import { InboxIcon } from '../components/icons';
 import { requestFailureReason } from '../components/request-failure';
+import { PagedListFooter } from '../components/PagedListFooter';
+import { nextLimit } from '../components/paging';
 import {
   initRequestQuota,
   buildRequestQuota,
@@ -41,7 +44,8 @@ export function UserDetailPage() {
 function UserDetail({ user }: { user: UserDto }) {
   const me = useMe();
   const update = useUpdateUser();
-  const requests = useUserRequests(user.publicId);
+  const [limit, setLimit] = useState(DEFAULT_LIMIT);
+  const requests = useUserRequests(user.publicId, limit);
 
   const isSelf = me.data?.publicId === user.publicId;
 
@@ -63,7 +67,12 @@ function UserDetail({ user }: { user: UserDto }) {
         <QuotaControl user={user} update={update} />
       </div>
 
-      <UserRequestsList requests={requests} username={user.username} />
+      <UserRequestsList
+        requests={requests}
+        username={user.username}
+        limit={limit}
+        onLoadMore={() => setLimit(nextLimit)}
+      />
     </div>
   );
 }
@@ -218,7 +227,17 @@ function QuotaControl({ user, update }: { user: UserDto; update: UpdateUser }) {
   );
 }
 
-function UserRequestsList({ requests, username }: { requests: UserRequests; username: string }) {
+function UserRequestsList({
+  requests,
+  username,
+  limit,
+  onLoadMore,
+}: {
+  requests: UserRequests;
+  username: string;
+  limit: number;
+  onLoadMore: () => void;
+}) {
   return (
     <div>
       <h2 className="mb-3 font-display text-lg font-semibold">Requests</h2>
@@ -231,6 +250,7 @@ function UserRequestsList({ requests, username }: { requests: UserRequests; user
         />
       )}
       {requests.data && requests.data.data.length > 0 && (
+        <>
         <ul className="flex flex-col gap-2">
           {requests.data.data.map((r) => {
             const failureReason = requestFailureReason(r);
@@ -254,6 +274,14 @@ function UserRequestsList({ requests, username }: { requests: UserRequests; user
             );
           })}
         </ul>
+        <PagedListFooter
+          loaded={requests.data.data.length}
+          total={requests.data.total}
+          limit={limit}
+          isFetching={requests.isFetching}
+          onLoadMore={onLoadMore}
+        />
+        </>
       )}
     </div>
   );

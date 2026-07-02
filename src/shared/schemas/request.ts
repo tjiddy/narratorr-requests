@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DEFAULT_LIMIT, MAX_LIMIT } from './v1/common.js';
 
 // =============================================================================
 // coverUrl SSRF guard. A request-supplied coverUrl is rendered as <img src> in
@@ -181,10 +182,13 @@ export const decisionBodySchema = z
   .strict();
 export type DecisionBody = z.infer<typeof decisionBodySchema>;
 
+// The page-size default is single-sourced from common.ts (DEFAULT_LIMIT) and applied
+// HERE, so a list request that omits `limit`/`offset` parses to the 50/0 default and the
+// routes no longer carry their own fallback constants. `limit` stays bounded at MAX_LIMIT.
 export const requestListQuerySchema = z.object({
   status: requestStatusSchema.optional(),
-  limit: z.coerce.number().int().min(1).max(500).optional(),
-  offset: z.coerce.number().int().min(0).optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),
+  offset: z.coerce.number().int().min(0).default(0),
 });
 export type RequestListQuery = z.infer<typeof requestListQuerySchema>;
 

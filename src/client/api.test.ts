@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { getMe, requestBookFrom, ApiError } from './api';
+import { getMe, requestBookFrom, listMyRequests, listAdminQueue, listUserRequests, ApiError } from './api';
 import type { V1AudibleResult } from '@shared/schemas/v1/metadata';
 
 // parse<T> (api.ts:23) is a private module function — not exported — so its HTTP
@@ -113,5 +113,65 @@ describe('requestBookFrom body builder', () => {
     expect((await captureBody({ ...base, cover: 'http://m.media-amazon.com/x.jpg' })).coverUrl).toBeNull();
     expect((await captureBody({ ...base, cover: 'https://192.168.0.22/x.jpg' })).coverUrl).toBeNull();
     expect((await captureBody({ ...base, cover: 'not a url' })).coverUrl).toBeNull();
+  });
+});
+
+// The list wrappers build the paging query string from optional limit/offset and return
+// the envelope's `total` to the caller. The URL is asserted from the stubbed fetch call.
+describe('list wrappers — paging query string + total pass-through', () => {
+  const envelope = (total: number) => new Response(JSON.stringify({ data: [], total }), { status: 200 });
+  const urlOf = (mock: ReturnType<typeof vi.fn>) => mock.mock.calls[0]![0] as string;
+
+  describe('listMyRequests', () => {
+    it('with no arguments requests the bare /api/requests — no limit/offset (Search no-regression, AC5)', async () => {
+      const mock = stubFetch(envelope(0));
+      await listMyRequests();
+      expect(urlOf(mock)).toBe('/api/requests');
+    });
+
+    it('emits limit (and offset) when given, and returns the parsed total', async () => {
+      const mock = stubFetch(envelope(137));
+      const res = await listMyRequests({ limit: 100 });
+      expect(urlOf(mock)).toBe('/api/requests?limit=100');
+      expect(res.total).toBe(137);
+
+      const mock2 = stubFetch(envelope(5));
+      await listMyRequests({ limit: 50, offset: 100 });
+      expect(urlOf(mock2)).toBe('/api/requests?limit=50&offset=100');
+    });
+  });
+
+  describe('listAdminQueue', () => {
+    it('with no arguments requests the bare /api/admin/requests', async () => {
+      const mock = stubFetch(envelope(0));
+      await listAdminQueue();
+      expect(urlOf(mock)).toBe('/api/admin/requests');
+    });
+
+    it('combines the status filter with the paging params', async () => {
+      const mock = stubFetch(envelope(0));
+      await listAdminQueue('pending', { limit: 100 });
+      expect(urlOf(mock)).toBe('/api/admin/requests?status=pending&limit=100');
+    });
+
+    it('keeps the bare status-only URL when no paging is passed', async () => {
+      const mock = stubFetch(envelope(0));
+      await listAdminQueue('available');
+      expect(urlOf(mock)).toBe('/api/admin/requests?status=available');
+    });
+  });
+
+  describe('listUserRequests', () => {
+    it('appends the paging params to the per-user history URL', async () => {
+      const mock = stubFetch(envelope(0));
+      await listUserRequests('us_abc', { limit: 150 });
+      expect(urlOf(mock)).toBe('/api/admin/users/us_abc/requests?limit=150');
+    });
+
+    it('with no paging requests the bare per-user URL', async () => {
+      const mock = stubFetch(envelope(0));
+      await listUserRequests('us_abc');
+      expect(urlOf(mock)).toBe('/api/admin/users/us_abc/requests');
+    });
   });
 });

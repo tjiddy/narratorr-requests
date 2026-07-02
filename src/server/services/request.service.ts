@@ -156,7 +156,10 @@ export class RequestService {
       .from(requests)
       .innerJoin(users, eq(requests.userId, users.id))
       .where(where)
-      .orderBy(desc(requests.requestedAt))
+      // `requested_at` is second-resolution (unixepoch()), so rows created in the same
+      // second tie. Add the monotonic PK as a unique secondary key to make the total order
+      // deterministic — otherwise adjacent offset pages over tied rows could skip/duplicate.
+      .orderBy(desc(requests.requestedAt), desc(requests.id))
       .limit(opts.limit)
       .offset(opts.offset);
 

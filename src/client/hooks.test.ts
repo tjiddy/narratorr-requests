@@ -14,9 +14,16 @@ import type * as ReactModule from 'react';
 // is spied so we can assert the surfaced text.
 const hoisted = vi.hoisted(() => ({
   qc: { invalidateQueries: vi.fn(), setQueryData: vi.fn() },
-  // Spies for the local-auth boundary functions; the rest of `./api` is preserved
-  // (importActual) so `ApiError` and unrelated exports stay real.
-  api: { localLogin: vi.fn(), localSignup: vi.fn() },
+  // Spies for the local-auth boundary functions and the three request-list wrappers
+  // (so a paged hook's queryFn can be driven and its args asserted); the rest of `./api`
+  // is preserved (importActual) so `ApiError` and unrelated exports stay real.
+  api: {
+    localLogin: vi.fn(),
+    localSignup: vi.fn(),
+    listMyRequests: vi.fn(),
+    listAdminQueue: vi.fn(),
+    listUserRequests: vi.fn(),
+  },
   // A module-scoped slot backing the test-only `react` useState mock so a re-invoked
   // `useTheme()` observes the value a prior `toggleTheme()` wrote.
   react: { slot: undefined as unknown, initialized: false },
@@ -26,6 +33,9 @@ vi.mock('@tanstack/react-query', () => ({
   useMutation: (options: unknown) => options,
   useQuery: (options: unknown) => options,
   useQueryClient: () => hoisted.qc,
+  // Sentinel matching the real symbol's role as a placeholderData value — the paged
+  // list hooks pass it through; no assertion inspects it, it just needs to resolve.
+  keepPreviousData: (prev: unknown) => prev,
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -33,7 +43,14 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 // only the two local-auth boundary functions with spies.
 vi.mock('./api', async (importActual) => {
   const actual = await importActual<typeof ApiModule>();
-  return { ...actual, localLogin: hoisted.api.localLogin, localSignup: hoisted.api.localSignup };
+  return {
+    ...actual,
+    localLogin: hoisted.api.localLogin,
+    localSignup: hoisted.api.localSignup,
+    listMyRequests: hoisted.api.listMyRequests,
+    listAdminQueue: hoisted.api.listAdminQueue,
+    listUserRequests: hoisted.api.listUserRequests,
+  };
 });
 
 // Test-only `react` mock: minimal stateful useState/useEffect so `useTheme()` runs
@@ -61,6 +78,7 @@ vi.mock('react', async (importActual) => {
 });
 
 import { toast } from 'sonner';
+import { keepPreviousData } from '@tanstack/react-query';
 import {
   qk,
   useRequestBook,
@@ -73,6 +91,10 @@ import {
   useDeleteNotifier,
   useTestNotifier,
   useSearch,
+  useMyRequests,
+  useMyRequestsPaged,
+  useAdminQueue,
+  useUserRequests,
   useLocalAuth,
   useTheme,
 } from './hooks';
@@ -96,10 +118,14 @@ interface MutationOptions {
 }
 const mut = (hook: unknown): MutationOptions => hook as MutationOptions;
 
-// `useQuery` now returns the raw options too — read the derived enabled/queryKey.
+// `useQuery` now returns the raw options too — read the derived enabled/queryKey plus the
+// paging wiring (queryFn / refetchInterval / placeholderData) the paged hooks set.
 interface QueryOptions {
   enabled: boolean;
   queryKey: unknown;
+  queryFn: () => unknown;
+  refetchInterval?: number;
+  placeholderData?: unknown;
 }
 const query = (hook: unknown): QueryOptions => hook as QueryOptions;
 
@@ -128,6 +154,60 @@ describe('qk query-key builders', () => {
   it('collapses an absent admin-queue status to "all"', () => {
     expect(qk.adminQueue(undefined)).toEqual(['admin', 'requests', 'all']);
     expect(qk.adminQueue('pending')).toEqual(['admin', 'requests', 'pending']);
+  });
+});
+
+// F2 — pin the AC-critical paged hook wiring so a future edit can't silently drop the
+// limit-keyed cache, the `{ limit }` pass-through, the polling interval, or keepPreviousData.
+// The mocked useQuery returns its raw options, so we read queryKey/queryFn/etc. directly and
+// drive queryFn against the mocked api spies (node-only — no jsdom/component modality).
+describe('paged request list hooks — key isolation, limit pass-through, polling, keepPreviousData', () => {
+  it('useMyRequestsPaged keys by limit, passes { limit }, polls at 4s, keeps previous data', async () => {
+    const q = query(useMyRequestsPaged(100));
+    expect(q.queryKey).toEqual(qk.myRequestsPaged(100));
+    expect(q.queryKey).toEqual(['requests', 'mine', 'paged', 100]);
+    // Nests under the bare `['requests','mine']` prefix a request mutation invalidates,
+    // so invalidating that prefix still refetches every loaded page.
+    expect((q.queryKey as unknown[]).slice(0, 2)).toEqual(qk.myRequests);
+    expect(q.refetchInterval).toBe(4000);
+    expect(q.placeholderData).toBe(keepPreviousData);
+    await q.queryFn();
+    expect(hoisted.api.listMyRequests).toHaveBeenCalledWith({ limit: 100 });
+  });
+
+  it('bare useMyRequests (Search) stays on the bare key and requests the bare API — no limit (AC5)', async () => {
+    const q = query(useMyRequests());
+    expect(q.queryKey).toEqual(qk.myRequests);
+    expect(q.refetchInterval).toBe(4000);
+    await q.queryFn();
+    expect(hoisted.api.listMyRequests).toHaveBeenCalledWith(); // no args → bare /api/requests
+  });
+
+  it('useAdminQueue keys by status+limit, passes status+{ limit }, polls at 5s, keeps previous data', async () => {
+    const q = query(useAdminQueue('pending', 100));
+    expect(q.queryKey).toEqual(qk.adminQueuePaged('pending', 100));
+    expect(q.queryKey).toEqual(['admin', 'requests', 'pending', 100]);
+    expect(q.refetchInterval).toBe(5000);
+    expect(q.placeholderData).toBe(keepPreviousData);
+    await q.queryFn();
+    expect(hoisted.api.listAdminQueue).toHaveBeenCalledWith('pending', { limit: 100 });
+  });
+
+  it('useAdminQueue collapses an absent status to the "all" key and nests under the admin-requests prefix', async () => {
+    const q = query(useAdminQueue(undefined, 50));
+    expect(q.queryKey).toEqual(['admin', 'requests', 'all', 50]);
+    expect((q.queryKey as unknown[]).slice(0, 2)).toEqual(['admin', 'requests']);
+    await q.queryFn();
+    expect(hoisted.api.listAdminQueue).toHaveBeenCalledWith(undefined, { limit: 50 });
+  });
+
+  it('useUserRequests keys by user+limit, passes { limit }, keeps previous data', async () => {
+    const q = query(useUserRequests('us_abc', 150));
+    expect(q.queryKey).toEqual(qk.userRequests('us_abc', 150));
+    expect(q.queryKey).toEqual(['admin', 'users', 'us_abc', 'requests', 150]);
+    expect(q.placeholderData).toBe(keepPreviousData);
+    await q.queryFn();
+    expect(hoisted.api.listUserRequests).toHaveBeenCalledWith('us_abc', { limit: 150 });
   });
 });
 

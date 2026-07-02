@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { V1AudibleResult } from '@shared/schemas/v1/metadata';
 import type { RequestStatus } from '@shared/schemas/request';
@@ -38,8 +38,16 @@ import {
 export const qk = {
   me: ['me'] as const,
   search: (q: string) => ['search', q] as const,
+  // The bare `['requests','mine']` key is the stable default-first-page variant Search
+  // reads (and the invalidation prefix); the paged views key on their growing `limit`
+  // under it, so invalidating the prefix still refreshes every loaded page.
   myRequests: ['requests', 'mine'] as const,
+  myRequestsPaged: (limit: number) => ['requests', 'mine', 'paged', limit] as const,
   adminQueue: (status?: RequestStatus) => ['admin', 'requests', status ?? 'all'] as const,
+  adminQueuePaged: (status: RequestStatus | undefined, limit: number) =>
+    ['admin', 'requests', status ?? 'all', limit] as const,
+  userRequests: (publicId: string, limit: number) =>
+    ['admin', 'users', publicId, 'requests', limit] as const,
 };
 
 export const useMe = () =>
@@ -53,12 +61,29 @@ export const useSearch = (q: string) =>
     staleTime: 60_000,
   });
 
-/** My requests — polled so `acquiring → available` transitions show up live. */
+/** The caller's default first page — the request set Search badges against. Kept bare
+ *  (no limit/offset) so it reads exactly what it did before paging landed. */
 export const useMyRequests = () =>
-  useQuery({ queryKey: qk.myRequests, queryFn: listMyRequests, refetchInterval: 4000 });
+  useQuery({ queryKey: qk.myRequests, queryFn: () => listMyRequests(), refetchInterval: 4000 });
 
-export const useAdminQueue = (status?: RequestStatus) =>
-  useQuery({ queryKey: qk.adminQueue(status), queryFn: () => listAdminQueue(status), refetchInterval: 5000 });
+/** My Requests list view — a bounded growing-limit page, polled so `acquiring → available`
+ *  transitions show up live. `keepPreviousData` holds the loaded rows on-screen while a
+ *  larger page fetches, so "Load more" (and each poll at a stable limit) never blanks the list. */
+export const useMyRequestsPaged = (limit: number) =>
+  useQuery({
+    queryKey: qk.myRequestsPaged(limit),
+    queryFn: () => listMyRequests({ limit }),
+    refetchInterval: 4000,
+    placeholderData: keepPreviousData,
+  });
+
+export const useAdminQueue = (status: RequestStatus | undefined, limit: number) =>
+  useQuery({
+    queryKey: qk.adminQueuePaged(status, limit),
+    queryFn: () => listAdminQueue(status, { limit }),
+    refetchInterval: 5000,
+    placeholderData: keepPreviousData,
+  });
 
 export function useRequestBook() {
   const qc = useQueryClient();
@@ -76,8 +101,12 @@ export function useRequestBook() {
 export const useUsers = () =>
   useQuery({ queryKey: ['admin', 'users'], queryFn: listUsers });
 
-export const useUserRequests = (publicId: string) =>
-  useQuery({ queryKey: ['admin', 'users', publicId, 'requests'], queryFn: () => listUserRequests(publicId) });
+export const useUserRequests = (publicId: string, limit: number) =>
+  useQuery({
+    queryKey: qk.userRequests(publicId, limit),
+    queryFn: () => listUserRequests(publicId, { limit }),
+    placeholderData: keepPreviousData,
+  });
 
 export function useUpdateUser() {
   const qc = useQueryClient();
