@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db } from '../../db/client.js';
 import { requests, users, type RequestRow } from '../../db/schema.js';
@@ -232,8 +232,7 @@ export class RequestService {
   /**
    * Rolling-window usage (PLAN decision #5): count requests created in the last
    * `windowDays` whose status still occupies a slot — `pending`/`approved`/
-   * `acquiring`/`available`, plus `failed` ONLY when the failure was user-caused
-   * (otherwise `failed` is refunded). `denied` is never counted. Shapes the count into the
+   * `acquiring`/`available`. `failed` and `denied` are never counted. Shapes the count into the
    * effective-mode badge contract: `limited` clamps remaining at 0; `blocked` reports
    * remaining 0 (limit null); `unlimited` reports both null.
    */
@@ -255,10 +254,7 @@ export class RequestService {
         and(
           eq(requests.userId, userId),
           gte(requests.requestedAt, cutoff),
-          or(
-            inArray(requests.status, [...OPEN_REQUEST_STATUSES]),
-            and(eq(requests.status, 'failed'), eq(requests.userCausedFailure, true)),
-          ),
+          inArray(requests.status, [...OPEN_REQUEST_STATUSES]),
         ),
       );
     return used;
@@ -465,7 +461,7 @@ export class RequestService {
   ): Promise<RequestRow | null> {
     const [updated] = await this.db
       .update(requests)
-      .set({ status: 'failed', userCausedFailure: false, failureReason: reason, ...extra })
+      .set({ status: 'failed', failureReason: reason, ...extra })
       .where(and(eq(requests.id, row.id), eq(requests.status, row.status)))
       .returning();
     if (!updated) return null;

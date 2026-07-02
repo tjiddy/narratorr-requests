@@ -23,4 +23,12 @@ describe('schema migrations', () => {
     expect(cols).not.toContain('authelia_subject');
     client.close();
   });
+
+  it('drops the never-producible user-fault failure column from requests', async () => {
+    const client = createClient({ url: ':memory:' });
+    await migrate(drizzle(client), { migrationsFolder: drizzleDir });
+    const cols = (await client.execute("PRAGMA table_info('requests')")).rows.map((r) => r['name']);
+    expect(cols).not.toContain('user_caused_failure');
+    client.close();
+  });
 });

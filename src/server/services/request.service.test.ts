@@ -315,19 +315,19 @@ describe('quota enforcement (rolling window)', () => {
     await expect(svc.create(user.id, body('B2'))).resolves.toBeTruthy(); // no cap despite default of 1
   });
 
-  it('does not count denied or non-user-caused failures, but does count user-caused failures', async () => {
+  it('does not count denied or failed requests toward quota', async () => {
     const user = await insertUser(db, { role: 'user' });
     const svc = new RequestService(db, client, policy({ defaultQuota: { mode: 'limited', limit: 10 } }));
     // Seed four requests in various terminal states.
     await db.insert(requests).values([
       { publicId: 'rq_open', userId: user.id, asin: 'A1', title: 't', status: 'pending' },
       { publicId: 'rq_denied', userId: user.id, asin: 'A2', title: 't', status: 'denied' },
-      { publicId: 'rq_failrefund', userId: user.id, asin: 'A3', title: 't', status: 'failed', userCausedFailure: false },
-      { publicId: 'rq_failcharged', userId: user.id, asin: 'A4', title: 't', status: 'failed', userCausedFailure: true },
+      { publicId: 'rq_fail1', userId: user.id, asin: 'A3', title: 't', status: 'failed' },
+      { publicId: 'rq_fail2', userId: user.id, asin: 'A4', title: 't', status: 'failed' },
     ]);
     const usage = await svc.quotaUsage(user.id, { mode: 'limited', limit: 10 });
-    expect(usage.used).toBe(2); // pending + user-caused failure only
-    expect(usage.remaining).toBe(8);
+    expect(usage.used).toBe(1); // only the pending row; denied + both failed refund
+    expect(usage.remaining).toBe(9);
   });
 
   it('reports unlimited for auto-approve roles (limit & remaining null)', async () => {
@@ -468,7 +468,6 @@ describe('admin decisions + handoff', () => {
     await expect(svc.create(admin.id, body('B1'))).rejects.toBeInstanceOf(NarratorrError);
     const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
     expect(row?.status).toBe('failed');
-    expect(row?.userCausedFailure).toBe(false);
   });
 
   it('leaves a request `approved` on a TRANSIENT handoff error (5xx) for the poller to retry', async () => {
@@ -502,7 +501,6 @@ describe('handoff failure reasons (friendly per-code add-handoff errors)', () =>
       const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
       expect(row?.status).toBe('failed');
       expect(row?.failureReason).toBe(expected);
-      expect(row?.userCausedFailure).toBe(false);
       expect(row?.narratorrBookId).toBeNull();
     });
   }
@@ -515,7 +513,6 @@ describe('handoff failure reasons (friendly per-code add-handoff errors)', () =>
     const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
     expect(row?.status).toBe('failed');
     expect(row?.failureReason).toBe('some_new_code: a brand new reason');
-    expect(row?.userCausedFailure).toBe(false);
   });
 
   it('uses the generic fallback reason for a non-NarratorrError terminal throw', async () => {
@@ -526,7 +523,6 @@ describe('handoff failure reasons (friendly per-code add-handoff errors)', () =>
     const [row] = await db.select().from(requests).where(eq(requests.asin, 'B1'));
     expect(row?.status).toBe('failed');
     expect(row?.failureReason).toBe('handoff failed');
-    expect(row?.userCausedFailure).toBe(false);
   });
 
   it('writes a friendly reason when the added book itself comes back failed/missing', async () => {
