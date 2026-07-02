@@ -51,11 +51,31 @@ export const getMe = () => fetch('/api/me', opts()).then(parse<MeDto>);
 export const searchCatalog = (q: string) =>
   fetch(`/api/search?q=${encodeURIComponent(q)}`, opts()).then(parse<{ data: V1AudibleResult[] }>);
 
-export const listMyRequests = () =>
-  fetch('/api/requests', opts()).then(parse<ListEnvelope<RequestDto>>);
+/** Optional offset/limit paging for the list endpoints. Omitting both leaves the URL
+ *  bare so the server applies its 50/0 default — the request set Search reads is unchanged. */
+export interface PageParams {
+  limit?: number;
+  offset?: number;
+}
 
-export const listAdminQueue = (status?: RequestStatus) =>
-  fetch(`/api/admin/requests${status ? `?status=${status}` : ''}`, opts()).then(parse<ListEnvelope<RequestDto>>);
+/** Build `base` with a query string from the given params, omitting any that are absent
+ *  (a bare base when nothing applies). Keeps `listMyRequests()` → bare `/api/requests`. */
+function listUrl(base: string, params?: PageParams & { status?: RequestStatus }): string {
+  const sp = new URLSearchParams();
+  if (params?.status) sp.set('status', params.status);
+  if (params?.limit !== undefined) sp.set('limit', String(params.limit));
+  if (params?.offset !== undefined) sp.set('offset', String(params.offset));
+  const qs = sp.toString();
+  return qs ? `${base}?${qs}` : base;
+}
+
+export const listMyRequests = (params?: PageParams) =>
+  fetch(listUrl('/api/requests', params), opts()).then(parse<ListEnvelope<RequestDto>>);
+
+export const listAdminQueue = (status?: RequestStatus, params?: PageParams) =>
+  fetch(listUrl('/api/admin/requests', { ...(status ? { status } : {}), ...params }), opts()).then(
+    parse<ListEnvelope<RequestDto>>,
+  );
 
 export function requestBookFrom(result: V1AudibleResult) {
   const body = {
@@ -92,8 +112,8 @@ export const updateUser = (publicId: string, patch: UpdateUserBody) =>
     body: JSON.stringify(patch),
   })).then(parse<UserDto>);
 
-export const listUserRequests = (publicId: string) =>
-  fetch(`/api/admin/users/${publicId}/requests`, opts()).then(parse<ListEnvelope<RequestDto>>);
+export const listUserRequests = (publicId: string, params?: PageParams) =>
+  fetch(listUrl(`/api/admin/users/${publicId}/requests`, params), opts()).then(parse<ListEnvelope<RequestDto>>);
 
 export const logout = () => fetch('/api/auth/logout', opts({ method: 'POST' })).then(parse<{ ok: true }>);
 

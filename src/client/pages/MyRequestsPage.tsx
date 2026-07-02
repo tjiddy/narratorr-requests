@@ -1,10 +1,14 @@
+import { useState } from 'react';
 import type { RequestDto } from '@shared/schemas/request';
-import { useMyRequests } from '../hooks';
+import { DEFAULT_LIMIT } from '@shared/schemas/v1/common';
+import { useMyRequestsPaged } from '../hooks';
 import { StatusBadge } from '../components/StatusBadge';
 import { EmptyState } from '../components/EmptyState';
 import { InboxIcon, HeadphonesIcon } from '../components/icons';
 import { requestFailureReason } from '../components/request-failure';
 import { QuotaMeter } from '../components/QuotaMeter';
+import { PagedListFooter } from '../components/PagedListFooter';
+import { nextLimit } from '../components/paging';
 
 function RequestRow({ r }: { r: RequestDto }) {
   const failureReason = requestFailureReason(r);
@@ -46,7 +50,8 @@ function RequestRow({ r }: { r: RequestDto }) {
 }
 
 export function MyRequestsPage() {
-  const { data, isLoading, error } = useMyRequests();
+  const [limit, setLimit] = useState(DEFAULT_LIMIT);
+  const { data, isLoading, error, isFetching } = useMyRequestsPaged(limit);
 
   return (
     <div>
@@ -64,11 +69,20 @@ export function MyRequestsPage() {
         />
       )}
       {data && data.data.length > 0 && (
-        <ul className="flex flex-col gap-3">
-          {data.data.map((r) => (
-            <RequestRow key={r.publicId} r={r} />
-          ))}
-        </ul>
+        <>
+          <ul className="flex flex-col gap-3">
+            {data.data.map((r) => (
+              <RequestRow key={r.publicId} r={r} />
+            ))}
+          </ul>
+          <PagedListFooter
+            loaded={data.data.length}
+            total={data.total}
+            limit={limit}
+            isFetching={isFetching}
+            onLoadMore={() => setLimit(nextLimit)}
+          />
+        </>
       )}
     </div>
   );

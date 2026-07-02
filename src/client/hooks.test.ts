@@ -26,6 +26,9 @@ vi.mock('@tanstack/react-query', () => ({
   useMutation: (options: unknown) => options,
   useQuery: (options: unknown) => options,
   useQueryClient: () => hoisted.qc,
+  // Sentinel matching the real symbol's role as a placeholderData value — the paged
+  // list hooks pass it through; no assertion inspects it, it just needs to resolve.
+  keepPreviousData: (prev: unknown) => prev,
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
